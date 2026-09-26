@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lasto"
+dynamic = ["version"]
+description = "Passive, read-only CAN bus logger for Toyota and Lexus trucks."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Chris Johnson" }]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[project.urls]
+Homepage = "https://lasto.dev"
+Source = "https://github.com/cajdata/lasto"
+
+[project.scripts]
+lasto = "lasto.cli:main"
+
+[tool.hatch.version]
+path = "src/lasto/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lasto"]
