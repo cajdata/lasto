@@ -1,6 +1,6 @@
 # lasto.dev website plan
 
-Status: **W0 approved 2026-09-27.** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`.
+Status: **W0 approved 2026-09-27. W1 built 2026-09-27, waiting on approval.** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`. How to build and edit the site is in `site/README.md`; the going-live steps are in section 10.
 
 ## 0. Decisions (W0, 2026-09-27)
 
@@ -247,6 +247,77 @@ Datasheet. The design itself makes the safety case (the service map shows defaul
 19. Photos: which spots matter most (the setup under the dash on Home, the parts on the hardware page)? The build will strip EXIF, and anything showing the VIN or plates gets cropped.
 20. Can the FAQ mention that PEAK's free PCAN-View has a listen-only option and can record a trace in the meantime? Default: yes, one sentence, clearly labeled as PEAK's tool.
 
-## 10. Heads-up for W1: DNS
+## 10. Going live (W1)
 
-No action needed yet, but you'll want to know: lasto.dev currently points at Porkbun's parking page, with a wildcard `*.lasto.dev` CNAME to `pixie.porkbun.com`. GitHub warns that wildcards leave a domain open to takeover even after verification, so W1's DNS steps start by deleting the parking record and the wildcard, then verifying the domain on your GitHub account (a `_github-pages-challenge-cajdata` TXT record) before it's added to the repo. The exact records come with W1.
+Everything here is yours to do. Steps 1 and 2 can happen now. Steps 3 to 6 wait until you've approved W1 and Phase 1 is approved and pushed.
+
+### The DNS records
+
+Checked 2026-09-27 against 1.1.1.1. The apex and `www` records are already in place, and the wildcard is gone.
+
+| Type | Host | Answer | Status |
+|---|---|---|---|
+| A | (blank, the apex) | `185.199.108.153` | in place |
+| A | (blank) | `185.199.109.153` | in place |
+| A | (blank) | `185.199.110.153` | in place |
+| A | (blank) | `185.199.111.153` | in place |
+| AAAA | (blank) | `2606:50c0:8000::153` | in place |
+| AAAA | (blank) | `2606:50c0:8001::153` | in place |
+| AAAA | (blank) | `2606:50c0:8002::153` | in place |
+| AAAA | (blank) | `2606:50c0:8003::153` | in place |
+| CNAME | `www` | `cajdata.github.io` | in place |
+| TXT | `_github-pages-challenge-cajdata` | the code GitHub shows you in step 1 | **missing** |
+
+Keep nothing else at the apex (no ALIAS, no parking record) and no wildcard. If you ever add CAA records, one must allow `letsencrypt.org`.
+
+Right now `http://lasto.dev` answers with GitHub's "Site not found". With the records pointing at GitHub and no verification, that's the takeover window: any GitHub account could attach lasto.dev to its own Pages site until step 1 is done.
+
+### Step 1: verify the domain on your GitHub account (do this first, and soon)
+
+1. On GitHub, open your profile menu, then **Settings**, then **Pages** (github.com/settings/pages).
+2. Click **Add a domain**, enter `lasto.dev`, and click **Add domain**.
+3. GitHub shows a TXT record. At Porkbun (Domain Management, lasto.dev, DNS), add it: Type `TXT`, Host `_github-pages-challenge-cajdata`, Answer the code GitHub showed you.
+4. Wait a few minutes, then click **Verify**. Leave the TXT record in place for good; removing it undoes the protection.
+
+Once verified, only repositories you own can publish to lasto.dev and its immediate subdomains, so a deleted repo or a disabled Pages site can't hand the domain to someone else.
+
+### Step 2: mail records (optional, recommended)
+
+lasto.dev won't send email, so tell receivers to reject anything claiming to come from it:
+
+| Type | Host | Answer |
+|---|---|---|
+| TXT | (blank, the apex) | `v=spf1 -all` |
+| TXT | `_dmarc` | `v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s` |
+| MX | (blank) | priority `0`, answer `.` (a "null MX", RFC 7505), only if Porkbun's form accepts `.` as the answer |
+
+Leave Porkbun's email forwarding off for this domain; it adds its own MX records.
+
+### Step 3: turn on Pages, before anything merges to main
+
+The first push to `main` that touches `site/` starts the deploy workflow, so Pages has to be ready first.
+
+1. In the repo: **Settings**, **Pages**, **Build and deployment**, **Source**: GitHub Actions.
+2. Under **Custom domain**, enter `lasto.dev` and save. GitHub checks DNS and requests a certificate, which can take up to an hour. Don't add a CNAME file to the repo; with Actions deployments it's ignored.
+3. When the certificate is ready, tick **Enforce HTTPS**. (.dev is on the HSTS preload list, so browsers only use HTTPS anyway.)
+
+### Step 4: merge and deploy
+
+1. When you approve Phase 1, I set it to done and public in `site/data/roadmap.toml` on this branch, so the first deploy doesn't say it's still waiting on sign-off.
+2. Push Phase 1 to `main`, then merge the `website` branch into `main`. It sits on top of the Phase 1 commits, so it fast-forwards.
+3. The `site` workflow builds, checks, and deploys. Its last step confirms Pages reports `https://lasto.dev/` and fetches the main pages, the mirrors, llms.txt, the sitemap, robots.txt, and security.txt from it. If the certificate or Enforce HTTPS isn't ready yet, that step fails; rerun the workflow once it is.
+
+### Step 5: repo settings
+
+- **About** (the gear on the repo page): website `https://lasto.dev`, and topics such as `can-bus`, `obd2`, `lexus`, `gx470`, `python`.
+- **Settings**, **General**, **Social preview**: upload `og/github-social-preview.png` from the built site (`site/dist/og/` locally, or https://lasto.dev/og/github-social-preview.png once it's live).
+
+### Step 6: check
+
+- https://lasto.dev/ loads with a valid certificate, and https://www.lasto.dev/ redirects to it.
+- https://lasto.dev/.well-known/security.txt and https://lasto.dev/llms.txt load.
+- Submitting the sitemap to Google Search Console and Bing Webmaster Tools is W3.
+
+### Keeping security.txt current
+
+security.txt carries an Expires date 330 days after each build, and a monthly scheduled run rebuilds the site to keep it fresh. GitHub turns off scheduled workflows in a public repo after 60 days with no activity, so if the repo goes quiet for months, run the `site` workflow by hand (Actions, site, Run workflow) at least once before the date in https://lasto.dev/.well-known/security.txt.
