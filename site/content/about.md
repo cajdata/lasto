@@ -16,6 +16,8 @@ page_type: AboutPage
 
 I'm [Chris Johnson]({{ site.author_url }}), and I'm building Lasto for my own 2006 GX470. The first thing I want it to answer is how hot the transmission gets on long grades, and whether a regear is worth doing.
 
+The code and docs are written with Claude Code; I review every change, and each one has to pass the test suite and the safety rules.
+
 The [source code is on GitHub]({{ site.repo }}). The [lasto package on PyPI]({{ site.pypi }}) only reserves the name for now.
 
 ## License and warranty {#license}
