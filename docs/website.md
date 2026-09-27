@@ -8,6 +8,10 @@ Status: **W0 and W1 approved 2026-09-27.** The decisions below override anything
 - **Question 13:** About says, in one plain line, that the code and docs are written with Claude Code, and that every change is reviewed by Chris and has to pass the test suite and the safety rules. Commits and PRs still carry no attribution.
 - **W2:** the chain diagram's pin labels (Fig. 2 on Home) get generated from `site/data/hardware.toml`, on the same principle as the service map.
 - **Going live:** Chris finishes the Phase 1 review in the main session and pushes `main`, then turns on Pages and sets the custom domain, then merges `website`. Before that merge, Phase 1 gets marked done and public in `site/data/roadmap.toml`.
+- **Order from here (replaces running W2 next):**
+  1. Chris gives the Phase 1 approval date; Phase 1 gets marked done and public in `site/data/roadmap.toml` on this branch before the merge.
+  2. Once the site is live, run the W3 launch checks against the pages that exist.
+  3. After that, W2 docs arrive one app phase at a time, as each phase is approved, starting with passive capture when Phase 2 is approved. The chain diagram's generated pin labels come with that work.
 - **Working rules for the website track:**
   - Every file change goes through the file editing tools, never shell heredocs.
   - Multi-agent workflows stay small; ask Chris before launching more than about 10 agents in a stage.
