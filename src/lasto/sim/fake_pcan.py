@@ -119,7 +119,9 @@ class FakePcanDll:
             return OK
         ch = self.channel(_v(handle))
         if param == pc.PCAN_CHANNEL_CONDITION:
-            value = ch.condition
+            value = pc.PCAN_CHANNEL_UNAVAILABLE if ch.unplugged else ch.condition
+        elif ch.unplugged:
+            return pc.PCAN_ERROR_ILLHW
         elif param == pc.PCAN_LISTEN_ONLY:
             value = ch.listen_only if ch.initialized else ch.preinit_listen_only
             if self.readback_listen_only is not None:
@@ -228,3 +230,23 @@ class FakePcanDll:
 
     def inject_read_error(self, handle: int, status: int) -> None:
         self.channel(handle).rx.append((status, pc.PCAN_MESSAGE_STANDARD, 0, b"", self._time()))
+
+    def unplug(self, handle: int) -> None:
+        """The adapter disappears: reads and status report ILLHW, and the channel isn't available."""
+        self.channel(handle).unplugged = True
+
+    def plug_back(self, handle: int) -> None:
+        """The adapter comes back. If the channel was left initialized, the driver resumes it on its own."""
+        self.channel(handle).unplugged = False
+
+    def driver_resumes(self, handle: int, *, listen_only: int, announce: bool = True) -> None:
+        """After a replug, the driver resumes the still-initialized channel by itself.
+
+        PEAK doesn't document whether listen-only survives that. `announce` queues the
+        driver's "controller activated" status message (status 0).
+        """
+        ch = self.channel(handle)
+        ch.unplugged = False
+        ch.listen_only = listen_only
+        if announce:
+            ch.rx.append((OK, pc.PCAN_MESSAGE_STATUS, 0, bytes(4), self._time()))

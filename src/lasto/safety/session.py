@@ -14,12 +14,13 @@ from collections.abc import Iterable
 
 from lasto.safety.audit import REFUSALS, Auditor
 from lasto.safety.clock import Clock
+from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed
 from lasto.safety.frames import Received
 from lasto.safety.gate import Exchange, ExchangeState, Gate
 from lasto.safety.interlocks import Interlocks
 from lasto.safety.killswitch import KillSwitch, NrcMonitor
 from lasto.safety.pcan_active import ActiveChannel, TransmitPcan, open_active
-from lasto.safety.pcan_dll import ReadOnlyPcan
+from lasto.safety.pcan_dll import ReadOnlyPcan, load_readonly
 from lasto.safety.pcan_passive import PassiveChannel, open_passive
 from lasto.safety.ratelimit import RateLimiter
 from lasto.safety.reader import Reader, Subscriber
@@ -27,6 +28,12 @@ from lasto.safety.requests import Request
 
 LISTEN_WINDOW = 2.0
 PUMP_INTERVAL = 0.002
+# A passive channel that can't be trusted is reopened from scratch: a few attempts per incident, a
+# pause between them (a USB replug takes seconds), and a cap per session so a flapping adapter can't
+# cycle forever.
+REOPEN_ATTEMPTS = 3
+REOPEN_DELAY = 2.0
+MAX_REOPENS_PER_SESSION = 10
 
 
 def _refused(auditor: Auditor, mode: str, channel_name: str, error: BaseException) -> None:
@@ -44,22 +51,102 @@ def _refused(auditor: Auditor, mode: str, channel_name: str, error: BaseExceptio
 
 
 class PassiveSession:
-    """Listen-only capture."""
+    """Listen-only capture that never trusts a channel that changed under it.
 
-    def __init__(self, channel: PassiveChannel, reader: Reader, auditor: Auditor) -> None:
+    The reader re-checks listen-only continuously. If it ever reads anything
+    but ON, or the channel fails or resets, the session logs why and
+    uninitializes the channel, which discards whatever the driver resumed on
+    its own. Then it runs the full open_passive sequence again (set
+    listen-only before initializing, read it back). If that doesn't work
+    within a few attempts, the session ends and logs why.
+    """
+
+    def __init__(
+        self,
+        channel_name: str,
+        pcan: ReadOnlyPcan,
+        channel: PassiveChannel,
+        auditor: Auditor,
+        clock: Clock,
+        subscribers: Iterable[Subscriber],
+    ) -> None:
+        self._channel_name = channel_name
+        self._pcan = pcan
         self._channel = channel
-        self._reader = reader
         self._auditor = auditor
+        self._clock = clock
+        self._subscribers = tuple(subscribers)
+        self._reader = self._new_reader(channel)
+        self._reopens = 0
+        self._end_reason: str | None = None
+
+    def _new_reader(self, channel: PassiveChannel) -> Reader:
+        return Reader(channel, self._clock, subscribers=self._subscribers, verify_listen_only=True, auditor=self._auditor)
 
     @property
     def reader(self) -> Reader:
         return self._reader
 
+    @property
+    def ended(self) -> bool:
+        return self._end_reason is not None
+
+    @property
+    def end_reason(self) -> str | None:
+        return self._end_reason
+
+    @property
+    def reopens(self) -> int:
+        return self._reopens
+
     def pump(self) -> list[Received]:
-        return self._reader.poll_once()
+        if self.ended:
+            return []
+        items = self._reader.poll_once()
+        if self._reader.failed:
+            self._distrust(self._reader.failure_reason, self._reader.failed_status)  # type: ignore[arg-type]
+        return items
+
+    def _distrust(self, reason: str, status: int | None) -> None:
+        self._auditor.event(
+            "passive_channel_distrusted",
+            channel=self._channel_name,
+            reason=reason,
+            status=None if status is None else f"0x{status:X}",
+            detail="closing the channel; the driver's automatic resume is never trusted",
+        )
+        self._channel.close()
+        for attempt in range(1, REOPEN_ATTEMPTS + 1):
+            if self._reopens >= MAX_REOPENS_PER_SESSION:
+                self._end(f"reopened {self._reopens} times already; the channel keeps losing listen-only or failing")
+                return
+            self._clock.sleep(REOPEN_DELAY)
+            try:
+                channel = open_passive(self._channel_name, pcan=self._pcan)
+            except (InterfaceError, PassiveModeUnconfirmed) as exc:
+                self._auditor.event(
+                    "passive_reopen_failed", attempt=attempt, reason=type(exc).__name__, detail=str(exc)
+                )
+                continue
+            self._reopens += 1
+            self._channel = channel
+            self._reader = self._new_reader(channel)
+            self._auditor.event(
+                "passive_channel_reopened", attempt=attempt, listen_only_confirmed=True, **channel.describe()
+            )
+            return
+        self._end(f"could not reopen the channel after {reason}")
+
+    def _end(self, reason: str) -> None:
+        self._end_reason = reason
+        self._auditor.event("session_ended", mode="passive", reason=reason)
+        REFUSALS.detach(self._auditor)
 
     def close(self) -> None:
+        if self.ended:
+            return
         self._channel.close()
+        self._end_reason = "closed"
         self._auditor.event("session_closed", mode="passive")
         REFUSALS.detach(self._auditor)
 
@@ -74,6 +161,7 @@ def open_passive_session(
 ) -> PassiveSession:
     REFUSALS.attach(auditor)
     try:
+        pcan = load_readonly() if pcan is None else pcan
         channel = open_passive(channel_name, pcan=pcan)
     except BaseException as exc:
         _refused(auditor, "passive", channel_name, exc)
@@ -84,7 +172,7 @@ def open_passive_session(
         channel.close()
         REFUSALS.detach(auditor)
         raise
-    return PassiveSession(channel, Reader(channel, clock, subscribers=subscribers), auditor)
+    return PassiveSession(channel_name, pcan, channel, auditor, clock, subscribers)
 
 
 class PolledSession:

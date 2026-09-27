@@ -13,10 +13,12 @@ FRAME = CanFrame(0x025, b"\x07\xff", 1)
 
 
 class StubChannel:
-    def __init__(self, *batches, statuses=()):
+    def __init__(self, *batches, statuses=(), listen_only=(True,)):
         self.batches = deque(batches)
         self.statuses = deque(statuses)
+        self.listen_only_answers = deque(listen_only)
         self.status_calls = 0
+        self.listen_only_calls = 0
 
     def drain(self):
         return self.batches.popleft() if self.batches else []
@@ -24,6 +26,10 @@ class StubChannel:
     def status(self):
         self.status_calls += 1
         return self.statuses.popleft() if self.statuses else pc.PCAN_ERROR_OK
+
+    def listen_only(self):
+        self.listen_only_calls += 1
+        return self.listen_only_answers.popleft() if len(self.listen_only_answers) > 1 else self.listen_only_answers[0]
 
 
 def polled_reader(clock, *batches, statuses=()):
@@ -113,6 +119,54 @@ def test_passive_reader_records_bus_state_without_a_kill_switch(clock):
     reader.poll_once()
     assert seen == items
     assert not reader.failed
+
+
+def test_polled_readers_do_not_check_listen_only(clock):
+    reader, _, _ = polled_reader(clock, [StatusMessage(pc.PCAN_ERROR_OK, 0)])
+    reader.poll_once()
+    assert reader._channel.listen_only_calls == 0
+
+
+def test_passive_reader_rechecks_listen_only_every_status_interval(clock, auditor, sink):
+    channel = StubChannel(listen_only=(True, True, False))
+    reader = Reader(channel, clock, verify_listen_only=True, auditor=auditor)
+    reader.poll_once()
+    reader.poll_once()  # too soon
+    assert channel.listen_only_calls == 1
+    clock.advance(STATUS_INTERVAL)
+    reader.poll_once()
+    assert not reader.failed
+    clock.advance(STATUS_INTERVAL)
+    reader.poll_once()
+    assert (reader.failed, reader.failure_reason, reader.failed_status) == (True, "listen_only_lost", None)
+    assert STATUS_INTERVAL <= 0.1
+
+
+def test_controller_activated_triggers_an_immediate_recheck(clock, auditor, sink):
+    activated = StatusMessage(pc.PCAN_ERROR_OK, 0)
+    channel = StubChannel([activated], [], [activated], listen_only=(True, True, False))
+    reader = Reader(channel, clock, verify_listen_only=True, auditor=auditor)
+    reader.poll_once()  # recheck from the message, then the first status tick
+    assert channel.listen_only_calls == 2 and not reader.failed
+    assert [r["trigger"] for r in sink.records if r["event"] == "listen_only_rechecked"] == ["controller_activated"]
+    reader.poll_once()
+    reader.poll_once()  # same interval: only the message triggers a check, and it fails
+    assert reader.failure_reason == "listen_only_lost"
+    assert channel.listen_only_calls == 3
+
+
+def test_controller_activated_without_an_auditor(clock):
+    channel = StubChannel([StatusMessage(pc.PCAN_ERROR_OK, 0)])
+    reader = Reader(channel, clock, verify_listen_only=True)
+    reader.poll_once()
+    assert not reader.failed
+
+
+def test_passive_reader_stops_on_interface_failure(clock):
+    reader = Reader(StubChannel([ReadError(pc.PCAN_ERROR_ILLHW)]), clock, verify_listen_only=True)
+    reader.poll_once()
+    assert (reader.failure_reason, reader.failed_status) == ("interface_failed", pc.PCAN_ERROR_ILLHW)
+    assert reader._channel.listen_only_calls == 0
 
 
 def test_passive_subscriber_errors_propagate(clock):
