@@ -1,0 +1,217 @@
+"""Rule 4: the STN adapter link against the simulated MX+."""
+
+import pytest
+from helpers import events
+
+from lasto.safety import stn_port
+from lasto.safety.errors import AdapterError, SafetyViolation
+from lasto.safety.stn_port import COMMAND_TIMEOUT, StnAdapter, open_serial
+from lasto.sim.fake_stn import FakeStnPort
+from lasto.sim.pytest_plugin import HardwareFirewallError
+
+
+def adapter(auditor, **port_options):
+    port = FakeStnPort(**port_options)
+    return StnAdapter(port, auditor), port
+
+
+def ready(auditor, **port_options):
+    stn, port = adapter(auditor, **port_options)
+    stn.reset()
+    return stn, port
+
+
+def test_open_serial_checks_the_port_name():
+    for bad in ["COM0", "COM", "com5", "/dev/ttyUSB0", "COM5 ", None, "COM1234"]:
+        with pytest.raises(ValueError):
+            open_serial(bad)
+
+
+def test_open_serial_uses_the_factory():
+    seen = {}
+
+    def factory(**kwargs):
+        seen.update(kwargs)
+        return "port"
+
+    assert open_serial("COM5", factory=factory) == "port"
+    assert seen == {"port": "COM5", "baudrate": 115200, "timeout": COMMAND_TIMEOUT, "write_timeout": COMMAND_TIMEOUT}
+
+
+def test_opening_a_real_port_is_blocked_in_tests():
+    with pytest.raises(HardwareFirewallError):
+        open_serial("COM5")
+
+
+def test_reset_waits_for_the_prompt_then_configures(auditor, sink):
+    stn, port = adapter(auditor)
+    assert stn.reset() == "ELM327 v1.4b"
+    assert port.commands == ["ATZ", "ATE0", "ATL0", "ATS0", "ATH1", "ATM0"]
+    assert port.timeout == COMMAND_TIMEOUT
+    assert [r["command"] for r in events(sink, "adapter_command")] == port.commands
+
+
+def test_everything_needs_a_reset_first(auditor):
+    stn, _ = adapter(auditor)
+    for call in (stn.identify, stn.read_voltage, stn.programmable_parameters, stn.start_kline_monitor):
+        with pytest.raises(AdapterError, match="reset"):
+            call()
+
+
+def test_identify_and_voltage(auditor):
+    stn, _ = ready(auditor)
+    assert stn.identify() == {"firmware": "STN2255 v5.10.3", "device": "OBDLink MX+ r3.2.1", "serial": "123456789012"}
+    assert stn.read_voltage() == 12.63
+
+
+@pytest.mark.parametrize("reading", ["--.--", "12.6V", "", "123.4"])
+def test_unexpected_voltage_readings(auditor, reading):
+    stn, _ = ready(auditor, voltage=reading)
+    with pytest.raises(AdapterError):
+        stn.read_voltage()
+
+
+def test_can_monitor_runs_the_silent_checks_first(auditor):
+    stn, port = ready(auditor, monitor_lines=["7E8 03 41 0D 00", ""])
+    stn.start_can_monitor()
+    assert port.commands[-5:] == ["ATPPS", "STP31", "STPR", "STCMM0", "STMA"]
+    assert stn.monitoring
+    assert stn.read_monitor_line() == "7E8 03 41 0D 00"
+    assert stn.read_monitor_line() == ""
+    assert stn.stop_monitor() == ["STOPPED"]
+    assert not stn.monitoring
+    assert stn.stop_monitor() == []
+
+
+def test_can_monitor_protocol_33(auditor):
+    stn, port = ready(auditor)
+    stn.start_can_monitor("33")
+    assert "STP33" in port.commands
+    stn.stop_monitor()
+
+
+def test_can_monitor_refused_when_the_adapter_acks_by_default(auditor):
+    stn, port = ready(auditor, pp21=(0x00, True))
+    with pytest.raises(AdapterError, match="PP 21"):
+        stn.start_can_monitor()
+    assert "STMA" not in port.commands
+
+
+def test_can_monitor_refused_when_the_protocol_does_not_read_back(auditor):
+    stn, port = ready(auditor, protocol_report="0")
+    with pytest.raises(AdapterError, match="STPR"):
+        stn.start_can_monitor()
+    assert "STMA" not in port.commands
+
+
+@pytest.mark.parametrize("protocol", ["32", "0", "21"])
+def test_can_monitor_protocols(auditor, protocol):
+    stn, _ = ready(auditor)
+    with pytest.raises(ValueError):
+        stn.start_can_monitor(protocol)
+
+
+def test_kline_monitor(auditor):
+    stn, port = ready(auditor, monitor_lines=["81 10 F1 21 01 A4"])
+    stn.start_kline_monitor()
+    assert port.commands[-4:] == ["ATSW00", "STP23", "STPR", "STMA"]
+    assert stn.read_monitor_line() == "81 10 F1 21 01 A4"
+    stn.stop_monitor()
+    stn.start_kline_monitor("21")
+    stn.stop_monitor()
+
+
+@pytest.mark.parametrize("protocol", ["22", "24", "25", "31"])
+def test_kline_monitor_never_uses_autoinit_presets(auditor, protocol):
+    stn, _ = ready(auditor)
+    with pytest.raises(ValueError):
+        stn.start_kline_monitor(protocol)
+
+
+def test_monitor_that_ends_on_its_own(auditor):
+    stn, _ = ready(auditor, monitor_lines=["7E8 03 41 0D 00"], monitor_ends=True)
+    stn.start_can_monitor()
+    assert stn.read_monitor_line() == "7E8 03 41 0D 00"
+    assert stn.read_monitor_line() == "BUFFER FULL"
+    assert stn.read_monitor_line() == ""
+    assert stn.read_monitor_line() is None  # the prompt came back
+    assert not stn.monitoring
+    assert stn.stop_monitor() == []
+    with pytest.raises(AdapterError, match="isn't monitoring"):
+        stn.read_monitor_line()
+
+
+def test_partial_monitor_lines_are_held_until_complete(auditor):
+    stn, port = ready(auditor)
+    stn.start_can_monitor()
+    port._out += b"7E8 03 4"
+    assert stn.read_monitor_line() is None
+    port._out += b"1 0D 00\r"
+    assert stn.read_monitor_line() == "7E8 03 41 0D 00"
+    stn.stop_monitor()
+
+
+def test_no_commands_while_monitoring(auditor, sink):
+    stn, port = ready(auditor)
+    stn.start_can_monitor()
+    with pytest.raises(SafetyViolation) as refused:
+        stn.read_voltage()
+    assert refused.value.reason == "adapter_is_monitoring"
+    assert events(sink, "rejected")[-1]["reason"] == "adapter_is_monitoring"
+    assert stn.monitoring
+    stn.stop_monitor()
+
+
+def test_refused_commands_are_audited_and_never_written(auditor, sink):
+    stn, port = ready(auditor)
+    written = bytes(port.written)
+    for command in ("STPX H:7E0,D:0101", "0100", "ATZ", "STMA", "stm"):
+        with pytest.raises(SafetyViolation):
+            stn._command(command)
+    assert bytes(port.written) == written
+    reasons = [r["reason"] for r in events(sink, "rejected")]
+    assert reasons == [
+        "adapter_command_characters",
+        "adapter_hex_request",
+        "adapter_reset_outside_reset_routine",
+        "adapter_monitor_outside_monitor_routine",
+        "adapter_monitor_outside_monitor_routine",
+    ]
+
+
+class SilentPort(FakeStnPort):
+    def read_until(self, expected=b"\n", size=None):
+        return b"OK\r"
+
+
+def test_missing_prompt(auditor):
+    stn = StnAdapter(SilentPort(), auditor)
+    with pytest.raises(AdapterError, match="no prompt"):
+        stn.reset()
+
+
+def test_expect_reports_a_mismatch(auditor):
+    stn, port = ready(auditor)
+    port.pp[0x21] = (0xFF, False)
+    port.protocol_report = "33"
+    with pytest.raises(AdapterError, match="expected '31'"):
+        stn.start_can_monitor("31")
+
+
+def test_echo_is_stripped_before_ate0_takes_effect(auditor):
+    stn, port = adapter(auditor)
+    stn._configured = True  # skip the reset to see the echo
+    stn._write_command("ATZ", reset=True)
+    stn._read_prompt()
+    port.echo = True
+    assert stn._command("STI") == "STN2255 v5.10.3"
+
+
+def test_close(auditor):
+    stn, port = adapter(auditor)
+    stn.close()
+    assert port.closed
+
+
+def test_lines_helper():
+    assert stn_port._lines("a\r\rb\n c \r") == ["a", "b", "c"]

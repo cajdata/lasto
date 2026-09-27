@@ -1,0 +1,208 @@
+"""Structural rules, checked by reading the source.
+
+- Only safety/pcan_active.py binds or calls CAN_Write (the simulator's fake DLL may define it).
+- The passive path imports nothing that can transmit and names no write function.
+- Only safety/stn_port.py opens a serial port.
+- Only the hardware bindings use ctypes.
+- Only the session module imports the transmit binding and the gate.
+- Every argument parser disables option abbreviation, so nothing shorter than --live can enable it.
+- No eval/exec anywhere, no subprocesses in the safety core.
+"""
+
+from __future__ import annotations
+
+import ast
+import subprocess
+import sys
+from functools import cache
+from pathlib import Path
+
+import lasto
+
+SRC = Path(lasto.__file__).parent
+
+
+@cache
+def sources() -> dict[str, ast.Module]:
+    found = {}
+    for path in sorted(SRC.rglob("*.py")):
+        parts = list(path.relative_to(SRC.parent).with_suffix("").parts)
+        if parts[-1] == "__init__":
+            parts.pop()
+        found[".".join(parts)] = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return found
+
+
+def docstrings(tree: ast.Module) -> set[int]:
+    ids = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            body = node.body
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                ids.add(id(body[0].value))
+    return ids
+
+
+def mentions(tree: ast.Module, text: str) -> list[str]:
+    """Code (not docstrings or comments) that names `text`: identifiers, attributes, or string literals."""
+    skip = docstrings(tree)
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and text in node.id:
+            hits.append("name")
+        elif isinstance(node, ast.Attribute) and text in node.attr:
+            hits.append("attribute")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and text in node.value and id(node) not in skip:
+            hits.append("string")
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and text in node.name:
+            hits.append("def")
+        elif isinstance(node, ast.alias) and text in node.name:
+            hits.append("import")
+    return hits
+
+
+def imports(tree: ast.Module) -> set[str]:
+    names = set()
+    known = sources()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module)
+            names.update(f"{node.module}.{alias.name}" for alias in node.names if f"{node.module}.{alias.name}" in known)
+    return names
+
+
+def importers(module: str) -> set[str]:
+    return {name for name, tree in sources().items() if module in imports(tree)}
+
+
+def closure(module: str) -> set[str]:
+    seen, todo = set(), [module]
+    while todo:
+        current = todo.pop()
+        if current in seen or current not in sources():
+            continue
+        seen.add(current)
+        todo.extend(name for name in imports(sources()[current]) if name.startswith("lasto"))
+    return seen
+
+
+def test_the_scan_sees_the_code():
+    assert {"lasto.safety.gate", "lasto.safety.pcan_active", "lasto.safety.pcan_passive", "lasto.cli"} <= set(sources())
+
+
+def test_only_pcan_active_binds_can_write():
+    for name, tree in sources().items():
+        hits = mentions(tree, "CAN_Write")
+        if name == "lasto.safety.pcan_active":
+            assert hits, "pcan_active should bind CAN_Write"
+        elif name == "lasto.sim.fake_pcan":
+            assert set(hits) == {"def"}, "the fake DLL may only define CAN_Write"
+        else:
+            assert hits == [], f"{name} names CAN_Write"
+
+
+def test_only_pcan_active_touches_the_transmit_call():
+    for name, tree in sources().items():
+        if name != "lasto.safety.pcan_active":
+            assert mentions(tree, "write_standard") == [], name
+            assert mentions(tree, "TransmitPcan") == [] or name == "lasto.safety.session", name
+
+
+def test_passive_path_imports_nothing_that_can_transmit():
+    passive = closure("lasto.safety.pcan_passive")
+    assert "lasto.safety.pcan_dll" in passive
+    forbidden = {"lasto.safety.pcan_active", "lasto.safety.gate", "lasto.safety.session", "lasto.safety.stn_port", "lasto.safety.hotkey"}
+    assert not passive & forbidden
+    for name in passive:
+        tree = sources()[name]
+        assert mentions(tree, "CAN_Write") == [], name
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and "write" in n.func.attr.lower()]
+        assert calls == [], f"{name} calls a write method"
+
+
+def test_importing_the_passive_path_does_not_load_the_transmit_binding():
+    code = "import sys, lasto.safety.pcan_passive; print(','.join(sorted(m for m in sys.modules if m.startswith('lasto'))))"
+    loaded = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.strip().split(",")
+    assert "lasto.safety.pcan_passive" in loaded
+    assert "lasto.safety.pcan_active" not in loaded
+    assert "lasto.safety.gate" not in loaded
+
+
+def test_only_the_session_imports_the_transmit_binding_and_the_gate():
+    assert importers("lasto.safety.pcan_active") == {"lasto.safety.session"}
+    assert importers("lasto.safety.gate") == {"lasto.safety.session"}
+    assert all(name.startswith("lasto.safety.") for name in importers("lasto.safety.pcan_dll"))
+
+
+def test_channel_writes_happen_only_in_the_gate():
+    allowed = {"lasto.safety.gate", "lasto.safety.audit", "lasto.safety.stn_port"}
+    for name, tree in sources().items():
+        if not name.startswith("lasto.safety"):
+            continue
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "write"]
+        if name not in allowed:
+            assert calls == [], f"{name} calls .write()"
+
+
+def test_only_stn_port_opens_a_serial_port():
+    for name, tree in sources().items():
+        uses_serial = any(i == "serial" or i.startswith("serial.") for i in imports(tree))
+        assert uses_serial == (name == "lasto.safety.stn_port"), name
+
+
+def test_ctypes_only_in_the_hardware_bindings():
+    allowed = {
+        "lasto.safety.pcan_constants",
+        "lasto.safety.pcan_dll",
+        "lasto.safety.pcan_active",
+        "lasto.safety.hotkey",
+        "lasto.sim.pytest_plugin",  # the test firewall
+    }
+    users = {name for name, tree in sources().items() if any(i == "ctypes" or i.startswith("ctypes.") for i in imports(tree))}
+    assert users <= allowed
+
+
+def test_every_argument_parser_disables_abbreviation():
+    parsers = 0
+    for name, tree in sources().items():
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if called in ("ArgumentParser", "add_parser"):
+                parsers += 1
+                keywords = {k.arg: k.value for k in node.keywords}
+                value = keywords.get("allow_abbrev")
+                assert isinstance(value, ast.Constant) and value.value is False, f"{name}: {called} without allow_abbrev=False"
+    assert parsers >= 2
+
+
+SAFETY_INTERNALS = {
+    "_channel", "_gate", "_link", "_transmit", "_pcan", "_functions", "_port",
+    "_write_command", "_write_stop", "_command", "_killswitch", "_call",
+}  # fmt: skip
+
+
+def test_nothing_outside_the_safety_core_reaches_into_its_internals():
+    for name, tree in sources().items():
+        if name.startswith(("lasto.safety", "lasto.sim")):
+            continue
+        touched = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} & SAFETY_INTERNALS
+        assert not touched, f"{name} touches {sorted(touched)}"
+
+
+def test_no_eval_or_exec():
+    for name, tree in sources().items():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                assert node.func.id not in {"eval", "exec", "compile", "__import__"}, name
+
+
+def test_safety_core_runs_no_subprocesses():
+    for name, tree in sources().items():
+        if name.startswith("lasto.safety"):
+            assert not {"subprocess", "os.system", "multiprocessing"} & imports(tree), name
+            assert mentions(tree, "system(") == [], name

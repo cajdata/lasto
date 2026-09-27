@@ -76,16 +76,16 @@ From factory manuals for the J120 platform (Land Cruiser Prado RM1151E, from Aug
 python-can 4.6.1's `PcanBus` sets listen-only before `CAN_Initialize`, but it ignores the `SetValue` result, and its `state` property returns a cached value instead of asking the driver. So if the pre-init set fails, the channel silently comes up active. The safety core binds the DLL itself with ctypes:
 
 - **Loading:** from `%SystemRoot%\System32\PCANBasic.dll` by absolute path. Require a 64-bit Python process, and require a PCAN-Basic API version of at least 4.7.0 other than 5.0.0 (5.0.0 mishandles status messages).
-- **`pcan_dll.load_readonly()`** binds only `CAN_Initialize`, `CAN_Uninitialize`, `CAN_GetValue`, `CAN_GetStatus`, `CAN_Read`, and `CAN_GetErrorText`, plus a `CAN_SetValue` wrapper that accepts only these (parameter, value) pairs: listen-only ON, receive event, error frames ON, status frames ON. It never looks up `CAN_Write*`. It also never binds `CAN_Reset` (can hard-reset the controller) or `CAN_FilterMessages` (resets the controller).
+- **`pcan_dll.load_readonly()`** binds only `CAN_Initialize`, `CAN_Uninitialize`, `CAN_GetValue`, `CAN_GetStatus`, `CAN_Read`, and `CAN_GetErrorText`, plus a `CAN_SetValue` wrapper that accepts only these (parameter, value) pairs: listen-only ON, error frames ON, status frames ON. It never looks up `CAN_Write*`. It also never binds `CAN_Reset` (can hard-reset the controller) or `CAN_FilterMessages` (resets the controller).
 - **Passive open sequence:**
   1. `PCAN_CHANNEL_CONDITION` must be `AVAILABLE`. If PCAN-View or another app holds the channel, the controller may already be active, so refuse.
   2. `SetValue(LISTEN_ONLY, ON)` on the uninitialized channel; check the result.
   3. `CAN_Initialize` at 500 kbps.
   4. `GetValue(LISTEN_ONLY)` must read ON; otherwise uninitialize and refuse.
-  5. Enable error and status frames and the receive event, then log the device, firmware, and API versions.
+  5. Enable error and status frames, then record the hardware name, channel version, and API version.
 
   There is no fallback that sets listen-only after initializing.
-- **Reading:** the receive event is auto-reset, so each wake drains `CAN_Read` until the queue is empty. `CAN_GetStatus` is polled every 250 ms, because an unplug shows up there as `ILLHW`, not reliably in `CAN_Read`. On an unplug, passive capture stops and closes the session. It never trusts the driver's automatic resume, because listen-only isn't guaranteed to survive a replug.
+- **Reading:** the capture loop drains `CAN_Read` every few milliseconds (up to 4,096 frames per pass). That needs no Windows receive event, and so one less driver setting. The driver buffers 32,768 frames, and timestamps come from the hardware, so polling costs no accuracy. `CAN_GetStatus` is polled every 250 ms, because an unplug shows up there as `ILLHW`, not reliably in `CAN_Read`. On an unplug, passive capture stops and closes the session. It never trusts the driver's automatic resume, because listen-only isn't guaranteed to survive a replug.
 - In listen-only the SJA1000 controller is forced error-passive, so an error-passive status is expected in passive mode. It's recorded, not treated as a fault.
 - **What PEAK doesn't promise:** setting listen-only before init is supported since PCAN-Basic 1.0.6, but PEAK says only that it applies "as fast as possible". It never states there is zero time in active mode at bus-on. Linux drivers set silent mode before bus-on, so it's very likely fine. A bench test would prove it (§12).
 - **Timestamps:** microseconds since Windows started, with 42 µs resolution on a PCAN-USB. Each session also records host-clock anchors.
@@ -139,7 +139,7 @@ Rejections are logged with the reason and raised as `SafetyViolation`.
 3. Flush storage and record the cause.
 4. Keep passive capture running unless the interface failed. Nothing retries automatically.
 
-**Hotkey:** a global Windows hotkey (`RegisterHotKey` via ctypes, no dependency), so it works when the terminal isn't focused. *(open: key)*
+**Hotkey:** Ctrl+Alt+K, a global Windows hotkey (`RegisterHotKey` via ctypes, no dependency), so it works when the terminal isn't focused. It's built and tested in Phase 1 (`safety/hotkey.py`) and gets wired into polled sessions with the polled `drive` command in Phase 4. A polled session refuses to start if the hotkey can't be registered.
 
 ### 3.5 Motion interlock (rule 8)
 
@@ -180,6 +180,8 @@ From the OBDLink Family Reference and Programming Manual (Rev F, Aug 2025) and t
   - all NVM/OTP writes: `ATPP`, `ATSD`, `AT@3`, `STSAVCAL`, `STVCAL`, `ATCV`, `STWBR`, `STRSTNVM`, all `STSL*` PowerSave and `STBT*` Bluetooth setters
   - baud changes, sleep, GPIO, batch mode
   - header and flow-control shaping, except the gate's own `ATSH` to an approved address
+
+- **Routines:** reset (`ATZ`/`ATWS`) and monitor (`STM`/`STMA`) commands are accepted only inside the routines that enforce their rules. Monitoring is stopped with a backspace: it stops a running monitor, and on an idle adapter it edits an empty line. Confirm this on the real MX+ in Phase 3.
 
 **Rule 4 conflict: silent mode can't be read back.** Neither `STCMM` nor `ATCSM` has a query form. Proposed verification, all required before every monitor start:
 1. `ATPPS` shows PP 21 at its factory default (silent) or `FF`.
@@ -302,7 +304,7 @@ Offline install on the truck laptop:
 
 *(open)*
 
-## 11. Phase 1 scope
+## 11. Phase 1 scope (built)
 
 Safety core for both transports, `FakePcanDll`, `FakeStnPort`, the minimal vehicle model, the violation plugin, the hardware firewall, the structural tests, Hypothesis fuzzing, 100 % branch coverage, and a CLI skeleton with `--live` gating. No feature code.
 

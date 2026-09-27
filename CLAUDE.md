@@ -63,3 +63,5 @@ Tests must prove the rules:
 - **Simulator is the default.** Real hardware needs `--live` plus an explicit channel or port. The CLI parser disables option abbreviation so nothing shorter than `--live` can enable it.
 - **Commits:** no Claude attribution of any kind (no Co-Authored-By trailer, no "Generated with Claude Code" line). The repo has no git identity configured; commit as the repo owner with `git -c user.name="Chris Johnson" -c user.email="56413569+cajdata@users.noreply.github.com" commit ...`.
 - **Units:** store SI and raw bytes; display imperial (°F, psi, mph, miles).
+- **Tests:** `.venv/Scripts/python -m pytest`. It fails below 100% branch coverage on `lasto.safety`, and it fails any test that sends the simulator forbidden traffic, even if the code under test caught the error. For many more property-test examples, run `HYPOTHESIS_PROFILE=thorough .venv/Scripts/python -m pytest tests/safety/test_properties.py --no-cov`.
+- **Dev environment:** until uv is installed, `.venv` holds the package plus the pinned dev group (`pip install -e . --group dev`).
