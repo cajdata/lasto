@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "lasto"
 dynamic = ["version"]
-description = "Passive, read-only CAN bus logger for Toyota and Lexus trucks."
+description = "A read-only data logger for a 2006 Lexus GX470."
 readme = "README.md"
 requires-python = ">=3.13"
 license = "GPL-3.0-or-later"
