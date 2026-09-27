@@ -1,6 +1,17 @@
 # lasto.dev website plan
 
-Status: **W0 approved 2026-09-27. W1 built 2026-09-27, waiting on approval.** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`. How to build and edit the site is in `site/README.md`; the going-live steps are in section 10.
+Status: **W0 and W1 approved 2026-09-27.** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`. How to build and edit the site is in `site/README.md`; the going-live steps are in section 10.
+
+## 0a. Decisions (W1, 2026-09-27)
+
+- **Domain and mail:** lasto.dev is verified on the GitHub account (the `_github-pages-challenge-cajdata` TXT record stays for good), and the SPF, DMARC, and null MX records are in place. Confirmed by lookup against 1.1.1.1.
+- **Question 13:** About says, in one plain line, that the code and docs are written with Claude Code, and that every change is reviewed by Chris and has to pass the test suite and the safety rules. Commits and PRs still carry no attribution.
+- **W2:** the chain diagram's pin labels (Fig. 2 on Home) get generated from `site/data/hardware.toml`, on the same principle as the service map.
+- **Going live:** Chris finishes the Phase 1 review in the main session and pushes `main`, then turns on Pages and sets the custom domain, then merges `website`. Before that merge, Phase 1 gets marked done and public in `site/data/roadmap.toml`.
+- **Working rules for the website track:**
+  - Every file change goes through the file editing tools, never shell heredocs.
+  - Multi-agent workflows stay small; ask Chris before launching more than about 10 agents in a stage.
+  - Large review fan-outs are for safety core work.
 
 ## 0. Decisions (W0, 2026-09-27)
 
@@ -11,7 +22,7 @@ Status: **W0 approved 2026-09-27. W1 built 2026-09-27, waiting on approval.** Th
 - **Analytics:** none. Search Console, Bing Webmaster Tools, and GitHub's traffic page are enough.
 - **DNS:** the wildcard `*.lasto.dev` record is deleted. W1's steps verify the domain on the GitHub account before the custom domain is set on the repo.
 - **Fonts:** confirm each license allows self-hosting and redistribution in a public repo, and commit the license files next to the fonts.
-- **Everything else in section 9:** the defaults stand. Question 13 (whether About says anything about how the copy was drafted) had no default and stays open, so About says nothing about it for now.
+- **Everything else in section 9:** the defaults stand. Question 13 (whether About says anything about how the copy was drafted) had no default; it was settled in W1 (section 0a).
 
 The short version of the original proposal:
 
