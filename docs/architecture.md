@@ -29,6 +29,17 @@ Status: **Phase 0 approved 2026-09-26.** Decisions are in §0 and override anyth
 - **Tooling:** uv (you install it), Python 3.13. Until uv is installed, development uses a plain `.venv` with the pinned dev group from `pyproject.toml`.
 - **Git:** commit locally; push after you approve each phase.
 
+**Phase 1 review (2026-09-27):**
+- **Fixed in their own safety core commits:** every refusal is audited where it's raised; passive capture re-reads listen-only continuously and never trusts a channel that changed under it.
+- **Interpretations confirmed:**
+  - flow control after a functional request goes to the responder's physical ID
+  - a late answer within 1 s is ignored, and logged
+  - identify counts as parked-only
+  - logging requests must always be in the profile
+  - flow control frames aren't rate limited
+  - NRC 0x78 extends the current wait
+- **Carried forward:** see §13.
+
 ## 1. Shape of the system
 
 ```
@@ -329,3 +340,19 @@ The STN transport in Phase 1 has **no path that puts anything on the vehicle bus
 | Hookup wire, and a multimeter to confirm ~60 Ω across pins 6-14 | wiring and a check | on hand |
 
 The bench tests are the only time either adapter transmits on purpose, and only on the bench bus. Frames to use and exact steps come with the test when you're ready.
+
+## 13. Carried into later phases
+
+| Phase | Item |
+|---|---|
+| 2 | **Save and report on a kill:** the kill switch already stops and logs; flushing capture storage and writing the report arrive with Phase 2 storage. |
+| 2 | **Audit log storage:** the durable audit log (SQLite, alongside the JSON Lines sink) is wired into real sessions. |
+| 2 | **Broadcast IDs:** the gate's set of IDs seen carrying broadcast traffic is produced from capture statistics. |
+| 2 | **Storage:** estimate per driving hour, then set the disk budget and retention. |
+| 2 | **Bench test:** you decide before the first live test (optional; parts list in §12). |
+| 2 | **"Controller activated" messages:** the first live passive test shows whether the driver sends them routinely. If it does, their re-check stays cheap; if they come with resets, the reopen path handles them. |
+| 3 | **Creader captures confirm:** 0x7E0 and any new request IDs, the padding byte, and the trimmed manufacturer service list. |
+| 3 | **MX+ checks:** stopping a monitor with a backspace, and silent monitoring on the real adapter. |
+| 4 | **BLOCKER before the first polled live test:** wire the Ctrl+Alt+K hotkey into polled sessions, and refuse to start polling if it can't be registered. Verify it on the truck laptop's real Windows. |
+| 7 | **K-line polling:** decide on 0x81 StartCommunication and running without 0x3E keep-alives. |
+| after approval | Switch to uv with a hashed lock file (all dependencies, including transitive ones, pinned). |
