@@ -1,6 +1,33 @@
 # lasto architecture
 
-Status: **Phase 0 proposal, awaiting approval.** Items marked *(open)* depend on answers to the Phase 0 questions. Facts about the truck are hypotheses from documentation research until a capture confirms them.
+Status: **Phase 0 approved 2026-09-26.** Decisions are in §0 and override anything below that says *(open)*. Facts about the truck are hypotheses from documentation research until a capture confirms them.
+
+## 0. Decisions (Phase 0, 2026-09-26)
+
+- **Machines:** Claude runs on the desktop, which never has the PCAN or MX+ attached. The truck laptop (i7-8550U with SSE4.2 and AVX2, 16 GB RAM, Windows 11 25H2) is the only machine that touches hardware. It has internet at home for setup and updates and runs offline in the truck.
+- **Hardware:**
+  - PCAN-USB IPEH-002022 (opto-decoupled, SJA1000 controller), with PCAN-Basic ≥ 4.7.0 and not 5.0.0 (version to be reported).
+  - A 3-way 16-pin splitter so the Creader, PCAN, and MX+ connect at once.
+  - No bench bus yet; parts list in §12.
+- **Phase order:**
+  - MX+ passive K-line monitoring moves into Phase 3, so KDSS, VSC, and suspension conversations can be mapped.
+  - K-line polling (StartCommunication 0x81, no 0x3E keep-alives) is decided in Phase 7.
+- **STN silent mode:** verified by the §3.7 checks (PP 21, `STCMM 0` → `OK` before every monitor start, fixed protocol, one-time bench test).
+- **ECU approval:** new request IDs and K-line addresses are approved only by a safety core code change in its own commit.
+- **Motion interlock probes:** polled mode only; passive mode never transmits, including for the interlock. Once broadcast speed is decoded and verified, it replaces polling.
+- **Kill switch:** 3 consecutive NRCs on one request, or 10 NRCs within 30 s. Hotkey Ctrl+Alt+K.
+- **Vehicle:**
+  - The speedometer is calibrated for stock 265/65R17 (not recalibrated). Current tires are 265/70R17, soon LT255/80R17.
+  - The axle ratio is stock 3.727. A regear to 4.56 or 4.88 happens only if the data shows the transmission hunting on grades.
+- **Alarms:**
+  - transmission 220 °F warning, 240 °F critical
+  - coolant 225/235 °F
+  - voltage below 12.5 V or above 15.0 V while running
+- **CLI:** `log` lists sessions and the audit log. `verify` confirms solver candidates into verified definitions.
+- **Sessions:** in armed mode, a passive session ends automatically after 60 s of bus silence following key-off, and a new passive session starts automatically when traffic resumes. A polled session is never started automatically.
+- **Data:** `%LOCALAPPDATA%\lasto`. The disk budget is set after the Phase 2 storage estimate.
+- **Tooling:** uv (you install it), Python 3.13. Until uv is installed, development uses a plain `.venv` with the pinned dev group from `pyproject.toml`.
+- **Git:** commit locally; push after you approve each phase.
 
 ## 1. Shape of the system
 
@@ -275,12 +302,25 @@ Offline install on the truck laptop:
 
 *(open)*
 
-## 11. Phase 1 scope (after approval)
+## 11. Phase 1 scope
 
 Safety core for both transports, `FakePcanDll`, `FakeStnPort`, the minimal vehicle model, the violation plugin, the hardware firewall, the structural tests, Hypothesis fuzzing, 100 % branch coverage, and a CLI skeleton with `--live` gating. No feature code.
 
+The STN transport in Phase 1 has **no path that puts anything on the vehicle bus**. It covers reset, identification, voltage reads, CAN silent monitoring, and K-line passive monitoring (needed in Phase 3). The only bus-facing use it would ever have is K-line polling, which needs the Phase 7 decision on 0x81 anyway. Until then every hex-only request line is denied, and the tests prove it.
+
 ## 12. Verification you run (never Claude)
 
-- **Bench test, PCAN listen-only (optional but recommended):** a lone transmitting node and the PCAN in passive mode on a terminated bench bus. The transmitter should see ACK errors and retransmit endlessly. This proves the no-ACK claim PEAK doesn't make in writing.
-- **Bench test, MX+ silent mode:** the same idea with the MX+ monitoring after `STCMM 0`.
+- **Bench test, PCAN listen-only:** the MX+ is the only transmitter and the PCAN listens in passive mode. With nothing to acknowledge its frames, the MX+ reports CAN errors (no ACK) and retransmits. If the PCAN were ACKing, the frames would go through cleanly. This proves the no-ACK behavior PEAK doesn't promise in writing.
+- **Bench test, MX+ silent mode:** reversed. PCAN-View (PEAK's free tool) on the PCAN is the only transmitter, and the MX+ monitors after `STCMM 0`. PCAN-View should show ACK errors and a rising error counter.
 - **At the truck:** the live commands each phase specifies.
+
+**Minimum bench parts** (the two adapters test each other, so no extra CAN device is needed):
+
+| Part | Purpose | Approx. cost |
+|---|---|---|
+| OBD-II (J1962) female socket with screw-terminal breakout | lets both adapters (or the 3-way splitter) plug in | $10-20 |
+| 2 × 120 Ω resistors (¼ W) | terminate CAN-H (pin 6) to CAN-L (pin 14) at both ends, 60 Ω total | <$1 |
+| 12 V DC supply, ≥ 1 A (a wall adapter or a small 12 V battery) with an inline 1-2 A fuse | powers the MX+ from pin 16 (+) and pins 4/5 (ground). The PCAN-USB is powered by USB | $10-15 |
+| Hookup wire, and a multimeter to confirm ~60 Ω across pins 6-14 | wiring and a check | on hand |
+
+The bench tests are the only time either adapter transmits on purpose, and only on the bench bus. Frames to use and exact steps come with the test when you're ready.
