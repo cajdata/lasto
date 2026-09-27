@@ -1,0 +1,163 @@
+"""Typed request builders: the only way the rest of lasto asks for data (rule 5).
+
+Builders take typed values (PID numbers, local IDs, an approved ECU entry),
+never raw bytes or CAN IDs. A Request can only be made here, and it re-checks
+its own service on creation. The gate re-checks the encoded bytes again
+before anything is transmitted.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from enum import Enum
+
+from lasto.safety import policy
+from lasto.safety.ecus import Ecu
+
+_BUILDER = object()
+
+MAX_PIDS_PER_REQUEST = 6
+MAX_DTC_INFORMATION_PARAMETERS = 5
+
+
+class Purpose(Enum):
+    LOGGING = "logging"
+    SNAPSHOT = "snapshot"
+    IDENTIFY = "identify"
+    DISCOVERY = "discovery"
+    INTERLOCK_PROBE = "interlock_probe"
+
+
+class DtcKind(Enum):
+    STORED = 0x03
+    PENDING = 0x07
+    PERMANENT = 0x0A
+
+
+@dataclass(frozen=True, slots=True)
+class Request:
+    """A read request for one ECU (target) or for every OBD ECU (target None, the functional ID)."""
+
+    target: Ecu | None
+    payload: bytes
+    purpose: Purpose
+    _token: object = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._token is not _BUILDER:
+            raise TypeError("build requests with the functions in lasto.safety.requests")
+        if not 1 <= len(self.payload) <= policy.MAX_REQUEST_PAYLOAD:
+            raise ValueError(f"a request payload is 1 to {policy.MAX_REQUEST_PAYLOAD} bytes")
+        policy.check_service(self.payload[0], functional=self.target is None)
+
+    @property
+    def service(self) -> int:
+        return self.payload[0]
+
+    @property
+    def key(self) -> tuple[str | None, bytes]:
+        return (None if self.target is None else self.target.name, self.payload)
+
+
+def _byte(name: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 0xFF:
+        raise ValueError(f"{name} must be an integer 0-255, got {value!r}")
+    return value
+
+
+def _word(name: str, value: object) -> list[int]:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 0xFFFF:
+        raise ValueError(f"{name} must be an integer 0-65535, got {value!r}")
+    return [value >> 8, value & 0xFF]
+
+
+def _ecu(ecu: object) -> Ecu:
+    if not isinstance(ecu, Ecu):
+        raise TypeError("pass an approved ECU entry from lasto.safety.ecus")
+    return ecu
+
+
+def _optional_ecu(ecu: object) -> Ecu | None:
+    return None if ecu is None else _ecu(ecu)
+
+
+def _build(target: Ecu | None, payload: list[int], purpose: object) -> Request:
+    if not isinstance(purpose, Purpose):
+        raise TypeError("purpose must be a Purpose")
+    return Request(target, bytes(payload), purpose, _BUILDER)
+
+
+def read_pid(pids: Iterable[int], *, purpose: Purpose, ecu: Ecu | None = None) -> Request:
+    """OBD Mode 01: current data, up to six PIDs in one request."""
+    pid_list = [_byte("pid", pid) for pid in pids]
+    if not 1 <= len(pid_list) <= MAX_PIDS_PER_REQUEST:
+        raise ValueError(f"ask for 1 to {MAX_PIDS_PER_REQUEST} PIDs per request")
+    return _build(_optional_ecu(ecu), [0x01, *pid_list], purpose)
+
+
+def read_freeze_frame(pid: int, *, purpose: Purpose, frame: int = 0, ecu: Ecu | None = None) -> Request:
+    """OBD Mode 02: freeze frame data."""
+    return _build(_optional_ecu(ecu), [0x02, _byte("pid", pid), _byte("frame", frame)], purpose)
+
+
+def read_dtcs(kind: DtcKind, *, purpose: Purpose, ecu: Ecu | None = None) -> Request:
+    """OBD Mode 03 (stored), 07 (pending), or 0A (permanent) DTCs."""
+    if not isinstance(kind, DtcKind):
+        raise TypeError("kind must be a DtcKind")
+    return _build(_optional_ecu(ecu), [kind.value], purpose)
+
+
+def read_mode06(test_id: int, *, purpose: Purpose, ecu: Ecu | None = None) -> Request:
+    """OBD Mode 06: on-board monitoring test results."""
+    return _build(_optional_ecu(ecu), [0x06, _byte("test_id", test_id)], purpose)
+
+
+def read_vehicle_info(info_type: int, *, purpose: Purpose, ecu: Ecu | None = None) -> Request:
+    """OBD Mode 09: vehicle information (VIN, calibration IDs, CVNs)."""
+    return _build(_optional_ecu(ecu), [0x09, _byte("info_type", info_type)], purpose)
+
+
+def read_local_id(ecu: Ecu, local_id: int, *, purpose: Purpose) -> Request:
+    """KWP2000 0x21: read data by local identifier."""
+    return _build(_ecu(ecu), [0x21, _byte("local_id", local_id)], purpose)
+
+
+def read_did(ecu: Ecu, did: int, *, purpose: Purpose) -> Request:
+    """0x22: read data by (common) identifier."""
+    return _build(_ecu(ecu), [0x22, *_word("did", did)], purpose)
+
+
+def read_ecu_id(ecu: Ecu, option: int, *, purpose: Purpose) -> Request:
+    """KWP2000 0x1A: read ECU identification."""
+    return _build(_ecu(ecu), [0x1A, _byte("option", option)], purpose)
+
+
+def read_dtcs_kwp(ecu: Ecu, *, purpose: Purpose, group: int = 0xFF00) -> Request:
+    """KWP2000 0x13: read diagnostic trouble codes."""
+    return _build(_ecu(ecu), [0x13, *_word("group", group)], purpose)
+
+
+def read_dtc_status(ecu: Ecu, dtc: int, *, purpose: Purpose) -> Request:
+    """KWP2000 0x17: read status of a DTC."""
+    return _build(_ecu(ecu), [0x17, *_word("dtc", dtc)], purpose)
+
+
+def read_dtcs_by_status(ecu: Ecu, *, purpose: Purpose, status: int = 0x00, group: int = 0xFF00) -> Request:
+    """KWP2000 0x18: read DTCs by status."""
+    return _build(_ecu(ecu), [0x18, _byte("status", status), *_word("group", group)], purpose)
+
+
+def read_dtc_information(ecu: Ecu, subfunction: int, *parameters: int, purpose: Purpose) -> Request:
+    """UDS 0x19: read DTC information."""
+    if len(parameters) > MAX_DTC_INFORMATION_PARAMETERS:
+        raise ValueError(f"at most {MAX_DTC_INFORMATION_PARAMETERS} parameter bytes")
+    values = [_byte("parameter", value) for value in parameters]
+    return _build(_ecu(ecu), [0x19, _byte("subfunction", subfunction), *values], purpose)
+
+
+def interlock_probe(pid: int, *, ecu: Ecu | None = None) -> Request:
+    """A Mode 01 read of speed, RPM, or module voltage for the motion interlock and battery guard."""
+    if pid not in policy.PROBE_PIDS:
+        raise ValueError("interlock probes read PID 0x0C, 0x0D, or 0x42")
+    return _build(_optional_ecu(ecu), [0x01, pid], Purpose.INTERLOCK_PROBE)
