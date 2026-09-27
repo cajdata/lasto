@@ -1,8 +1,19 @@
 # lasto.dev website plan
 
-Status: **W0 proposal, waiting on your approval.** Nothing here is site code yet. The brief is `lasto-website-prompt.md`.
+Status: **W0 approved 2026-09-27.** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`.
 
-The short version:
+## 0. Decisions (W0, 2026-09-27)
+
+- **Direction:** Datasheet. The service map (Fig. 1) is generated at build time from the safety core's allowlist and never hand-coded, so it can't drift from what the app actually sends.
+- **Security contact:** GitHub private vulnerability reporting, now enabled on cajdata/lasto.
+- **Deploy order:** Phase 1 gets reviewed, approved, and pushed before the site deploys.
+- **Trademarks:** Subaru is dropped from the non-affiliation note until Subaru support appears on the site.
+- **Analytics:** none. Search Console, Bing Webmaster Tools, and GitHub's traffic page are enough.
+- **DNS:** the wildcard `*.lasto.dev` record is deleted. W1's steps verify the domain on the GitHub account before the custom domain is set on the repo.
+- **Fonts:** confirm each license allows self-hosting and redistribution in a public repo, and commit the license files next to the fonts.
+- **Everything else in section 9:** the defaults stand. Question 13 (whether About says anything about how the copy was drafted) had no default and stays open, so About says nothing about it for now.
+
+The short version of the original proposal:
 
 - **Stack:** a small Python build (Jinja2 and markdown-it-py), about 900 lines, deployed to GitHub Pages by one Actions workflow. No Node in the repo.
 - **Navigation:** the wordmark (home), Safety, Docs, Roadmap, GitHub. Docs appears in W2.
