@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}
+<div class="title grid">
+<div class="c-main">
+{% if page.crumbs %}
+<nav class="crumbs" aria-label="Breadcrumb"><ol>{% for name, url in page.crumbs %}<li>{% if loop.last %}<span aria-current="page">{{ name }}</span>{% else %}<a href="{{ url }}">{{ name }}</a>{% endif %}</li>{% endfor %}</ol></nav>
+{% endif %}
+{% if page.stamp %}
+<p class="docid"><span class="stamp">{{ page.stamp }}</span><span class="vh">.</span> {{ page.stamp_gloss }} <span class="rev">Rev. {{ page.rev }}. Last updated <time datetime="{{ page.updated }}">{{ page.updated }}</time> by {{ site.author }}.</span></p>
+{% endif %}
+<h1>{{ page.h1 }}</h1>
+{% if page.lede %}
+<p class="lede">{{ page.meta.lede_html|safe }}</p>
+{% endif %}
+</div>
+{% if page.meta.get('toc') and page.headings %}
+<nav class="contents c-wide" aria-labelledby="toc-h">
+<p class="toc-h" id="toc-h">Contents</p>
+<ol>
+{% for h in page.headings if h.level == 2 %}
+<li><a href="#{{ h.id }}">{% if h.number %}<span class="n">{{ h.number }}</span> {% endif %}<span>{{ h.text }}</span></a></li>
+{% endfor %}
+</ol>
+</nav>
+{% endif %}
+</div>
+{% endblock %}

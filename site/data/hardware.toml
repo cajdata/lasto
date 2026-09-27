@@ -1,0 +1,86 @@
+# The planned hardware chain, from the truck's OBD-II port to the laptop.
+# One source for Fig. 2, its text list, and the quick reference table on the home page.
+# None of it has run at the truck yet.
+
+planned_note = "The planned setup. None of it has run at the truck yet."
+
+[vehicle]
+name = "2006 Lexus GX470"
+engine = "2UZ-FE V8"
+transmission = "A750F five-speed automatic"
+features = "KDSS"
+can_bus = "High-speed CAN, 500 kbps"
+
+[port]
+name = "DLC3"
+connector = "D3"
+description = "The truck's OBD-II port, which Toyota calls DLC3 (connector D3 in the wiring diagrams)"
+
+# Pins Lasto cares about. Wire colors only where the factory wiring diagram shows them.
+[[port.pins]]
+pin = 6
+signal = "CANH"
+use = "High-speed CAN, high side"
+wire = "P"
+wire_name = "pink"
+
+[[port.pins]]
+pin = 14
+signal = "CANL"
+use = "High-speed CAN, low side"
+wire = "V"
+wire_name = "violet"
+
+[[port.pins]]
+pin = 7
+signal = "SIL"
+use = "K-line. KDSS talks here, per the factory diagram"
+
+[[port.pins]]
+pin = 16
+signal = "BAT"
+use = "Battery power, live with the key off"
+
+[[port.pins]]
+pin = 4
+signal = "CG"
+use = "Chassis ground"
+
+[[port.pins]]
+pin = 5
+signal = "SG"
+use = "Signal ground"
+
+[splitter]
+name = "3-way splitter"
+description = "A 3-way splitter that passes all 16 pins"
+
+[[legs]]
+leg = 1
+short = "PCAN-USB"
+full = "PEAK PCAN-USB interface"
+model = "IPEH-002022"
+variant = "opto-decoupled"
+link = "USB"
+role = "Listens to high-speed CAN at 500 kbps on pins 6 and 14. In passive mode its CAN controller runs in listen-only mode."
+phase = 2
+
+[[legs]]
+leg = 2
+short = "OBDLink MX+"
+full = "OBDLink MX+ adapter"
+link = "Bluetooth"
+role = "For K-line modules. KDSS talks on pin 7, per the factory diagram. It joins in Phase 3, in silent mode."
+phase = 3
+
+[[legs]]
+leg = 3
+short = "Creader"
+full = "Launch Creader Elite V3.0 T scan tool"
+link = ""
+role = "Keeps doing scan-tool work, including anything that writes."
+phase = 3
+
+[laptop]
+name = "Windows laptop"
+runs = "Lasto"

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}
+<div class="title grid">
+<div class="c-main">
+<p class="docid"><span class="stamp">{{ page.stamp }}</span><span class="vh">.</span> {{ page.stamp_gloss }} <span class="rev">Rev. {{ page.rev }}. Last updated <time datetime="{{ page.updated }}">{{ page.updated }}</time>.</span></p>
+<p class="partno" aria-hidden="true">lasto</p>
+<h1>{{ page.h1 }}</h1>
+<p class="lede">{{ page.meta.lede_html|safe }}</p>
+</div>
+<dl class="info c-side">
+<div class="st"><dt>Status</dt><dd>{% set head, _, rest = status_sentence.partition(': ') %}<b>{{ head }}:</b> {{ rest }}</dd></div>
+<div class="next"><dt>Next</dt><dd><a class="go" href="/safety/">Read what it will never send to the truck<svg class="arr" viewBox="0 0 16 10" width="16" height="10" aria-hidden="true" focusable="false"><path d="M1 5h13M10 1.5l4 3.5-4 3.5"/></svg></a></dd></div>
+<div><dt>Also</dt><dd>The <a href="/roadmap/">roadmap</a> and the <span class="nw"><a href="{{ site.repo }}">source on GitHub{% include "partials/ext.html" %}</a>.</span></dd></div>
+<div class="nm"><dt>Name</dt><dd>{{ site.name_note }}</dd></div>
+</dl>
+</div>
+{% endblock %}

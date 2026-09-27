@@ -164,9 +164,6 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
-
 # mypy
 .mypy_cache/
 .dmypy.json
@@ -219,3 +216,4 @@ __marimo__/
 
 # Local prompt notes
 PROMPT.md
+lasto-website-prompt.md
