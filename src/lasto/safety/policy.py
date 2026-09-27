@@ -7,6 +7,7 @@ ECU, never to the functional ID, so a single request can't reach every ECU.
 
 from __future__ import annotations
 
+from lasto.safety.audit import refuse
 from lasto.safety.errors import SafetyViolation
 
 FUNCTIONAL_REQUEST_ID = 0x7DF
@@ -56,15 +57,21 @@ NEVER_SERVICES = frozenset(
 PROBE_PIDS = frozenset({0x0C, 0x0D, 0x42})
 
 
-def check_service(service: int, *, functional: bool) -> None:
+def check_service(service: int, *, functional: bool, request: str = "") -> None:
+    """Refuse (audited) any service that isn't allowed, and manufacturer services on the functional ID."""
     if service in NEVER_SERVICES:
-        raise SafetyViolation("service_never_allowed", f"0x{service:02X}")
+        refuse(SafetyViolation("service_never_allowed", f"0x{service:02X}"), transport="pcan", request=request)
     if service not in ALLOWED_SERVICES:
-        raise SafetyViolation("service_not_allowlisted", f"0x{service:02X}")
+        refuse(SafetyViolation("service_not_allowlisted", f"0x{service:02X}"), transport="pcan", request=request)
     if functional and service not in OBD_SERVICES:
-        raise SafetyViolation("manufacturer_service_on_functional_id", f"0x{service:02X}")
+        refuse(
+            SafetyViolation("manufacturer_service_on_functional_id", f"0x{service:02X}"),
+            transport="pcan",
+            request=request,
+        )
 
 
-def check_sensitive(service: int, *, sensitive: bool) -> None:
+def check_sensitive(service: int, *, sensitive: bool, request: str = "") -> None:
+    """Refuse (audited) anything but a DTC read for an SRS or immobilizer ECU."""
     if sensitive and service not in DTC_READ_SERVICES:
-        raise SafetyViolation("sensitive_ecu_dtc_reads_only", f"0x{service:02X}")
+        refuse(SafetyViolation("sensitive_ecu_dtc_reads_only", f"0x{service:02X}"), transport="pcan", request=request)

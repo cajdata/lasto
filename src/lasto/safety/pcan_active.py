@@ -9,6 +9,7 @@ from __future__ import annotations
 import ctypes
 
 from lasto.safety import pcan_constants as pc
+from lasto.safety.audit import refuse
 from lasto.safety.errors import InterfaceError, SafetyViolation
 from lasto.safety.pcan_dll import (
     READONLY_FUNCTIONS,
@@ -53,7 +54,11 @@ class ActiveChannel(PcanChannel):
 
     def write(self, can_id: int, data: bytes) -> None:
         if not 0 <= can_id <= 0x7FF or len(data) != 8:
-            raise SafetyViolation("frame_shape", "lasto only sends 8-byte frames with 11-bit IDs")
+            refuse(
+                SafetyViolation("frame_shape", "lasto only sends 8-byte frames with 11-bit IDs"),
+                transport="pcan",
+                request=f"0x{can_id:X} {bytes(data).hex(' ').upper()}",
+            )
         status = self._transmit.write_standard(self._handle, can_id, data)
         if status != pc.PCAN_ERROR_OK:
             raise InterfaceError(f"CAN_Write failed on {self.name}: {self._transmit.error_text(status)}")

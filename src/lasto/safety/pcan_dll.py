@@ -15,6 +15,7 @@ import os
 from collections.abc import Callable, Iterable, Mapping
 
 from lasto.safety import pcan_constants as pc
+from lasto.safety.audit import refuse
 from lasto.safety.errors import InterfaceError, SafetyViolation
 from lasto.safety.frames import CanFrame, ErrorFrame, ReadError, Received, StatusMessage
 
@@ -116,7 +117,11 @@ class ReadOnlyPcan:
 
     def set_value(self, handle: int, parameter: int, value: int) -> int:
         if (parameter, value) not in self.SETVALUE_ALLOWED:
-            raise SafetyViolation("pcan_setting_not_allowed", f"parameter 0x{parameter:02X} = {value}")
+            refuse(
+                SafetyViolation("pcan_setting_not_allowed", f"parameter 0x{parameter:02X} = {value}"),
+                transport="pcan",
+                request=f"CAN_SetValue 0x{parameter:02X}={value}",
+            )
         buffer = ctypes.c_uint32(value)
         return self._call(
             "CAN_SetValue",

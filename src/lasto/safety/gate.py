@@ -4,12 +4,14 @@ Every frame lasto sends in polled mode goes through Gate._transmit. It
 re-checks the exact bytes against the policy immediately before writing,
 records them in the audit log first, and then calls the channel's write.
 Requests arrive as typed Request objects from lasto.safety.requests; nothing
-here accepts raw bytes or CAN IDs from callers.
+here accepts raw bytes or CAN IDs from callers. Every refusal is audited
+where it is raised (rule 11).
 
 The gate also watches every received frame. A frame on a request ID that
 lasto didn't send (another tester, or broadcast traffic), a diagnostic
 response nobody asked for, a malformed response, or a flow control frame
-from an ECU all trip the kill switch.
+from an ECU all trip the kill switch. A late answer to the previous request
+is ignored and logged.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from enum import Enum
 from typing import Protocol
 
 from lasto.safety import ecus, isotp, policy
-from lasto.safety.audit import Auditor
+from lasto.safety.audit import Auditor, refuse
 from lasto.safety.clock import Clock
 from lasto.safety.errors import InterfaceError, SafetyError, SafetyViolation
 from lasto.safety.frames import CanFrame, Received
@@ -83,18 +85,23 @@ class Exchange:
 
 
 def _describe(request: object) -> str:
-    if isinstance(request, Request):
-        target = "functional" if request.target is None else request.target.name
-        return f"{target} {request.payload.hex(' ').upper()} ({request.purpose.value})"
-    return type(request).__name__
+    return request.describe() if isinstance(request, Request) else type(request).__name__
 
 
 def _hex_id(can_id: object) -> str:
     return f"0x{can_id:03X}" if isinstance(can_id, int) else repr(can_id)
 
 
+def _frame_text(can_id: object, data: bytes) -> str:
+    return f"{_hex_id(can_id)} {bytes(data).hex(' ').upper()}"
+
+
 def _target_key(request: Request) -> str:
     return "functional" if request.target is None else request.target.name
+
+
+def _deny(reason: str, detail: str, request: str) -> None:
+    refuse(SafetyViolation(reason, detail), transport="pcan", request=request)
 
 
 class Gate:
@@ -114,7 +121,12 @@ class Gate:
         keys = set()
         for request in profile:
             if not isinstance(request, Request) or request.purpose is not Purpose.LOGGING:
-                raise ValueError("a logging profile holds logging requests made with lasto.safety.requests")
+                refuse(
+                    ValueError("a logging profile holds logging requests made with lasto.safety.requests"),
+                    transport="pcan",
+                    request=_describe(request),
+                    reason="bad_logging_profile",
+                )
             keys.add(request.key)
         self._profile = frozenset(keys)
         self._link = link
@@ -155,25 +167,20 @@ class Gate:
 
     def submit(self, request: Request) -> Exchange:
         with self._lock:
-            try:
-                return self._submit(request)
-            except SafetyError as exc:
-                self._auditor.rejected(
-                    transport="pcan", reason=getattr(exc, "reason", "refused"), detail=str(exc), request=_describe(request)
-                )
-                raise
+            return self._submit(request)
 
     def _submit(self, request: Request) -> Exchange:
-        self._killswitch.check()
+        text = _describe(request)
+        self._killswitch.check(request=text)
         if not self._armed:
-            raise SafetyViolation("gate_not_armed", "the polled session hasn't finished its listen window")
+            _deny("gate_not_armed", "the polled session hasn't finished its listen window", text)
         if not isinstance(request, Request):
-            raise SafetyViolation("not_a_typed_request", type(request).__name__)
+            _deny("not_a_typed_request", type(request).__name__, text)
         if self._pending is not None:
-            raise SafetyViolation("request_outstanding", "wait for the previous request to finish")
+            _deny("request_outstanding", "wait for the previous request to finish", text)
         target = request.target
         if target is not None and not ecus.is_approved(target):
-            raise SafetyViolation("ecu_not_approved", target.name)
+            _deny("ecu_not_approved", target.name, text)
         now = self._clock.monotonic()
         self._interlocks.check(request, now, self._profile)
         can_id = policy.FUNCTIONAL_REQUEST_ID if target is None else target.request_id
@@ -183,7 +190,7 @@ class Gate:
         self._check_request_frame(can_id, data)
         wait = self._limiter.delay(request.purpose, now)
         if wait > MAX_RATE_WAIT:
-            raise SafetyViolation("rate_limited", f"next slot in {wait:.3f} s")
+            _deny("rate_limited", f"next slot in {wait:.3f} s", text)
         if wait > 0:
             self._clock.sleep(wait)
             now = self._clock.monotonic()
@@ -194,31 +201,36 @@ class Gate:
         return exchange
 
     def _check_request_frame(self, can_id: int, data: bytes) -> None:
+        text = _frame_text(can_id, data)
         if len(data) != isotp.FRAME_BYTES:
-            raise SafetyViolation("frame_length", f"{len(data)} bytes")
+            _deny("frame_length", f"{len(data)} bytes", text)
         if can_id not in self._request_ids:
-            raise SafetyViolation("can_id_not_allowlisted", _hex_id(can_id))
+            _deny("can_id_not_allowlisted", _hex_id(can_id), text)
         if can_id in self._broadcast_ids:
-            raise SafetyViolation("can_id_carries_broadcast", _hex_id(can_id))
+            _deny("can_id_carries_broadcast", _hex_id(can_id), text)
         ecu = ecus.by_request_id(can_id)
-        frame = isotp.parse(data, ext_address=None if ecu is None else ecu.ext_address)
+        try:
+            frame = isotp.parse(data, ext_address=None if ecu is None else ecu.ext_address)
+        except isotp.IsoTpError as exc:
+            _deny(exc.reason, exc.detail, text)
         if frame.kind is not isotp.FrameKind.SINGLE:
-            raise SafetyViolation("not_single_frame", frame.kind.value)
+            _deny("not_single_frame", frame.kind.value, text)
         service = frame.payload[0]
-        policy.check_service(service, functional=ecu is None)
-        policy.check_sensitive(service, sensitive=ecu is not None and ecu.kind in ecus.SENSITIVE_KINDS)
+        policy.check_service(service, functional=ecu is None, request=text)
+        policy.check_sensitive(service, sensitive=ecu is not None and ecu.kind in ecus.SENSITIVE_KINDS, request=text)
 
     def _check_flow_control_frame(self, can_id: int, data: bytes) -> None:
+        text = _frame_text(can_id, data)
         pending = self._pending
         if pending is None or pending.rx_id is None or pending.flow_control_sent:
-            raise SafetyViolation("flow_control_unsolicited", "no first frame is waiting for flow control")
-        ecu = ecus.by_response_id(pending.rx_id)
+            _deny("flow_control_unsolicited", "no first frame is waiting for flow control", text)
+        ecu = ecus.by_response_id(pending.rx_id)  # type: ignore[union-attr,arg-type]
         if ecu is None or can_id != ecu.request_id:
-            raise SafetyViolation("flow_control_wrong_id", _hex_id(can_id))
+            _deny("flow_control_wrong_id", _hex_id(can_id), text)
         if can_id in self._broadcast_ids:
-            raise SafetyViolation("can_id_carries_broadcast", _hex_id(can_id))
-        if data != isotp.encode_flow_control(ext_address=ecu.ext_address, padding=policy.PADDING_BYTE):
-            raise SafetyViolation("flow_control_malformed", bytes(data).hex(" "))
+            _deny("can_id_carries_broadcast", _hex_id(can_id), text)
+        if data != isotp.encode_flow_control(ext_address=ecu.ext_address, padding=policy.PADDING_BYTE):  # type: ignore[union-attr]
+            _deny("flow_control_malformed", bytes(data).hex(" "), text)
 
     def _transmit(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
         """The last check before the wire, on the exact bytes. Every frame lasto sends passes here."""
@@ -227,8 +239,8 @@ class Gate:
         elif kind == "flow_control":
             self._check_flow_control_frame(can_id, data)
         else:
-            raise SafetyViolation("unknown_frame_kind", repr(kind))
-        self._killswitch.check()
+            _deny("unknown_frame_kind", repr(kind), _frame_text(can_id, data))
+        self._killswitch.check(request=_frame_text(can_id, data))
         self._auditor.transmit(transport="pcan", can_id=can_id, data=data, purpose=purpose, kind=kind)
         try:
             self._link.write(can_id, data)
@@ -253,7 +265,14 @@ class Gate:
             pending = self._pending
             if pending is not None and self._responder_matches(pending, can_id):
                 self._handle_response(pending, item, now)
-            elif not self._is_late(can_id, now):
+            elif self._is_late(can_id, now):
+                self._auditor.event(
+                    "late_response_ignored",
+                    can_id=_hex_id(can_id),
+                    data=item.data.hex(" ").upper(),
+                    seconds_after_last_request_ended=round(now - self._last_finished, 3),
+                )
+            else:
                 self._trip("unexpected_response", f"diagnostic response on {_hex_id(can_id)} with no matching request")
 
     def poll(self) -> None:
@@ -281,7 +300,7 @@ class Gate:
         ecu = ecus.by_response_id(frame.can_id)
         try:
             parsed = isotp.parse(frame.data, ext_address=None if ecu is None else ecu.ext_address)
-        except SafetyViolation as exc:
+        except isotp.IsoTpError as exc:
             self._trip("malformed_response", str(exc))
             return
         if parsed.kind is isotp.FrameKind.SINGLE:
@@ -310,10 +329,7 @@ class Gate:
         flow_control = isotp.encode_flow_control(ext_address=ecu.ext_address, padding=policy.PADDING_BYTE)
         try:
             self._transmit(ecu.request_id, flow_control, purpose=pending.request.purpose.value, kind="flow_control")
-        except SafetyError as exc:
-            self._auditor.rejected(
-                transport="pcan", reason=getattr(exc, "reason", "refused"), detail=str(exc), request="flow control"
-            )
+        except SafetyError as exc:  # already audited where it was refused
             self._trip("flow_control_refused", str(exc))
             return
         pending.flow_control_sent = True
@@ -350,7 +366,9 @@ class Gate:
                 return
             if nrc == NRC_BUSY_REPEAT_REQUEST:
                 self._limiter.backoff(now)
-            self._auditor.event("negative_response", can_id=_hex_id(can_id), service=f"0x{request.service:02X}", nrc=f"0x{nrc:02X}")
+            self._auditor.event(
+                "negative_response", can_id=_hex_id(can_id), service=f"0x{request.service:02X}", nrc=f"0x{nrc:02X}"
+            )
             self._finish(pending, ExchangeState.NEGATIVE, now, nrc=nrc)
             self._nrc_monitor.record_negative(request.key, nrc, request.purpose, now)
             return

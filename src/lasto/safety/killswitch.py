@@ -10,7 +10,7 @@ import threading
 from collections import deque
 from collections.abc import Callable, Hashable
 
-from lasto.safety.audit import Auditor
+from lasto.safety.audit import Auditor, refuse
 from lasto.safety.errors import KillSwitchTripped
 from lasto.safety.requests import Purpose
 
@@ -61,10 +61,11 @@ class KillSwitch:
                 self._auditor.event("kill_switch", cause=cause)
         return True
 
-    def check(self) -> None:
+    def check(self, request: str = "") -> None:
+        """Refuse (audited) if tripped."""
         cause = self._cause
         if cause is not None:
-            raise KillSwitchTripped(cause)
+            refuse(KillSwitchTripped(cause), transport="pcan", request=request)
 
 
 def _trim(window: deque[float], now: float, span: float) -> None:

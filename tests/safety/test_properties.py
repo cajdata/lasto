@@ -11,7 +11,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from lasto.safety import requests as rq
-from lasto.safety.audit import Auditor, MemoryAuditSink
+from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
 from lasto.safety.ecus import ENGINE, Ecu, EcuKind
 from lasto.safety.errors import AdapterError, KillSwitchTripped, SafetyViolation
 from lasto.safety.pcan_dll import load_readonly
@@ -54,8 +54,17 @@ def assert_allowed(can_id, data):
 
 
 def fresh_harness(**options):
+    """A gate with its own audit sink attached to the refusal log (and nothing else attached)."""
+    REFUSALS.reset()
     clock = FakeClock()
-    return GateHarness(clock, Auditor(MemoryAuditSink(), clock), **options)
+    sink = MemoryAuditSink()
+    harness = GateHarness(clock, Auditor(sink, clock), **options)
+    harness.sink = sink
+    return harness
+
+
+def refusals(sink):
+    return [record for record in sink.records if record["event"] == "rejected"]
 
 
 can_ids = st.one_of(st.integers(0, 0x1FFFFFFF), st.sampled_from([0x7DF, 0x7E0, 0x7E1, 0x7E8, 0x025, 0x700]))
@@ -73,12 +82,16 @@ def test_fuzzed_frames_at_the_last_check_before_the_wire(can_id, data, kind, wai
         h.gate.submit(LOGGING_RPM_SPEED)
         h.gate.on_frame(frame(0x7E8, 0x10, 0x0E, 0x41, 0x0C, 0x0B, 0xB8, 0x0D, 0x00))
     before = list(h.link.frames)
+    audited_before = len(refusals(h.sink))
+    refused = False
     try:
         h.gate._transmit(can_id, data, purpose="fuzz", kind=kind)
     except SafetyViolation:
+        refused = True
         assert h.link.frames == before
     for sent in h.link.frames:
         assert_allowed(*sent)
+    assert len(refusals(h.sink)) - audited_before == (1 if refused else 0)  # every refusal audited, once
 
 
 BUILDERS = [
@@ -114,11 +127,15 @@ def test_fuzzed_typed_requests(index, args, purpose, ecu, moving, volts):
     try:
         request = BUILDERS[index](args, purpose, ecu)
     except (ValueError, TypeError, SafetyViolation):
+        assert len(refusals(h.sink)) == 1  # the builder's refusal, audited once
         return
+    refused = False
     try:
         h.gate.submit(request)
     except SafetyViolation:
+        refused = True
         assert h.link.frames == []
+    assert len(refusals(h.sink)) == (1 if refused else 0)
     for sent in h.link.frames:
         assert_allowed(*sent)
     if h.link.frames:
@@ -174,23 +191,30 @@ ADAPTER_WORDS = ["STCMM 1", "ATSP0", "STPX", "ATPP 21 SV 00", "STI", "STVR", "AT
     )
 )
 def test_fuzzed_adapter_commands_never_reach_the_adapter_unless_allowed(command):
+    REFUSALS.reset()
     port = FakeStnPort()
-    stn = StnAdapter(port, Auditor(MemoryAuditSink(), FakeClock()))
+    sink = MemoryAuditSink()
+    stn = StnAdapter(port, Auditor(sink, FakeClock()))
     stn.reset()
     before = len(port.commands)
+    refused = False
     try:
         stn._command(command)
-    except (SafetyViolation, AdapterError):
+    except SafetyViolation:
+        refused = True
+    except AdapterError:
         pass
     for sent in port.commands[before:]:
         assert sent.startswith(("AT", "ST"))
         assert sent not in {"ATZ", "ATWS", "STMA", "STM"}
+    assert len(refusals(sink)) == (1 if refused else 0)
     # The autouse fixture fails the test if the simulated adapter saw anything dangerous.
 
 
 @settings(max_examples=scaled(60))
 @given(steps=st.lists(st.sampled_from(["reset", "identify", "voltage", "pps", "can", "can33", "kline", "read", "stop"]), max_size=12))
 def test_any_sequence_of_adapter_operations_stays_silent(steps):
+    REFUSALS.reset()
     port = FakeStnPort(monitor_lines=["7E8 03 41 0D 00"] * 3, monitor_ends=True)
     stn = StnAdapter(port, Auditor(MemoryAuditSink(), FakeClock()))
     operations = {
@@ -225,6 +249,7 @@ def test_any_sequence_of_adapter_operations_stays_silent(steps):
     run_for=st.floats(0, 0.3),
 )
 def test_passive_sessions_never_transmit(injections, run_for):
+    REFUSALS.reset()
     sim = build_sim()
     session = open_passive_session(CHANNEL, auditor=Auditor(MemoryAuditSink(), sim.clock), clock=sim.clock, pcan=load_readonly(sim.dll))
     for kind, value, data in injections:
@@ -255,6 +280,7 @@ def test_passive_sessions_never_transmit(injections, run_for):
     )
 )
 def test_polled_sessions_only_send_allowed_frames(plan):
+    REFUSALS.reset()
     sim = build_sim()
     functional = rq.read_pid([0x0D], purpose=Purpose.LOGGING)
     session = open_polled(sim, Auditor(MemoryAuditSink(), sim.clock), profile=[LOGGING_RPM_SPEED, functional])

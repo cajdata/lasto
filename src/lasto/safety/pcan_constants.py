@@ -9,6 +9,8 @@ from __future__ import annotations
 import ctypes
 import re
 
+from lasto.safety.audit import refuse
+
 # Channel handles. Only PCAN-USB, the hardware this project uses.
 PCAN_NONEBUS = 0x00
 USB_CHANNELS = {n: (0x50 + n if n <= 8 else 0x500 + n) for n in range(1, 17)}
@@ -108,7 +110,7 @@ def channel_handle(name: str) -> int:
     """Handle for a channel name like PCAN_USBBUS1. Only PCAN-USB channels are accepted."""
     match = _CHANNEL_NAME.fullmatch(name) if isinstance(name, str) else None
     if match is None:
-        raise ValueError(f"not a PCAN-USB channel name: {name!r}")
+        refuse(ValueError(f"not a PCAN-USB channel name: {name!r}"), transport="pcan", reason="bad_channel_name")
     return USB_CHANNELS[int(match.group(1))]
 
 

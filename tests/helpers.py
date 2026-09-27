@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from lasto.safety import ecus
-from lasto.safety.audit import Auditor, MemoryAuditSink
+from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
 from lasto.safety.clock import Clock
 from lasto.safety.errors import InterfaceError
 from lasto.safety.frames import CanFrame
@@ -73,6 +73,7 @@ class GateHarness:
         )
         if armed:
             self.gate.arm()
+        REFUSALS.attach(auditor)
 
     def park(self, *, volts: float = 12.6, rpm: float = 0.0) -> None:
         now = self.clock.monotonic()

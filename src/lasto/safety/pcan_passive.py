@@ -10,6 +10,7 @@ call; tests/safety/test_structure.py enforces that.
 from __future__ import annotations
 
 from lasto.safety import pcan_constants as pc
+from lasto.safety.audit import refuse
 from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed
 from lasto.safety.pcan_dll import PcanChannel, ReadOnlyPcan, check_available, check_driver, load_readonly
 
@@ -25,8 +26,13 @@ def open_passive(channel_name: str, *, pcan: ReadOnlyPcan | None = None) -> Pass
     check_available(pcan, handle, channel_name)
     status = pcan.set_value(handle, pc.PCAN_LISTEN_ONLY, pc.PCAN_PARAMETER_ON)
     if status != pc.PCAN_ERROR_OK:
-        raise PassiveModeUnconfirmed(
-            f"could not set listen-only on {channel_name} before initializing it: {pcan.error_text(status)}"
+        refuse(
+            PassiveModeUnconfirmed(
+                f"could not set listen-only on {channel_name} before initializing it: {pcan.error_text(status)}"
+            ),
+            transport="pcan",
+            request=f"open {channel_name} listen-only",
+            reason="listen_only_not_set",
         )
     status = pcan.initialize(handle, pc.PCAN_BAUD_500K)
     if status != pc.PCAN_ERROR_OK:
@@ -34,8 +40,13 @@ def open_passive(channel_name: str, *, pcan: ReadOnlyPcan | None = None) -> Pass
     channel = PassiveChannel(pcan, handle, channel_name, api_version)
     try:
         if not channel.listen_only():
-            raise PassiveModeUnconfirmed(
-                f"{channel_name} did not read back as listen-only after initializing; refusing to capture"
+            refuse(
+                PassiveModeUnconfirmed(
+                    f"{channel_name} did not read back as listen-only after initializing; refusing to capture"
+                ),
+                transport="pcan",
+                request=f"open {channel_name} listen-only",
+                reason="listen_only_not_confirmed",
             )
         channel.enable_reporting()
     except BaseException:

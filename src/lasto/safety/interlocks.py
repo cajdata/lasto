@@ -2,6 +2,7 @@
 
 Unknown or stale readings count against the request: unknown speed means
 moving, and unknown voltage with the engine off means the battery is low.
+Every refusal is audited (rule 11).
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from lasto.safety import policy
+from lasto.safety.audit import refuse
 from lasto.safety.ecus import SENSITIVE_KINDS, EcuKind
 from lasto.safety.errors import SafetyViolation
 from lasto.safety.requests import Purpose, Request
@@ -48,7 +50,7 @@ class Interlocks:
 
     def update_speed(self, kph: float, now: float, *, source: str) -> None:
         if source not in SPEED_MAX_AGE:
-            raise ValueError(f"unknown speed source {source!r}")
+            refuse(ValueError(f"unknown speed source {source!r}"), transport="interlock", reason="unknown_speed_source")
         self._speed = Sample(float(kph), now, source)
 
     def update_rpm(self, rpm: float, now: float) -> None:
@@ -72,18 +74,23 @@ class Interlocks:
     def check(self, request: Request, now: float, profile: frozenset[tuple[str | None, bytes]]) -> None:
         purpose = request.purpose
         target = request.target
+        text = request.describe()
+
+        def deny(reason: str, detail: str) -> None:
+            refuse(SafetyViolation(reason, detail), transport="pcan", request=text)
+
         if target is not None and target.kind in SENSITIVE_KINDS:
             if purpose is Purpose.DISCOVERY:
-                raise SafetyViolation("sensitive_ecu_excluded_from_discovery", target.name)
-            policy.check_sensitive(request.service, sensitive=True)
+                deny("sensitive_ecu_excluded_from_discovery", target.name)
+            policy.check_sensitive(request.service, sensitive=True, request=text)
         if purpose is Purpose.LOGGING:
             if request.key not in profile:
-                raise SafetyViolation("not_in_logging_profile", request.payload.hex(" "))
+                deny("not_in_logging_profile", request.payload.hex(" "))
         elif purpose is Purpose.INTERLOCK_PROBE:
             if not is_probe(request):
-                raise SafetyViolation("not_an_interlock_probe", request.payload.hex(" "))
+                deny("not_an_interlock_probe", request.payload.hex(" "))
         else:
             if not self.stationary(now):
-                raise SafetyViolation("vehicle_not_confirmed_stationary", purpose.value)
+                deny("vehicle_not_confirmed_stationary", purpose.value)
             if self.engine_off(now) and not self.battery_ok(now):
-                raise SafetyViolation("battery_low_or_unknown", purpose.value)
+                deny("battery_low_or_unknown", purpose.value)

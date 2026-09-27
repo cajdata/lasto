@@ -271,7 +271,8 @@ def test_flow_control_is_refused_on_a_broadcast_id(clock, auditor, sink):
     h.gate.submit(rq.read_pid([0x0D], purpose=Purpose.LOGGING))
     h.gate.on_frame(frame(0x7E8, 0x10, 0x14, 0x49, 0x02, 0x01, 0x41, 0x42, 0x43))
     assert h.killswitch.cause == "flow_control_refused"
-    assert events(sink, "rejected")[0]["request"] == "flow control"
+    [refusal] = events(sink, "rejected")
+    assert (refusal["reason"], refusal["request"]) == ("can_id_carries_broadcast", "0x7E0 30 00 00 00 00 00 00 00")
     assert len(h.link.frames) == 1  # only the request
 
 
@@ -293,12 +294,16 @@ def test_answers_nobody_asked_for_trip_the_kill_switch(h):
     assert h.killswitch.cause == "unexpected_response"
 
 
-def test_a_late_answer_to_the_last_request_is_tolerated(h, clock):
+def test_a_late_answer_to_the_last_request_is_tolerated_and_logged(h, clock, sink):
     h.gate.submit(LOGGING_RPM_SPEED)
     clock.advance(P2_TIMEOUT)
     h.gate.poll()
+    clock.advance(0.2)
     h.gate.on_frame(frame(0x7E8, 0x03, 0x41, 0x0D, 0x00))
     assert not h.killswitch.tripped
+    [late] = events(sink, "late_response_ignored")
+    assert (late["can_id"], late["data"]) == ("0x7E8", "03 41 0D 00 00 00 00 00")
+    assert late["seconds_after_last_request_ended"] == pytest.approx(0.2)
     h.gate.on_frame(frame(0x7E9, 0x03, 0x41, 0x0D, 0x00))  # a different ECU is not "late"
     assert h.killswitch.cause == "unexpected_response"
 

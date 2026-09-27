@@ -7,6 +7,7 @@ response (NRC 0x21) adds an exponential back-off.
 
 from __future__ import annotations
 
+from lasto.safety.audit import refuse
 from lasto.safety.requests import Purpose
 
 HARD_CEILING_PER_SECOND = 20.0
@@ -30,7 +31,11 @@ class RateLimiter:
         for purpose in Purpose:
             rate = rates[purpose]
             if not 0 < rate <= HARD_CEILING_PER_SECOND:
-                raise ValueError(f"{purpose.value} rate {rate}/s must be above 0 and at most {HARD_CEILING_PER_SECOND}/s")
+                refuse(
+                    ValueError(f"{purpose.value} rate {rate}/s must be above 0 and at most {HARD_CEILING_PER_SECOND}/s"),
+                    transport="pcan",
+                    reason="rate_above_ceiling",
+                )
             self._interval[purpose] = 1.0 / rate
         self._next_any = float("-inf")
         self._next = dict.fromkeys(Purpose, float("-inf"))

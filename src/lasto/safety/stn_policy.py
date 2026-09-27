@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import re
 import string
+from typing import NoReturn
 
+from lasto.safety.audit import refuse
 from lasto.safety.errors import SafetyViolation
 
 ALLOWED_INPUT = frozenset(string.ascii_letters + string.digits + " ,")
@@ -96,22 +98,26 @@ _PP_ENTRY = re.compile(r"([0-9A-F]{2}):([0-9A-F]{2}) ([NF])")
 
 
 def check_command(command: object) -> str:
-    """Return the canonical form of an allowed command, or raise SafetyViolation."""
+    """Return the canonical form of an allowed command, or refuse it (audited)."""
+
+    def deny(reason: str, detail: str) -> NoReturn:
+        refuse(SafetyViolation(reason, detail), transport="stn", request=repr(command))
+
     if not isinstance(command, str) or not command:
-        raise SafetyViolation("adapter_command_empty", repr(command))
-    bad = sorted({ch for ch in command if ch not in ALLOWED_INPUT})
+        deny("adapter_command_empty", repr(command))
+    bad = sorted({ch for ch in command if ch not in ALLOWED_INPUT})  # type: ignore[union-attr]
     if bad:
-        raise SafetyViolation("adapter_command_characters", repr("".join(bad)))
-    canonical = command.replace(" ", "").upper()
+        deny("adapter_command_characters", repr("".join(bad)))
+    canonical = command.replace(" ", "").upper()  # type: ignore[union-attr]
     if not canonical:
-        raise SafetyViolation("adapter_command_empty", repr(command))
+        deny("adapter_command_empty", repr(command))
     if set(canonical) <= _HEX_DIGITS:
-        raise SafetyViolation("adapter_hex_request", "a hex-only line is sent to the vehicle as a request")
+        deny("adapter_hex_request", "a hex-only line is sent to the vehicle as a request")
     if canonical in EXACT_COMMANDS or canonical in RESET_COMMANDS:
         return canonical
     if any(pattern.fullmatch(canonical) for pattern in PATTERN_COMMANDS):
         return canonical
-    raise SafetyViolation("adapter_command_not_allowlisted", canonical)
+    deny("adapter_command_not_allowlisted", canonical)
 
 
 def is_reset(canonical: str) -> bool:

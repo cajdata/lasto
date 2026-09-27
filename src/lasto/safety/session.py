@@ -3,14 +3,16 @@
 A passive session has no gate and no transmit path at all. A polled session
 listens for a moment before it may transmit: if another tester is talking,
 or anything shows up on a request ID, the kill switch trips and the session
-refuses to start.
+refuses to start. While a session is open its auditor receives every
+refusal raised anywhere in the safety core; a session that refuses to open
+logs why.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-from lasto.safety.audit import Auditor
+from lasto.safety.audit import REFUSALS, Auditor
 from lasto.safety.clock import Clock
 from lasto.safety.frames import Received
 from lasto.safety.gate import Exchange, ExchangeState, Gate
@@ -25,6 +27,20 @@ from lasto.safety.requests import Request
 
 LISTEN_WINDOW = 2.0
 PUMP_INTERVAL = 0.002
+
+
+def _refused(auditor: Auditor, mode: str, channel_name: str, error: BaseException) -> None:
+    """Log why a session refused to open, and stop sending it refusals."""
+    try:
+        auditor.event(
+            "session_refused",
+            mode=mode,
+            channel=channel_name,
+            reason=getattr(error, "reason", type(error).__name__),
+            detail=str(error),
+        )
+    finally:
+        REFUSALS.detach(auditor)
 
 
 class PassiveSession:
@@ -45,6 +61,7 @@ class PassiveSession:
     def close(self) -> None:
         self._channel.close()
         self._auditor.event("session_closed", mode="passive")
+        REFUSALS.detach(self._auditor)
 
 
 def open_passive_session(
@@ -55,11 +72,17 @@ def open_passive_session(
     pcan: ReadOnlyPcan | None = None,
     subscribers: Iterable[Subscriber] = (),
 ) -> PassiveSession:
-    channel = open_passive(channel_name, pcan=pcan)
+    REFUSALS.attach(auditor)
+    try:
+        channel = open_passive(channel_name, pcan=pcan)
+    except BaseException as exc:
+        _refused(auditor, "passive", channel_name, exc)
+        raise
     try:
         auditor.event("session_opened", mode="passive", listen_only_confirmed=True, **channel.describe())
     except BaseException:
         channel.close()
+        REFUSALS.detach(auditor)
         raise
     return PassiveSession(channel, Reader(channel, clock, subscribers=subscribers), auditor)
 
@@ -108,6 +131,7 @@ class PolledSession:
     def close(self) -> None:
         self._channel.close()
         self._auditor.event("session_closed", mode="polled", kill_cause=self._killswitch.cause)
+        REFUSALS.detach(self._auditor)
 
     def _on_kill(self, cause: str) -> None:
         with self._gate.lock:
@@ -127,8 +151,10 @@ def open_polled_session(
     subscribers: Iterable[Subscriber] = (),
     listen_seconds: float = LISTEN_WINDOW,
 ) -> PolledSession:
-    channel = open_active(channel_name, pcan=pcan)
+    REFUSALS.attach(auditor)
+    channel: ActiveChannel | None = None
     try:
+        channel = open_active(channel_name, pcan=pcan)
         killswitch = KillSwitch(auditor)
         gate = Gate(
             channel,
@@ -149,9 +175,11 @@ def open_polled_session(
         while clock.monotonic() < deadline and not killswitch.tripped:
             session.pump()
             clock.sleep(PUMP_INTERVAL)
-        killswitch.check()
+        killswitch.check(request=f"open a polled session on {channel_name}")
         gate.arm()
-    except BaseException:
-        channel.close()
+    except BaseException as exc:
+        if channel is not None:
+            channel.close()
+        _refused(auditor, "polled", channel_name, exc)
         raise
     return session

@@ -118,8 +118,33 @@ def test_passive_path_imports_nothing_that_can_transmit():
     for name in passive:
         tree = sources()[name]
         assert mentions(tree, "CAN_Write") == [], name
+        if name == "lasto.safety.audit":
+            continue  # writes the audit log file, never the channel
         calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and "write" in n.func.attr.lower()]
         assert calls == [], f"{name} calls a write method"
+
+
+REFUSAL_TYPES = {"SafetyViolation", "KillSwitchTripped", "PassiveModeUnconfirmed", "ValueError", "TypeError"}
+
+
+def test_every_refusal_in_the_safety_core_goes_through_refuse():
+    """Rule 11: a refusal is raised only by audit.refuse(), which records it first."""
+    raising_sites = 0
+    for name, tree in sources().items():
+        if not name.startswith("lasto.safety"):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+                func = node.exc.func
+                raised = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+                assert raised not in REFUSAL_TYPES, f"{name} raises {raised} without refuse()"
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "refuse":
+                raising_sites += 1
+    refuse_def = next(
+        n for n in ast.walk(sources()["lasto.safety.audit"]) if isinstance(n, ast.FunctionDef) and n.name == "refuse"
+    )
+    assert any(isinstance(n, ast.Raise) for n in ast.walk(refuse_def))
+    assert raising_sites >= 30
 
 
 def test_importing_the_passive_path_does_not_load_the_transmit_binding():
