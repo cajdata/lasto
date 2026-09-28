@@ -393,6 +393,7 @@ The bench tests are the only time either adapter transmits on purpose, and only 
 | 2 | **"Controller activated" messages:** the first live passive test shows whether the driver sends them routinely. If it does, their re-check stays cheap; if they come with resets, the reopen path handles them. |
 | 3 | **Creader captures confirm:** 0x7E0 and any new request IDs, the padding byte, and the trimmed manufacturer service list. |
 | 3 | **MX+ checks:** stopping a monitor with a backspace, and silent monitoring on the real adapter. |
+| 3 | **Bootloader window (review finding E, deferred here):** the rule in §3.7 isn't enforced in code yet. `reset()` sends `ATZ` as soon as a connection opens, and again when retried after a prompt timeout. Settle, and verify on the real MX+ with the other MX+ checks: whether to wait for the banner and `>` after opening, reconnecting, or waking before sending anything; never re-send `ATZ` after a prompt timeout without first reading what the adapter sent; and how a Bluetooth reconnect or wake is detected. Nothing in Phase 1 or 2 opens the adapter on real hardware. |
 | 4 | **BLOCKER before the first polled live test:** wire the Ctrl+Alt+K hotkey into polled sessions, and refuse to start polling if it can't be registered. Verify it on the truck laptop's real Windows. |
 | 7 | **K-line polling:** decide on 0x81 StartCommunication and running without 0x3E keep-alives. |
 | after approval | Switch to uv with a hashed lock file (all dependencies, including transitive ones, pinned). |
