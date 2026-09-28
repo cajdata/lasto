@@ -215,3 +215,52 @@ def test_close(auditor):
 
 def test_lines_helper():
     assert stn_port._lines("a\r\rb\n c \r") == ["a", "b", "c"]
+
+
+# ---- finding #3: every adapter rejection is audited where it is raised, exactly once ----
+
+
+class RefusesToConfigure(FakeStnPort):
+    def _command(self, text):
+        return "?" if text == "ATL0" else super()._command(text)
+
+
+def _not_reset(call):
+    return lambda auditor: call(adapter(auditor)[0])
+
+
+def _ready(call, **port_options):
+    return lambda auditor: call(ready(auditor, **port_options)[0])
+
+
+def _monitor_ended(auditor):
+    stn, _ = ready(auditor, monitor_lines=[], monitor_ends=True)
+    stn.start_can_monitor()
+    while stn.monitoring:
+        stn.read_monitor_line()
+    stn.read_monitor_line()
+
+
+REJECTIONS = [
+    ("identify before a reset", _not_reset(lambda stn: stn.identify()), "adapter_not_reset"),
+    ("voltage before a reset", _not_reset(lambda stn: stn.read_voltage()), "adapter_not_reset"),
+    ("parameters before a reset", _not_reset(lambda stn: stn.programmable_parameters()), "adapter_not_reset"),
+    ("K-line monitor before a reset", _not_reset(lambda stn: stn.start_kline_monitor()), "adapter_not_reset"),
+    ("CAN monitor before a reset", _not_reset(lambda stn: stn.start_can_monitor()), "adapter_not_reset"),
+    ("a configure step answered wrongly", lambda auditor: StnAdapter(RefusesToConfigure(), auditor).reset(), "adapter_unexpected_answer"),
+    ("an unreadable voltage", _ready(lambda stn: stn.read_voltage(), voltage="--.--"), "adapter_bad_voltage"),
+    ("PP 21 ACKs by default", _ready(lambda stn: stn.start_can_monitor(), pp21=(0x00, True)), "adapter_acks_by_default"),
+    ("protocol doesn't read back", _ready(lambda stn: stn.start_can_monitor(), protocol_report="0"), "adapter_unexpected_answer"),
+    ("K-line protocol doesn't read back", _ready(lambda stn: stn.start_kline_monitor(), protocol_report="0"), "adapter_unexpected_answer"),
+    ("no prompt", lambda auditor: StnAdapter(SilentPort(), auditor).reset(), "adapter_no_prompt"),
+    ("reading a monitor that ended", _monitor_ended, "adapter_not_monitoring"),
+]
+
+
+@pytest.mark.parametrize(("what", "action", "reason"), REJECTIONS, ids=[r[0] for r in REJECTIONS])
+def test_every_adapter_rejection_is_audited_once(auditor, sink, what, action, reason):
+    with pytest.raises(AdapterError):
+        action(auditor)
+    rejected = events(sink, "rejected")
+    assert [r["reason"] for r in rejected] == [reason]
+    assert rejected[0]["transport"] == "stn"

@@ -168,7 +168,7 @@ def test_stn_monitor_check_failures_are_audited(clock, auditor, sink):
     with pytest.raises(ValueError):
         stn2.start_kline_monitor("25")
     reasons = [r["reason"] for r in events(sink, "rejected")]
-    assert reasons == ["monitor_checks_failed", "bad_monitor_protocol", "monitor_checks_failed", "bad_monitor_protocol"]
+    assert reasons == ["adapter_acks_by_default", "bad_monitor_protocol", "adapter_unexpected_answer", "bad_monitor_protocol"]
     stn.close()
     stn2.close()
 

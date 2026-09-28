@@ -126,7 +126,7 @@ def test_passive_path_imports_nothing_that_can_transmit():
         assert calls == [], f"{name} calls a write method"
 
 
-REFUSAL_TYPES = {"SafetyViolation", "KillSwitchTripped", "PassiveModeUnconfirmed", "ValueError", "TypeError"}
+REFUSAL_TYPES = {"SafetyViolation", "KillSwitchTripped", "PassiveModeUnconfirmed", "ValueError", "TypeError", "AdapterError"}
 
 
 def test_every_refusal_in_the_safety_core_goes_through_refuse():

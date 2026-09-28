@@ -13,7 +13,7 @@ enforce those rules. Every refusal is audited (rule 11).
 from __future__ import annotations
 
 import re
-from typing import Protocol
+from typing import NoReturn, Protocol
 
 from lasto.safety import stn_policy
 from lasto.safety._frozen import SealedProtocolType, SealedType, freeze
@@ -59,6 +59,11 @@ def _lines(text: str) -> list[str]:
     return [line.strip() for line in text.replace("\n", "\r").split("\r") if line.strip()]
 
 
+def _reject(reason: str, detail: str, request: str = "") -> NoReturn:
+    """Refuse (audited) an answer or state the adapter link can't accept."""
+    refuse(AdapterError(detail), transport="stn", request=request, reason=reason)
+
+
 class StnAdapter(metaclass=SealedType):
     __slots__ = ("_auditor", "_configured", "_monitoring", "_port", "_rx")
 
@@ -101,7 +106,7 @@ class StnAdapter(metaclass=SealedType):
     def _read_prompt(self) -> str:
         data = self._port.read_until(PROMPT)
         if not data.endswith(PROMPT):
-            raise AdapterError(f"no prompt from the adapter (got {data!r})")
+            _reject("adapter_no_prompt", f"no prompt from the adapter (got {data!r})")
         return data[:-1].replace(b"\x00", b"").decode("ascii", "replace")
 
     def _response(self, canonical: str) -> list[str]:
@@ -117,11 +122,11 @@ class StnAdapter(metaclass=SealedType):
     def _expect(self, command: str, expected: str) -> None:
         response = self._command(command)
         if response != expected:
-            raise AdapterError(f"{command} answered {response!r}, expected {expected!r}")
+            _reject("adapter_unexpected_answer", f"{command} answered {response!r}, expected {expected!r}", command)
 
-    def _require_configured(self) -> None:
+    def _require_configured(self, operation: str) -> None:
         if not self._configured:
-            raise AdapterError("reset the adapter first")
+            _reject("adapter_not_reset", "reset the adapter first", operation)
 
     # ---- operations ----
 
@@ -140,49 +145,43 @@ class StnAdapter(metaclass=SealedType):
         return banner
 
     def identify(self) -> dict[str, str]:
-        self._require_configured()
+        self._require_configured("identify")
         return {"firmware": self._command("STI"), "device": self._command("STDI"), "serial": self._command("STSN")}
 
     def read_voltage(self) -> float:
         """Battery voltage at OBD pin 16, measured by the adapter."""
-        self._require_configured()
+        self._require_configured("read the voltage")
         text = self._command("STVR")
         if _VOLTAGE.fullmatch(text) is None:
-            raise AdapterError(f"unexpected voltage reading {text!r}")
+            _reject("adapter_bad_voltage", f"unexpected voltage reading {text!r}", "STVR")
         return float(text)
 
     def programmable_parameters(self) -> dict[int, tuple[int, bool]]:
-        self._require_configured()
+        self._require_configured("read the programmable parameters")
         return stn_policy.parse_pp_summary(self._command("ATPPS"))
 
     def start_can_monitor(self, protocol: str = "31") -> None:
-        """Silent CAN monitoring. Runs every check in docs/architecture.md §3.7 first; a failed check is audited."""
+        """Silent CAN monitoring. Runs every check in docs/architecture.md §3.7 first; each failure is audited."""
         what = f"start CAN monitor on protocol {protocol!r}"
         if protocol not in stn_policy.CAN_MONITOR_PROTOCOLS:
             refuse(ValueError(f"CAN monitoring uses protocol 31 or 33, not {protocol!r}"), transport="stn", request=what, reason="bad_monitor_protocol")
-        try:
-            if not stn_policy.silent_by_default(self.programmable_parameters()):
-                raise AdapterError("PP 21 makes the adapter ACK CAN frames by default")
-            self._expect(f"STP{protocol}", "OK")
-            self._expect("STPR", protocol)
-            self._expect("STCMM0", "OK")
-        except AdapterError as exc:
-            refuse(exc, transport="stn", request=what, reason="monitor_checks_failed")
+        if not stn_policy.silent_by_default(self.programmable_parameters()):
+            _reject("adapter_acks_by_default", "PP 21 makes the adapter ACK CAN frames by default", what)
+        self._expect(f"STP{protocol}", "OK")
+        self._expect("STPR", protocol)
+        self._expect("STCMM0", "OK")
         self._write_command("STMA", monitor=True)
         self._monitoring = True
 
     def start_kline_monitor(self, protocol: str = "23") -> None:
-        """Passive K-line monitoring: a preset with no bus initialization, keep-alives off. A failed check is audited."""
+        """Passive K-line monitoring: a preset with no bus initialization, keep-alives off. Each failure is audited."""
         what = f"start K-line monitor on protocol {protocol!r}"
-        self._require_configured()
+        self._require_configured(what)
         if protocol not in stn_policy.KLINE_MONITOR_PROTOCOLS:
             refuse(ValueError(f"K-line monitoring uses protocol 21 or 23, not {protocol!r}"), transport="stn", request=what, reason="bad_monitor_protocol")
-        try:
-            self._expect("ATSW00", "OK")
-            self._expect(f"STP{protocol}", "OK")
-            self._expect("STPR", protocol)
-        except AdapterError as exc:
-            refuse(exc, transport="stn", request=what, reason="monitor_checks_failed")
+        self._expect("ATSW00", "OK")
+        self._expect(f"STP{protocol}", "OK")
+        self._expect("STPR", protocol)
         self._write_command("STMA", monitor=True)
         self._monitoring = True
 
@@ -193,7 +192,7 @@ class StnAdapter(metaclass=SealedType):
         comes back, monitoring is marked stopped, and None is returned.
         """
         if not self._monitoring:
-            raise AdapterError("the adapter isn't monitoring")
+            _reject("adapter_not_monitoring", "the adapter isn't monitoring", "read a monitor line")
         self._rx.extend(self._port.read_until(b"\r"))
         if self._rx.endswith(b"\r"):
             line = bytes(self._rx[:-1]).replace(b"\x00", b"").decode("ascii", "replace").strip()
