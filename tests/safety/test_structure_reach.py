@@ -8,6 +8,7 @@
   (ctypes, gc, inspect, importlib, builtins, pickle and friends, sys.modules,
   vars/globals/setattr/delattr, getattr with a private or computed name,
   attribute-guard dunders, function defaults, frames, trace and import hooks,
+  an explicit __init__ call other than super().__init__() (finding P1),
   or, outside the safety core, another object's private attributes), except
   the exemptions listed below. Adding an exemption is its own commit,
   approved by the owner.
@@ -145,6 +146,11 @@ def test_the_scanner_follows_reexports_and_attribute_chains(snippet, flagged):
         "import sys\nsys.settrace(tracer)",
         "import sys\nsys.meta_path.insert(0, finder)",
         "().__class__.__base__.__subclasses__()",
+        # Finding P1: running __init__ again on something that exists rewrites it in place.
+        "from lasto.safety.ecus import ENGINE\nENGINE.__init__('engine', kind, 0x0B0, 0x7E8, None, '')",
+        "session.reader.__init__(channel, clock)",
+        "type(request).__init__(request, target, payload, purpose)",
+        "super(Gate, gate).__init__()",
     ],
 )
 def test_every_deliberate_route_is_caught(snippet):
@@ -154,7 +160,8 @@ def test_every_deliberate_route_is_caught(snippet):
 def test_ordinary_code_is_not_flagged():
     snippet = (
         "getattr(args, 'live', False)\nhasattr(value, 'value')\nself._private = 1\ncls._table\ntype(x).__name__\n"
-        "import sys\nsys.argv\nsys.exit(1)\nimport json\njson.dumps(record)\nimport types\ntypes.MappingProxyType({})"
+        "import sys\nsys.argv\nsys.exit(1)\nimport json\njson.dumps(record)\nimport types\ntypes.MappingProxyType({})\n"
+        "class Child(Parent):\n    def __init__(self):\n        super().__init__()"
     )
     assert deliberate_routes("lasto.probe", ast.parse(snippet)) == []
 

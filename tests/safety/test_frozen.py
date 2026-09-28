@@ -25,14 +25,16 @@ import typing
 from pathlib import Path
 
 import pytest
-from helpers import events
+from helpers import LOGGING_RPM_SPEED, events, open_polled
 from scan import in_safety, sources
 
 import lasto.safety
 from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
+from lasto.safety.ecus import ENGINE, EcuKind
 from lasto.safety.errors import SafetyViolation
 from lasto.safety.killswitch import KILL_SWITCH
 from lasto.safety.pcan_active import REQUEST_CEILING
+from lasto.safety.requests import Purpose
 
 SENTINEL = object()
 MISSING = object()
@@ -194,7 +196,8 @@ def test_instances_hold_their_state_in_private_slots():
     found = []
     for cls in filter(_instance_rules_apply, safety_classes()):
         name = f"{cls.__module__}.{cls.__qualname__}"
-        if any("__slots__" not in vars(klass) for klass in cls.__mro__ if klass is not object):
+        # A tuple's items can't be changed at all (the ECU routes, finding P1).
+        if any("__slots__" not in vars(klass) for klass in cls.__mro__ if klass not in (object, tuple)):
             found.append(f"{name} has no __slots__ somewhere in its MRO")
             continue
         public = [slot for klass in cls.__mro__ for slot in vars(klass).get("__slots__", ()) if not slot.startswith("_")]
@@ -202,6 +205,74 @@ def test_instances_hold_their_state_in_private_slots():
         if public and not frozen:
             found.append(f"{name} has public slots {public}")
     assert found == []
+
+
+def _slot_values(target: object) -> dict[str, object]:
+    found = {}
+    for klass in type(target).__mro__:
+        for name, member in vars(klass).items():
+            if isinstance(member, types.MemberDescriptorType) and "__slots__" in vars(klass):
+                found[name] = member.__get__(target) if hasattr(target, name) else MISSING
+    return found
+
+
+def reinit_went_through(target: object, *args: object) -> str | None:
+    """Call __init__ again on something that already exists. Returns how it went wrong, after putting the
+    target's state back; None if the safety core refused it."""
+    module = isinstance(target, types.ModuleType)
+    before = dict(vars(target)) if module else _slot_values(target)
+    try:
+        target.__init__(*args)
+    except SafetyViolation as error:
+        return None if error.reason == "safety_core_frozen" else f"refused as {error.reason}"
+    except Exception as exc:  # refused, but not by the safety core
+        return f"{type(exc).__name__}: {exc}"
+    finally:
+        if module:
+            vars(target).update(before)
+        else:
+            for name, value in before.items():
+                if value is not MISSING:
+                    object.__setattr__(target, name, value)
+    return "went through"
+
+
+def test_no_safety_object_can_be_initialized_again():
+    """Finding P1: calling __init__ again rewrote an object in place (the approved ECU entry, the kill switch,
+    the refusal log, the request ceiling). Every module-level object that keeps its state in slots refuses."""
+    objects: dict[int, tuple[str, object]] = {}  # each once, under the module that defines it
+    for module in SAFETY_MODULES:
+        for name, value in vars(module).items():
+            if type(type(value)).__module__ == "lasto.safety._frozen" and not isinstance(value, type) and _slot_values(value):
+                objects.setdefault(id(value), (f"{type(value).__module__}.{name}", value))
+    assert {"lasto.safety.ecus.ENGINE", "lasto.safety.killswitch.KILL_SWITCH", "lasto.safety.audit.REFUSALS"} <= {
+        name for name, _ in objects.values()
+    }
+    found = [f"{name}: {outcome}" for name, value in objects.values() if (outcome := reinit_went_through(value)) is not None]
+    assert found == []
+
+
+def test_no_safety_module_can_be_initialized_again():
+    """ModuleType.__init__ would reset a module's __name__, __doc__ and __spec__ straight in its namespace."""
+    found = [
+        f"{module.__name__}: {outcome}"
+        for module in SAFETY_MODULES
+        if (outcome := reinit_went_through(module, "elsewhere")) is not None
+    ]
+    assert found == []
+
+
+def test_live_objects_cannot_be_initialized_again(sim, auditor, sink):
+    """The routes the review named: the engine entry, a session's reader (which the gate reads before sending),
+    and a request that already exists. Each is refused and audited, and nothing changes."""
+    session = open_polled(sim, auditor)
+    reader, channel = session.reader, session.reader._channel
+    assert reinit_went_through(ENGINE, "engine", EcuKind.ENGINE, 0x0B0, 0x7E8, None, "") is None
+    assert reinit_went_through(reader, object(), sim.clock) is None
+    assert reinit_went_through(LOGGING_RPM_SPEED, ENGINE, b"\x04", Purpose.LOGGING) is None
+    assert ENGINE.request_id == 0x7E0 and reader._channel is channel and LOGGING_RPM_SPEED.payload == b"\x01\x0c\x0d"
+    assert [r["reason"] for r in events(sink, "rejected")] == ["safety_core_frozen"] * 3
+    assert session.request(LOGGING_RPM_SPEED).done
 
 
 def test_a_refused_change_is_audited(clock):

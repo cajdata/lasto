@@ -3,7 +3,8 @@
 Every safety module ends with `freeze(__name__)`, which:
 
 - seals every class the module defines, so none of its attributes can be set
-  or deleted (their metaclasses come from here), and
+  or deleted (their metaclasses come from here), and an instance that keeps
+  its state in slots can't be initialized a second time (finding P1), and
 - turns the module into a FrozenModule, so none of its names can be rebound
   or deleted. The package still lets the import system bind each submodule
   on it once, as that submodule finishes loading, and its search path
@@ -63,7 +64,52 @@ def _guards(base: type) -> tuple[Callable[[type, str, object], None], Callable[[
     return __setattr__, __delattr__
 
 
+def _initialized(instance: object) -> bool:
+    """Whether any slot of the instance holds a value yet: its __init__ has already run."""
+    for member in type(instance)._sealed_slots:  # type: ignore[attr-defined]
+        try:
+            member.__get__(instance)
+        except AttributeError:
+            continue
+        return True
+    return False
+
+
+def _once(init: Callable[..., object]) -> Callable[..., None]:
+    """`init`, refused (audited) on an instance that is initialized already."""
+
+    def __init__(self: object, *args: object, **kwargs: object) -> None:
+        if _initialized(self):
+            _refuse("safety_core_frozen", f"initialize {_name(type(self))} again")
+        init(self, *args, **kwargs)
+
+    return __init__
+
+
+def _guard_reinit(cls: type) -> None:
+    """Make the class's own __init__ refuse an instance that is initialized already (finding P1).
+
+    A frozen dataclass sets its fields with object.__setattr__, so calling its __init__ again on an existing
+    instance would rewrite it in place: the approved ECU entry, a session's reader, the kill switch. Only
+    classes whose instances keep all their state in slots are guarded; exceptions and enum members keep a
+    __dict__ by nature and carry no policy. A subclass __init__ that calls super().__init__() must do so
+    before it sets a slot of its own.
+    """
+    if cls.__dictoffset__ != 0:
+        return
+    try:
+        inherited = cls._sealed_slots  # type: ignore[attr-defined]  (the nearest sealed parent's)
+    except AttributeError:
+        inherited = ()
+    own = tuple(member for member in vars(cls).values() if isinstance(member, types.MemberDescriptorType))
+    cls._sealed_slots = inherited + own  # type: ignore[attr-defined]  (where an instance keeps its state)
+    init = vars(cls).get("__init__")
+    if init is not None:
+        cls.__init__ = _once(init)  # type: ignore[misc]  (the class isn't sealed yet)
+
+
 def _seal(cls: type) -> None:
+    _guard_reinit(cls)
     cls.sealed_class = cls  # type: ignore[attr-defined]  (through the class's own guard, one last time)
 
 
@@ -113,6 +159,11 @@ class SealedEnum(Enum, metaclass=SealedEnumType):
 
 class FrozenModule(types.ModuleType, metaclass=SealedType):
     """A safety module after freeze(): its names can't be rebound or deleted."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        # A module is already initialized when freeze() makes it a FrozenModule. ModuleType.__init__ would
+        # reset its __name__, __doc__ and __spec__ straight in its namespace, past __setattr__ (finding P1).
+        _refuse("safety_core_frozen", f"initialize {self.__name__} again")
 
     def __setattr__(self, name: str, value: object) -> None:
         names = vars(self)

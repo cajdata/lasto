@@ -156,6 +156,11 @@ BANNED_ATTRIBUTES = {
 }  # fmt: skip
 
 
+def _is_bare_super(node: ast.AST) -> bool:
+    """`super()` with no arguments: a class initializing its own new instance through its parent."""
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "super" and not (node.args or node.keywords)
+
+
 def deliberate_routes(module: str, tree: ast.AST) -> list[tuple[str, str]]:
     """(route, where) for every construct that could reach around the safety core's guards."""
     found: list[tuple[str, str]] = []
@@ -181,6 +186,10 @@ def deliberate_routes(module: str, tree: ast.AST) -> list[tuple[str, str]]:
                 name = node.args[1] if len(node.args) > 1 else None
                 if not (isinstance(name, ast.Constant) and isinstance(name.value, str) and not name.value.startswith("_")):
                     found.append((f"{node.func.id} with a private or computed name", line))
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "__init__":
+            # Calling __init__ on an object that exists rewrites it in place (finding P1); only super().__init__().
+            if not _is_bare_super(node.func.value):
+                found.append(("__init__", line))
         elif isinstance(node, ast.Attribute):
             chain = attribute_chain(node)
             if chain and len(chain) >= 2 and chain[1] == "modules" and names.get(chain[0]) == ("module", "sys"):

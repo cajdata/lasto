@@ -154,6 +154,113 @@ def test_a_sealed_metaclass_works_like_its_base(scratch):
     assert refused(message, "ID", 0)  # the field the write function relies on can't be swapped
 
 
+def reinit(target: object, *args: object) -> None:
+    target.__init__(*args)  # a plain function, like change(): the scanner bans this call in src/
+
+
+def test_a_sealed_instance_cannot_be_initialized_again(scratch, clock):
+    """Finding P1: a frozen dataclass sets its fields with object.__setattr__, so calling __init__ again rewrote it."""
+    sink = MemoryAuditSink()
+    REFUSALS.attach(Auditor(sink, clock))
+    module = scratch("lasto.safety.probe_reinit")
+
+    @dataclass(frozen=True, slots=True)
+    class Entry(metaclass=SealedType):
+        request_id: int
+
+    class Keeper(metaclass=SealedType):
+        __slots__ = ("_value",)
+
+        def __init__(self, value: int) -> None:
+            self._value = value
+
+    class Child(Keeper):  # inherits the guarded __init__
+        __slots__ = ()
+
+    for cls in (Entry, Keeper, Child):
+        cls.__module__ = module.__name__
+        setattr(module, cls.__name__, cls)
+    freeze(module.__name__)
+    entry, keeper, child = Entry(0x7E0), Keeper(1), Child(2)  # a new instance initializes as always
+    for target in (entry, keeper, child):
+        with pytest.raises(SafetyViolation) as caught:
+            reinit(target, 0x0B0)
+        assert caught.value.reason == "safety_core_frozen"
+    assert (entry.request_id, keeper._value, child._value) == (0x7E0, 1, 2)
+    refusals = events(sink, "rejected")
+    assert [r["request"] for r in refusals] == [
+        f"initialize {module.__name__}.{cls.__qualname__} again" for cls in (Entry, Keeper, Child)
+    ]
+    assert {r["transport"] for r in refusals} == {"core"}
+
+
+def test_a_subclass_with_no_slots_of_its_own_is_still_guarded(scratch):
+    """A dataclass that adds no fields keeps its state in its parent's slots, and its own __init__ sets them."""
+    module = scratch("lasto.safety.probe_inherited_slots")
+
+    @dataclass(frozen=True, slots=True)
+    class Entry(metaclass=SealedType):
+        request_id: int
+
+    @dataclass(frozen=True, slots=True)
+    class Same(Entry):
+        pass
+
+    for cls in (Entry, Same):
+        cls.__module__ = module.__name__
+        setattr(module, cls.__name__, cls)
+    freeze(module.__name__)
+    same = Same(0x7E0)
+    with pytest.raises(SafetyViolation):
+        reinit(same, 0x0B0)
+    assert same.request_id == 0x7E0
+
+
+def test_copies_of_a_sealed_instance_still_work(scratch):
+    """copy and deepcopy build a new instance and restore its state once, so they aren't refused."""
+    import copy
+
+    module = scratch("lasto.safety.probe_copies")
+
+    @dataclass(frozen=True, slots=True)
+    class Entry(metaclass=SealedType):
+        request_id: int
+
+    Entry.__module__ = module.__name__
+    module.Entry = Entry
+    freeze(module.__name__)
+    entry = Entry(0x7E0)
+    assert copy.copy(entry) == entry and copy.deepcopy(entry) == entry and copy.copy(entry) is not entry
+
+
+def test_only_instances_that_keep_their_state_in_slots_are_guarded(scratch):
+    """Exceptions and enum members keep a __dict__ by nature and carry no policy; their __init__ is left alone."""
+    module = scratch("lasto.safety.probe_unguarded")
+
+    class Refusal(Exception, metaclass=SealedType):
+        def __init__(self, reason: str) -> None:
+            super().__init__(reason)
+            self.reason = reason
+
+    Refusal.__module__ = module.__name__
+    module.Refusal = Refusal
+    freeze(module.__name__)
+    error = Refusal("first")
+    reinit(error, "second")
+    assert error.reason == "second"
+
+
+def test_a_frozen_module_cannot_be_initialized_again(scratch):
+    """ModuleType.__init__ would reset a frozen module's __name__, __doc__ and __spec__ straight in its namespace."""
+    module = scratch("lasto.safety.probe_module_init")
+    module.__doc__ = "original"
+    freeze(module.__name__)
+    with pytest.raises(SafetyViolation) as caught:
+        reinit(module, "elsewhere", "replaced")
+    assert caught.value.reason == "safety_core_frozen"
+    assert (module.__name__, module.__doc__) == ("lasto.safety.probe_module_init", "original")
+
+
 def test_the_helper_freezes_itself():
     """So freeze() can't be swapped for a no-op, nor the guards for looser ones, before other modules use them."""
     assert type(_frozen) is FrozenModule

@@ -87,8 +87,8 @@ def check_sensitive(service: int, *, sensitive: bool, request: str = "") -> None
 
 
 def request_ids() -> frozenset[int]:
-    """Every ID lasto may transmit on: the functional ID and the approved ECUs' request IDs."""
-    return frozenset({FUNCTIONAL_REQUEST_ID, *(ecu.request_id for ecu in ecus.APPROVED_ECUS)})
+    """Every ID lasto may transmit on: the functional ID and the approved ECUs' request IDs, from their routes."""
+    return frozenset({FUNCTIONAL_REQUEST_ID, *ecus.REQUEST_IDS})
 
 
 def hex_id(can_id: object) -> str:
@@ -119,14 +119,14 @@ def check_frame(can_id: object, data: object, *, broadcast_ids: Collection[int] 
         refuse(SafetyViolation("can_id_not_allowlisted", hex_id(can_id)), transport="pcan", request=text)
     if can_id in broadcast_ids:
         refuse(SafetyViolation("can_id_carries_broadcast", hex_id(can_id)), transport="pcan", request=text)
-    ecu = ecus.by_request_id(can_id)
-    ext_address = None if ecu is None else ecu.ext_address
+    route = ecus.by_request_id(can_id)
+    ext_address = None if route is None else route.ext_address
     try:
         frame = isotp.parse(data, ext_address=ext_address)
     except isotp.IsoTpError as exc:
         refuse(SafetyViolation(exc.reason, exc.detail), transport="pcan", request=text)
     if frame.kind is isotp.FrameKind.FLOW_CONTROL:
-        if ecu is None:
+        if route is None:
             refuse(SafetyViolation("flow_control_wrong_id", hex_id(can_id)), transport="pcan", request=text)
         if data != isotp.encode_flow_control(ext_address=ext_address, padding=PADDING_BYTE):
             refuse(SafetyViolation("flow_control_malformed", data.hex(" ")), transport="pcan", request=text)
@@ -134,8 +134,8 @@ def check_frame(can_id: object, data: object, *, broadcast_ids: Collection[int] 
     if frame.kind is not isotp.FrameKind.SINGLE:
         refuse(SafetyViolation("not_single_frame", frame.kind.value), transport="pcan", request=text)
     service = frame.payload[0]
-    check_service(service, functional=ecu is None, request=text)
-    check_sensitive(service, sensitive=ecu is not None and ecu.kind in ecus.SENSITIVE_KINDS, request=text)
+    check_service(service, functional=route is None, request=text)
+    check_sensitive(service, sensitive=route is not None and route.kind in ecus.SENSITIVE_KINDS, request=text)
     return "request"
 
 

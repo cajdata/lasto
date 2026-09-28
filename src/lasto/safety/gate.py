@@ -169,13 +169,14 @@ class Gate(metaclass=SealedType):
         if self._pending is not None:
             _deny("request_outstanding", "wait for the previous request to finish", text)
         target = request.target
-        if target is not None and not ecus.is_approved(target):
+        route = ecus.route_of(target)  # IDs and addressing come from the route, never the entry (finding P1)
+        if target is not None and route is None:
             _deny("ecu_not_approved", getattr(target, "name", _hex_id(target)), text)  # a forged target may be anything
         now = self._clock.monotonic()
         self._interlocks.check(request, now, self._profile)
-        can_id = policy.FUNCTIONAL_REQUEST_ID if target is None else target.request_id
+        can_id = policy.FUNCTIONAL_REQUEST_ID if route is None else route.request_id
         data = isotp.encode_single_frame(
-            request.payload, ext_address=None if target is None else target.ext_address, padding=policy.PADDING_BYTE
+            request.payload, ext_address=None if route is None else route.ext_address, padding=policy.PADDING_BYTE
         )
         self._check(can_id, data, "request", policy.frame_text(can_id, data))
         wait = self._limiter.delay(request.purpose, now)
@@ -215,8 +216,8 @@ class Gate(metaclass=SealedType):
         pending = self._pending
         if pending is None or pending._rx_id is None or pending._flow_control_sent:
             _deny("flow_control_unsolicited", "no first frame is waiting for flow control", text)
-        ecu = ecus.by_response_id(pending._rx_id)  # type: ignore[union-attr,arg-type]
-        if ecu is None or can_id != ecu.request_id:
+        route = ecus.by_response_id(pending._rx_id)  # type: ignore[union-attr,arg-type]
+        if route is None or can_id != route.request_id:
             _deny("flow_control_wrong_id", _hex_id(can_id), text)
 
     def _transmit(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
@@ -276,16 +277,17 @@ class Gate(metaclass=SealedType):
     def _responder_matches(self, exchange: Exchange, can_id: int) -> bool:
         if exchange.can_id == policy.FUNCTIONAL_REQUEST_ID:
             return can_id in ecus.FUNCTIONAL_RESPONSE_IDS
-        return exchange.request.target is not None and can_id == exchange.request.target.response_id
+        route = ecus.route_of(exchange.request.target)
+        return route is not None and can_id == route.response_id
 
     def _is_late(self, can_id: int, now: float) -> bool:
         last = self._last
         return last is not None and now - self._last_finished <= LATE_RESPONSE_GRACE and self._responder_matches(last, can_id)
 
     def _handle_response(self, pending: Exchange, frame: CanFrame, now: float) -> None:
-        ecu = ecus.by_response_id(frame.can_id)
+        route = ecus.by_response_id(frame.can_id)
         try:
-            parsed = isotp.parse(frame.data, ext_address=None if ecu is None else ecu.ext_address)
+            parsed = isotp.parse(frame.data, ext_address=None if route is None else route.ext_address)
         except isotp.IsoTpError as exc:
             self._trip("malformed_response", str(exc))
             return
@@ -306,8 +308,8 @@ class Gate(metaclass=SealedType):
                 detail=f"already receiving a multi-frame answer from {_hex_id(pending._rx_id)}; no flow control",
             )
             return
-        ecu = ecus.by_response_id(can_id)
-        if ecu is None:
+        route = ecus.by_response_id(can_id)
+        if route is None:
             self._auditor.event(
                 "response_abandoned", can_id=_hex_id(can_id), detail="multi-frame response from an unapproved ECU"
             )
@@ -317,9 +319,9 @@ class Gate(metaclass=SealedType):
         pending._rx_data = bytearray(parsed.payload)
         pending._rx_sequence = 1
         pending._deadline = now + CONSECUTIVE_FRAME_TIMEOUT
-        flow_control = isotp.encode_flow_control(ext_address=ecu.ext_address, padding=policy.PADDING_BYTE)
+        flow_control = isotp.encode_flow_control(ext_address=route.ext_address, padding=policy.PADDING_BYTE)
         try:
-            self._transmit(ecu.request_id, flow_control, purpose=pending.request.purpose.value, kind="flow_control")
+            self._transmit(route.request_id, flow_control, purpose=pending.request.purpose.value, kind="flow_control")
         except SafetyError as exc:  # already audited where it was refused
             self._trip("flow_control_refused", str(exc))
             return

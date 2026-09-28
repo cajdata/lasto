@@ -145,6 +145,8 @@ Rejections are logged with the reason and raised as `SafetyViolation`.
 
 **Approved request IDs and K-line addresses** live in `safety/ecus.py`. It starts with 0x7E0 only. Each entry records the response ID, addressing mode, ECU kind (engine, transmission, abs_vsc, kdss, suspension, tpms, srs, immobilizer, body), and the evidence (which capture). Adding one is a safety core change: it needs your approval, the ask rule fires, and it gets its own commit. An unclassified ID can't be approved. *(open)*
 
+At import, each entry's IDs, extended address, and kind are copied into a route, a tuple. The policy and the gate read only routes, never an entry's fields, so an entry rewritten in place can't move a frame to another ID (review finding P1).
+
 **Foreign tester guard:** a polled session listens for 2 s before its first transmission and keeps watching. On real hardware (no simulator library) a shorter window, or one that isn't a number, is refused before the DLL is loaded; only the simulator may shorten it. Any frame on an approved request ID that we didn't send (the Creader, or broadcast traffic) stops polling. Two testers at once can confuse ECUs.
 
 ### 3.4 Kill switch (rule 7)
@@ -244,6 +246,7 @@ Every safety module ends with `freeze(__name__)` (`safety/_frozen.py`):
 - **Modules are frozen.** No name can be rebound or deleted. The package still lets the import system bind each submodule once, and its search path becomes a tuple.
 - **Tables are immutable:** frozensets, tuples and `MappingProxyType`, never a list, dict or set.
 - **Instances keep their state in private slots.** They have no `__dict__` and no public writable attributes. An `Exchange` is read-only outside the gate.
+- **Instances can't be initialized again.** A frozen dataclass sets its fields with `object.__setattr__`, so running its `__init__` again would rewrite it in place. Sealing wraps each slotted class's own `__init__` to refuse an instance that already holds state, so the approved ECU entry, a session's reader, and the kill switch can't be rewritten that way. A frozen module refuses `__init__` too (review finding P1).
 - **Refusals are audited:** a refused change is recorded as `safety_core_frozen` (transport `core`).
 
 What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr__` called directly, frames, gc, ctypes, builtins, pickle) is banned in `src/` by the deliberate-routes test (§7). The static change test catches any assignment, deletion, in-place change, `setattr`, monkeypatch or `mock.patch` aimed at a safety module, class or module-level object, from `src/` and from the tests. Tests may change only instances they made.
@@ -286,7 +289,7 @@ What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr
   - only `safety/stn_port.py` opens or writes serial
   - nothing outside `lasto.safety` imports the DLL bindings or pyserial
   - code outside the safety core uses only its public API. Names are resolved through every re-export and attribute chain back to the module that defines them (`tests/scan.py`).
-  - no code in `src/` uses a deliberate route around the core's guards (ctypes, gc, inspect, importlib, builtins, pickle and other code-rebuilding modules, `sys.modules`, `vars`/`globals`/`setattr`/`delattr`, `getattr` with a private or computed name, attribute-guard dunders, function defaults, frames and tracebacks, trace and import hooks, or, outside the safety core, another object's private attributes), except an explicit exemption list in `tests/safety/test_structure_reach.py`. Each new exemption is its own commit, approved by the owner.
+  - no code in `src/` uses a deliberate route around the core's guards (ctypes, gc, inspect, importlib, builtins, pickle and other code-rebuilding modules, `sys.modules`, `vars`/`globals`/`setattr`/`delattr`, `getattr` with a private or computed name, attribute-guard dunders, function defaults, frames and tracebacks, trace and import hooks, an explicit `__init__` call other than `super().__init__()`, or, outside the safety core, another object's private attributes), except an explicit exemption list in `tests/safety/test_structure_reach.py`. Each new exemption is its own commit, approved by the owner.
   - nothing in `src/` or the tests changes a safety module, class or module-level object (§3.9), and the safety core has no `global` statements
 - **Runtime freeze tests** (`tests/safety/test_frozen.py`) try to change every name in every safety module, every attribute of every safety class, and every enum member, and expect each attempt to be refused and audited. They also check that every module-level value is immutable and that every instance keeps its state in private slots.
   - passive modules contain no write reference

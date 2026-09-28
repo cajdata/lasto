@@ -1,7 +1,7 @@
 """The transmit gate: rules 2, 3, 5-11 end to end, plus response handling and flow control."""
 
 import pytest
-from helpers import LOGGING_RPM_SPEED, GateHarness, LooksLikeTheEngineId, events, frame, open_polled, park
+from helpers import LOGGING_RPM_SPEED, GateHarness, LooksLikeTheEngineId, events, frame, open_polled, park, rewritten
 
 from lasto.safety import ecus
 from lasto.safety import requests as rq
@@ -560,3 +560,26 @@ def test_local_id_answers_do_not_feed_the_interlocks(clock, auditor):
 def test_gate_only_knows_the_approved_request_ids(h):
     assert h.gate._request_ids == {0x7DF} | {ecu.request_id for ecu in ecus.APPROVED_ECUS}
     assert isinstance(h.gate, Gate)
+
+
+# ---- a rewritten approved entry (finding P1) ----
+
+
+def test_a_rewritten_entry_moves_no_request(sim, auditor, sink):
+    """Rewriting the engine entry in place used to send a logging poll on whatever ID it was given."""
+    with rewritten(ENGINE, request_id=0x0B0, response_id=0x0B8, ext_address=0x40):
+        session = open_polled(sim, auditor)
+        sim.vehicle.state.rpm = 750
+        exchange = session.request(LOGGING_RPM_SPEED)
+    assert exchange.state is ExchangeState.DONE
+    assert exchange.responses == ((0x7E8, bytes.fromhex("410C0BB80D00")),)
+    assert sim.dll.writes == [(0x51, 0x7E0, bytes.fromhex("03010C0D00000000"))]  # normal addressing, on 0x7E0
+
+
+def test_flow_control_goes_where_the_route_says_after_a_rewrite(h):
+    exchange = h.gate.submit(LOGGING_RPM_SPEED)
+    with rewritten(ENGINE, request_id=0x0B0, ext_address=0x40):
+        h.gate.on_frame(frame(0x7E8, 0x10, 0x09, 0x41, 0x0C, 0x0B, 0xB8, 0x0D, 0x00))
+        h.gate.on_frame(frame(0x7E8, 0x21, 0x05, 0x50, 0xAA))
+    assert h.writer.frames[-1] == (0x7E0, FC)
+    assert exchange.state is ExchangeState.DONE and not h.killswitch.tripped

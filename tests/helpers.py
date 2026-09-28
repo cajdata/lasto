@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import types
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 
 import pytest
 
@@ -38,6 +39,20 @@ class LooksLikeTheEngineId(int):
 
 def events(sink: MemoryAuditSink, name: str) -> list[dict[str, object]]:
     return [record for record in sink.records if record["event"] == name]
+
+
+@contextmanager
+def rewritten(entry: object, **fields: object) -> Iterator[None]:
+    """Rewrite a frozen dataclass's fields in place, as calling its __init__ again used to (finding P1), then put
+    them back. object.__setattr__ is the route pure Python can't block; the scanner bans it in src/."""
+    saved = {name: getattr(entry, name) for name in fields}
+    for name, value in fields.items():
+        object.__setattr__(entry, name, value)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            object.__setattr__(entry, name, value)
 
 
 def frame(can_id: int, *data: int) -> CanFrame:
