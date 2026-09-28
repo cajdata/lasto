@@ -1,6 +1,7 @@
 """The read-only PCAN binding: what it binds, what it refuses, and how it reads."""
 
 import ctypes
+import os
 
 import pytest
 from helpers import HANDLE
@@ -35,11 +36,48 @@ def test_setvalue_only_accepts_listed_settings():
         assert refused.value.reason == "pcan_setting_not_allowed"
 
 
-def test_dll_path(monkeypatch):
-    monkeypatch.setenv("SystemRoot", r"D:\Win")
-    assert pcan_dll.dll_path() == r"D:\Win\System32\PCANBasic.dll"
-    monkeypatch.delenv("SystemRoot")
-    assert pcan_dll.dll_path() == r"C:\Windows\System32\PCANBasic.dll"
+def windows_system_folder() -> str:
+    """Asked of Windows here, separately from the safety core."""
+    buffer = ctypes.create_unicode_buffer(260)
+    assert 0 < ctypes.WinDLL("kernel32").GetSystemDirectoryW(buffer, 260) < 260
+    return buffer.value
+
+
+def test_the_system_folder_comes_from_windows_at_import():
+    assert pcan_dll.SYSTEM_DIRECTORY == windows_system_folder()
+    assert pcan_dll.dll_path() == os.path.join(windows_system_folder(), "PCANBasic.dll")
+
+
+@pytest.mark.parametrize("system_root", [r"D:\elsewhere", None])
+def test_the_environment_cannot_redirect_the_dll(monkeypatch, system_root):
+    """SystemRoot is an environment variable anything in the process can change; the DLL path never reads it."""
+    if system_root is None:
+        monkeypatch.delenv("SystemRoot", raising=False)
+    else:
+        monkeypatch.setenv("SystemRoot", system_root)
+    assert pcan_dll.dll_path() == os.path.join(windows_system_folder(), "PCANBasic.dll")
+
+
+def test_the_system_folder_lookup():
+    def reports(length, text=""):
+        def get_system_directory(buffer, size):
+            buffer.value = text
+            return length
+
+        return get_system_directory
+
+    assert pcan_dll.system_directory(reports(19, r"C:\WINDOWS\system32")) == r"C:\WINDOWS\system32"
+    assert pcan_dll.system_directory(reports(0)) == ""  # the call failed
+    assert pcan_dll.system_directory(reports(300, "C:" + "x" * 250)) == ""  # didn't fit; never a truncated path
+
+
+def test_no_system_folder_means_no_dll(clock):
+    sink = MemoryAuditSink()
+    REFUSALS.attach(Auditor(sink, clock))
+    with pytest.raises(InterfaceError, match="system folder"):
+        pcan_dll.require_system_directory("")
+    pcan_dll.require_system_directory(windows_system_folder())
+    assert [r["reason"] for r in sink.records if r["event"] == "rejected"] == ["system_directory_unknown"]
 
 
 def test_loading_the_real_dll_is_blocked_by_the_test_firewall():

@@ -38,9 +38,24 @@ MAX_DRAIN = 4096
 
 POINTER_BYTES = ctypes.sizeof(ctypes.c_void_p)
 
+# The longest system folder path GetSystemDirectoryW may report here (MAX_PATH), in characters.
+MAX_PATH = 260
+
+
+def system_directory(get_system_directory: Callable[..., int]) -> str:
+    """The Windows system folder, as GetSystemDirectoryW reports it; "" if it can't (never a truncated path)."""
+    buffer = ctypes.create_unicode_buffer(MAX_PATH)
+    length = int(get_system_directory(buffer, ctypes.c_uint(MAX_PATH)))
+    return buffer.value if 0 < length < MAX_PATH else ""
+
+
+# Asked of Windows once, at import, not read from the SystemRoot environment variable, which anything in the
+# process can change: the environment can't redirect which PCANBasic.dll loads.
+SYSTEM_DIRECTORY = system_directory(ctypes.WinDLL("kernel32").GetSystemDirectoryW)
+
 
 def dll_path() -> str:
-    return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "PCANBasic.dll")
+    return os.path.join(SYSTEM_DIRECTORY, "PCANBasic.dll")
 
 
 def hardware_firewall_installed() -> bool:
@@ -62,9 +77,17 @@ def require_64_bit(pointer_bytes: int) -> None:
         refuse_interface("python_not_64_bit", "lasto needs 64-bit Python to load the 64-bit PCANBasic.dll")
 
 
+def require_system_directory(directory: str) -> None:
+    if not directory:
+        refuse_interface(
+            "system_directory_unknown", "Windows didn't report its system folder, so PCANBasic.dll can't be found"
+        )
+
+
 def load_library() -> object:
-    """Load the real 64-bit PCANBasic.dll by absolute path. Only live hardware sessions get here."""
+    """Load the real 64-bit PCANBasic.dll by absolute path, from the system folder. Only live hardware sessions get here."""
     require_64_bit(POINTER_BYTES)
+    require_system_directory(SYSTEM_DIRECTORY)
     path = dll_path()
     try:
         return ctypes.WinDLL(path)

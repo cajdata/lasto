@@ -88,7 +88,7 @@ From factory manuals for the J120 platform (Land Cruiser Prado RM1151E, from Aug
 
 python-can 4.6.1's `PcanBus` sets listen-only before `CAN_Initialize`, but it ignores the `SetValue` result, and its `state` property returns a cached value instead of asking the driver. So if the pre-init set fails, the channel silently comes up active. The safety core binds the DLL itself with ctypes:
 
-- **Loading:** from `%SystemRoot%\System32\PCANBasic.dll` by absolute path. Require a 64-bit Python process, and require a PCAN-Basic API version of at least 4.7.0 other than 5.0.0 (5.0.0 mishandles status messages).
+- **Loading:** from `PCANBasic.dll` in the Windows system folder, by absolute path. The system folder is asked of Windows once, at import (`GetSystemDirectoryW`), never read from the `SystemRoot` environment variable, so nothing that changes the environment can redirect which DLL loads; if Windows can't say, the DLL isn't loaded. Require a 64-bit Python process, and require a PCAN-Basic API version of at least 4.7.0 other than 5.0.0 (5.0.0 mishandles status messages).
 - **`pcan_dll.load_readonly()`** binds only `CAN_Initialize`, `CAN_Uninitialize`, `CAN_GetValue`, `CAN_GetStatus`, `CAN_Read`, and `CAN_GetErrorText`, plus a `CAN_SetValue` wrapper that accepts only these (parameter, value) pairs: listen-only ON, error frames ON, status frames ON. It never looks up `CAN_Write*`. It also never binds `CAN_Reset` (can hard-reset the controller) or `CAN_FilterMessages` (resets the controller).
 - **Passive open sequence:**
   1. `PCAN_CHANNEL_CONDITION` must be `AVAILABLE`. If PCAN-View or another app holds the channel, the controller may already be active, so refuse.
