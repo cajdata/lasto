@@ -58,6 +58,8 @@ def test_external_links_get_a_marker(md):
     assert 'out⁠<svg class="ext"' in html and '(external site)</span></a>' in html
     assert ">in</a>" in html
     assert html.count('class="ext"') == 1
+    # The icon's path is drawn once per page, in the sprite, and each link points to it.
+    assert '<use href="#ext"/>' in html and "<path" not in html
 
 
 def test_mirror_is_clean_markdown():

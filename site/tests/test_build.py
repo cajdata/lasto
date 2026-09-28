@@ -90,6 +90,25 @@ def test_unpushed_phase_gets_no_code_links(built):
         assert "/src/lasto/safety/" not in (out / "safety" / "index.html").read_text(encoding="utf-8")
 
 
+def test_external_link_icon_is_one_shared_path(built):
+    out, b, _ = built
+    for page in b.pages:
+        html = (out / page.out).read_text(encoding="utf-8")
+        assert html.count('id="ext"') == 1, page.out
+        assert "M2.5 7.5l5-5M3.5 2.5h4v4" not in html.replace('<path id="ext" d="M2.5 7.5l5-5M3.5 2.5h4v4"/>', ""), page.out
+
+
+def test_timing_diagram_draws_each_level_once(built):
+    out, _, _ = built
+    html = (out / "safety" / "index.html").read_text(encoding="utf-8")
+    waves = re.findall(r'<path class="wave[^"]*" d="([^"]+)"', html)
+    assert len(waves) == 2
+    for d in waves:
+        # A horizontal run is one H segment: an H is never followed by another H.
+        assert not re.search(r"H[\d.]+H", d), d
+    assert waves[1] == "M164 90.5H1011"  # listen-only: the transmit line never leaves recessive
+
+
 def test_refuses_to_build_over_a_folder_it_didnt_make(tmp_path):
     import pytest
 

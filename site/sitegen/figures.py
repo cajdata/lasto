@@ -185,14 +185,12 @@ def ack_slot(ctx: dict, number: int, frame_text: str) -> Figure:
     bus_levels = [0 if i == ack else b.level for i, b in enumerate(bits)]  # other modules ACK
 
     def trace(levels: list[int], y0: int) -> str:
+        """One H per run of equal bits, and a V at each change: the same line, drawn with fewer bytes."""
         d = f"M{left} {level_y(levels[0], y0)}"
-        for i, lv in enumerate(levels):
-            x0, x1 = left + i * bw, left + (i + 1) * bw
-            y = level_y(lv, y0)
-            if i and lv != levels[i - 1]:
-                d += f"V{y}"
-            d += f"H{x1}"
-        return d
+        for i in range(1, len(levels)):
+            if levels[i] != levels[i - 1]:
+                d += f"H{left + i * bw}V{level_y(levels[i], y0)}"
+        return d + f"H{left + len(levels) * bw}"
 
     groups: list[tuple[str, int, int]] = []
     for i, b in enumerate(bits):
