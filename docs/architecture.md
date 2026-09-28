@@ -334,6 +334,7 @@ docs/architecture.md
 - **No abbreviations:** every parser sets `allow_abbrev=False`, so `--liv` can't mean `--live`.
 - **Drive modes:** `drive` alone is passive; `drive --profile NAME` is polled.
 - **Raw console:** exists only as `lasto sim console`, which has no `--live` option.
+- **GUI (Phase 9):** `lasto gui` starts the local web GUI and opens the browser (§14). The CLI keeps every capability; the GUI is another front end over the same service layer.
 
 *(open: what `log` and `verify` should do)*
 
@@ -401,7 +402,7 @@ The bench tests are the only time either adapter transmits on purpose, and only 
 | 2 | **Storage:** estimate per driving hour, then set the disk budget and retention. |
 | 2 | **Bench test:** you decide before the first live test (optional; parts list in §12). |
 | 2 | **"Controller activated" messages:** the first live passive test shows whether the driver sends them routinely. If it does, their re-check stays cheap; if they come with resets, the reopen path handles them. |
-| 3 | **BLOCKER before any MX+ code touches hardware: the serial guard (review finding P2):** safety filters stopped both verification reviews while they analyzed the serial guard, so the P2 fix hasn't been independently verified. Nothing opens a serial port before Phase 3. First: <ul><li>**An independent review of the serial guard:** its path matching (`safety/serial_guard.py`), the test firewall's separate hook (`lasto.sim.pytest_plugin`), and the structural rule on serial device paths (`tests/safety/test_structure.py`).</li><li>**The guard installed before any lasto code can open a port:** the audit hook goes in when the safety core is first imported, and `lasto/__init__.py` doesn't import the safety core today, so code that runs before that import isn't covered. Reconcile this with the Phase 9 GUI import boundary.</li></ul> |
+| 3 | **BLOCKER before any MX+ code touches hardware: the serial guard (review finding P2):** safety filters stopped both verification reviews while they analyzed the serial guard, so the P2 fix hasn't been independently verified. Nothing opens a serial port before Phase 3. First: <ul><li>**An independent review of the serial guard:** its path matching (`safety/serial_guard.py`), the test firewall's separate hook (`lasto.sim.pytest_plugin`), and the structural rule on serial device paths (`tests/safety/test_structure.py`).</li><li>**The guard installed before any lasto code can open a port:** the audit hook goes in when the safety core is first imported, and `lasto/__init__.py` doesn't import the safety core today, so code that runs before that import isn't covered. Reconcile this with the Phase 9 GUI import boundary (proposal in §14.4).</li></ul> |
 | 3 | **Creader captures confirm:** 0x7E0 and any new request IDs, the padding byte, and the trimmed manufacturer service list. |
 | 3 | **MX+ checks:** stopping a monitor with a backspace, and silent monitoring on the real adapter. |
 | 3 | **Bootloader window (review finding E, deferred here):** the rule in §3.7 isn't enforced in code yet. `reset()` sends `ATZ` as soon as a connection opens, and again when retried after a prompt timeout. Settle, and verify on the real MX+ with the other MX+ checks: whether to wait for the banner and `>` after opening, reconnecting, or waking before sending anything; never re-send `ATZ` after a prompt timeout without first reading what the adapter sent; and how a Bluetooth reconnect or wake is detected. Nothing in Phase 1 or 2 opens the adapter on real hardware. |
@@ -414,3 +415,184 @@ The bench tests are the only time either adapter transmits on purpose, and only 
 | 7 | **K-line polling:** decide on 0x81 StartCommunication and running without 0x3E keep-alives. |
 | accepted (Low) | **A dataclass's `__setstate__` isn't guarded at runtime:** a frozen, slotted dataclass's `__setstate__` (which `copy` uses) rewrites an existing instance in place, as a second `__init__` did before P1. Guarding it would need the `__setstate__` attribute in `_frozen`, a new exemption. Accepted under the threat model: the scanner bans `__setstate__` in `src/`, so reaching it takes deliberate code, and since P1 the policy and the gate read an ECU's route, so a rewritten entry can't move a frame. |
 | accepted (Low) | **The interlocks read an entry's own kind:** rule 10's discovery exclusion, and the check that a probe goes only to the engine, read `target.kind` rather than the route, because their tests use unapproved SRS and immobilizer entries, which have no route. Accepted under the threat model: the gate refuses an unapproved entry before the interlocks run, rewriting an approved one takes deliberate code the scanner bans, and the policy's frame check still allows only DTC reads to a sensitive ECU, from its route. |
+
+## 14. Phase 9: local web GUI (planned)
+
+Status: planned 2026-09-28, design awaiting approval. No GUI code is written before Phase 9. §14.8 lists the changes this plan asks of Phases 2 to 8.
+
+A desk-side tool for reviewing and working with the data: sessions, interactive charts, health history, the Creader mapping workflow, broadcast decoding, and the definitions library. It runs on the truck laptop, or on any machine with a copy of the data, and makes the project approachable for other owners. Logging stays on the CLI and runs unattended. The GUI adds nothing while driving and never interferes with a capture in progress.
+
+### 14.1 Safety boundary (non-negotiable)
+
+1. **No GUI action can cause a transmission.** GUI code never imports the safety core, the transports, or any hardware module, directly or indirectly. Enforced three ways:
+   - **Static:** a test resolves the import closure of `lasto.gui` with `tests/scan.py` and fails on `lasto.safety`, `lasto.sim`, the hardware-facing operations (§14.4), `serial`, or `can.interface`/`can.interfaces`.
+   - **Dynamic:** a subprocess starts the GUI app and fails if any of those modules is loaded.
+   - **At runtime:** the GUI process installs its own audit hook, written separately from the safety core's like the test firewall. It refuses loading `PCANBasic.dll` and opening a serial device path, so neither a dependency nor a path someone types can reach hardware.
+2. **The only hardware action is starting and stopping a passive capture.** The GUI launches `lasto drive` with no profile as a separate process and monitors it. One function builds the command, always `[python, "-m", "lasto", "drive", "--live", "--channel", PCAN_USBBUSn]`, with no shell. The channel is chosen in the start dialog every time; nothing remembers it, just as the CLI wants it typed. A test proves the builder can't produce `--profile`, `--port`, or any other argument, and `subprocess` appears only in that one module. The GUI never starts polled profiles, snapshots, identify, discovery, or anything else that transmits. MX+ K-line monitoring (Phase 3) writes commands to the adapter, so it stays CLI-only unless you approve it for the GUI.
+3. **Safety configuration isn't editable from the GUI.** Allowlists, approved ECU IDs, rate limits, and interlock thresholds stay code changes in the safety core. The GUI shows them read-only from a snapshot (§14.4), without importing the safety core. User settings (alarm thresholds, tire size, units) are a different thing: the safety core never reads them.
+4. **Network exposure:**
+   - **Address:** the GUI binds to 127.0.0.1 only, with no option to change it, on a port the OS picks.
+   - **Host header:** it must be `127.0.0.1:<port>` or `localhost:<port>`, or the request is refused (DNS rebinding).
+   - **Launch token:** `lasto gui` opens the browser with a one-time token in the URL, exchanged for an HttpOnly, SameSite=Strict cookie. Every request needs that cookie.
+   - **CSRF:** every request that changes state needs a CSRF token, plus a same-origin `Origin`/`Sec-Fetch-Site`. GET and HEAD never change state.
+   - **Headers:** no CORS headers at all. A Content-Security-Policy of `default-src 'self'` with no inline script, `frame-ancestors 'none'`, `nosniff`, and `no-referrer`.
+
+   Every other page open in the same browser is treated as hostile.
+5. **Offline:**
+   - **Assets:** all JavaScript and CSS are vendored in the package. A test checks each vendored file against a manifest of pinned versions and SHA-256 hashes.
+   - **Fonts:** pages use the system font stack, so there are no fonts to vendor.
+   - **No network calls:** templates reference no other origin, and a test fails on any outbound connection from the GUI process. No CDNs, no telemetry.
+6. **Capture always wins.** The GUI browses through read-only database connections and makes its own writes in short transactions. It never holds a lock that could stall a running capture, and it degrades rather than blocking one (§14.3).
+
+### 14.2 Stack (proposal)
+
+- **Server:** Flask 3 (with Werkzeug, Jinja2 with autoescaping, MarkupSafe, itsdangerous, click, blinker), served by Waitress, a pure-Python WSGI server with no dependencies of its own that runs well on Windows. All are pure-Python wheels: nothing to compile, and no Node.js. Exact versions go into `uv.lock` when 9a starts.
+  - Server-rendered pages keep the logic in Python services.
+  - Flask is what most contributors know.
+  - Waitress is made for real use, unlike Werkzeug's development server.
+  - Considered and not proposed: the standard library's `http.server` (the security would all be hand-rolled), FastAPI or Starlette with uvicorn (async, more dependencies), and Bottle (small, but less maintained).
+- **Interactivity:** htmx, one vendored file, for partial page updates, plus a few small hand-written JavaScript modules. No build step.
+- **Charts:** uPlot, vendored, about 50 KB. It draws on a canvas, stays smooth with hundreds of thousands of points, and synchronizes the cursor across stacked charts, with zoom and pan. The byte and bit change heatmap is a small custom canvas script.
+- **Downsampling:** LTTB on the server, over the 1 Hz rollups (§14.3). An hour-long chart starts from at most 3,600 points per signal, so it stays cheap in pure Python on the old laptop. Raw samples load only for a narrow zoom window. Lists are paginated.
+- **Presentation:**
+  - Themes: light and dark, from CSS custom properties, following the system with a toggle.
+  - Keyboard: native controls, visible focus, and documented shortcuts.
+  - Screen: layouts that fit a small laptop screen.
+  - Units: imperial by default, set per vehicle profile, through one units module the CLI shares. Everything is stored SI.
+- **Command:** `lasto gui` starts the server and opens the browser. A demo mode, over a data folder the simulator fills, lets other owners try it without a truck.
+
+### 14.3 Sharing the data with a running capture
+
+- **Two databases, so the GUI and a capture never both write one** (proposed for Phase 2, §14.8):
+  - The **capture database** holds sessions, clock anchors, the segment index, per-ID stats, events, the audit log, conversations, samples, rollups, DTCs, freeze frames, readiness, Mode 06, and vehicle info. Only capture and polling processes write it.
+  - The **workbench database** holds tags, notes, mapping sessions and reference values, solver runs, verification history, saved chart layouts, and settings. The GUI and the CLI's analysis commands write it.
+  - Rows refer to sessions by UUID, so copies and merges stay consistent.
+- **GUI reads:**
+  - **Connection:** the capture database is opened as `file:…?mode=ro` with `PRAGMA query_only`.
+  - **Short reads:** one short read transaction per query, no cursor held across requests, and indexed, paginated queries. Long reads are taken in chunks.
+  - **Why short:** in WAL mode readers never block the capture's writer, but a long read can keep a checkpoint from finishing and let the WAL grow. Short reads prevent that.
+- **The GUI's only writes to the capture database:** deleting closed sessions under the retention policy, only while no capture is running, and in small batches.
+- **Live feed:**
+  - **What:** once a second, the capture process writes the current decoded values, alarms, frame counts, and a heartbeat to a small separate `live.sqlite`, in its own connection.
+  - **Failures:** a failure there is logged and ignored; it never stops the capture.
+  - **Readers:** the GUI's live monitor and `lasto view` (Phase 4) both read it, read-only.
+  - **No socket:** the capture process opens no listening socket.
+- **Is a capture running?** The capture process holds an OS lock on a file in the data folder for its whole life, and the live feed carries its heartbeat. Only the capture process recovers an interrupted session; the GUI never does.
+- **Stopping a capture the GUI started:** it asks through `drive`'s stop request (§14.8). If the process doesn't exit in time, the GUI reports that and asks before ending it. The segment format already tolerates a torn tail.
+- **Charts and the broadcast explorer:**
+  - **Signal rollups:** each once-a-second commit also writes, for every decoded signal, that second's min, max, mean, and last value.
+  - **Per-ID stats:** for every broadcast ID, the second's frame count and a mask of the bits that changed.
+  - **Raw frames:** read from the zstd segments one second at a time, through the segment index.
+- **Copies:** paths in the database are relative to the data root, so a copied folder works anywhere. `lasto backup` makes a consistent copy with SQLite's online backup, even during a capture.
+
+### 14.4 Import boundary, service layer, and the serial guard
+
+Proposed package split (settled at the start of Phase 2, §14.8):
+
+```
+src/lasto/
+  services/     hardware-free application logic; the CLI and the GUI both call it
+  operations/   hardware-facing work (drive, snapshot, identify, discover); the only
+                code outside the safety core that opens safety core sessions; CLI only
+  capture/  storage/  decode/  protocol/  mapping/  analysis/  report/  export/
+                hardware-free, except capture/, which runs inside operations
+  cli.py        argument parsing and rendering only: each command calls one service
+                or operation
+  gui/          routes, templates, vendored assets; calls services only
+```
+
+- **No logic only in the CLI:** services return plain data, stored SI. The CLI renders it as text or `rich`; the GUI renders it as HTML.
+- **Service imports:** a structural test holds the import closure of `lasto.services` free of the safety core, the simulator, operations, and hardware libraries. The GUI's boundary test (§14.1) builds on that.
+- **Plain data types:** storage, decoding, passive protocol reassembly, mapping, and the GUI use hardware-free record types, never `lasto.safety.frames`. The capture process converts at its reader subscriber.
+- **Separate reassembly:** passive Creader reassembly (`protocol/`) has its own ISO-TP and KWP parser instead of importing `lasto.safety.isotp`. A test runs both parsers on the same frames.
+- **Safety configuration for display:**
+  - **Snapshot file:** a committed `safety_config.json` holds the allowlists, approved ECU IDs, rate limits, and interlock thresholds. A test (which may import both) proves it matches the safety core exactly, and the GUI reads the file.
+  - **Per session:** each session record also stores the configuration in force when it ran.
+- **cantools:** at Phase 5, check whether importing cantools loads python-can's interfaces. If it does, DBC writing runs in a CLI subprocess rather than in the GUI process.
+
+**The serial guard (the §13 Phase 3 blocker), reconciled with the boundary:**
+- **The top-level package:** `lasto/__init__.py` stays free of the safety core, so importing `lasto`, or `lasto.gui`, never loads it.
+- **Hardware processes:** `lasto.cli.main` imports `lasto.safety`, which installs the serial guard, as soon as it has parsed the command line and before it dispatches any command except `gui`. Argument parsing opens nothing, so the guard is in place before any lasto code in a hardware process could open a port.
+- **The GUI process:** `lasto gui` dispatches without loading the safety core, and the GUI process relies on its own guard hook (§14.1).
+- **The service layer:** it refuses serial device paths in anything a user types, such as an export or storage location, with a clear message.
+- **Tests:**
+  - in a subprocess, the guard is installed before a hardware command's handler runs;
+  - in another, `lasto gui` never loads `lasto.safety`;
+  - the independent review the blocker calls for covers both guards.
+
+### 14.5 Features
+
+1. **Home:** vehicle profiles; the last session; current DTC status across ECUs, with known conditions labeled; readiness; open alerts; disk usage against the storage budget.
+2. **Sessions:**
+   - A list with date, duration, mode, profile, frames captured, and events.
+   - Filtering, search, tags, and notes.
+   - Deletion with confirmation, respecting the retention policy (§14.3).
+3. **Session detail:**
+   - **Charts:** interactive time-series charts with zoom, pan, stacked charts with a synchronized cursor, a signal picker, and saved layouts.
+   - **Built-in views:** Grades (transmission temperature, gear, lockup, RPM, speed, load, coolant), Emissions, and KDSS.
+   - **Event markers:** threshold crossings, lockup drops under load, and kill-switch events.
+   - **Statistics:** per signal.
+   - **Audit log:** for a polled session, every transmitted frame and rejected request.
+   - **Buttons:** the session report, and an export pack with VIN scrubbing on by default.
+4. **Health:** DTC snapshot history per ECU with a diff between any two snapshots; readiness history; Mode 06 results with limits and trends. Maintenance events in the vehicle profile, such as the 2026-09-21 catalyst repair, mark the charts, so results since a repair are easy to follow.
+5. **Mapping workbench** (the most important feature):
+   - **Captures:** Creader capture sessions, with conversations grouped by bus (CAN or K-line), ECU, and identifier, and the raw payloads.
+   - **Reference entry:** a form that replaces the CSV template (value name, value, unit, ordered steady-state points, optional timestamps), and can import a filled-in template.
+   - **Solver:** ranked candidates with fit quality, and a plot of predicted against reference values.
+   - **Confirm or reject:** each candidate. Confirming goes through the same service as `lasto verify`, with the same evidence (a Creader capture and a reference fit), and the history is recorded. Nothing, an imported definition included, can be made verified by a click without that evidence. Verified status is what admits a definition to a logging profile (N10).
+   - **Unmapped queue:** identifiers the Creader requested that are still unmapped.
+6. **Broadcast explorer:**
+   - **IDs:** CAN IDs with frame rates and periods.
+   - **Heatmap:** a byte and bit change heatmap over time, with filters.
+   - **Correlation:** pick a known signal (polled, or a Creader reference) and rank broadcast IDs and bytes by how well they track it.
+   - **Save:** a discovered signal to the DBC, with name, scale, offset, and units.
+   - **Raw frames:** a read-only viewer with filtering.
+7. **Definitions library:**
+   - **Browse:** every polled definition and broadcast signal, with status (unverified, verified, rejected), source, verification history, and search.
+   - **Export:** a shareable pack, with the VIN and personal data stripped.
+   - **Import:** packs from other owners, always as unverified.
+   - **Scope:** definitions say which vehicle platform they apply to.
+8. **Live monitor, read-only:** decoded values and alarms from the live feed while a capture runs. Start and stop controls for passive capture only (§14.1, rule 2).
+9. **Settings:**
+   - **Editable:** vehicle profiles (tire size correction, alarm thresholds, known conditions, units, maintenance events), the storage location, retention and disk budget, and export defaults.
+   - **Read-only:** the compiled-in safety configuration.
+
+### 14.6 Tests
+
+- **The import boundary from rule 1:** static and dynamic, plus the GUI process's own guard hook.
+- **Network exposure:** bind address and Host header tests; the launch token and cookie; CSRF on every endpoint that changes state; a check that no GET changes state.
+- **Offline:** the vendored-asset manifest, and no outbound connections.
+- **Capture launcher:** the passive command builder.
+- **Service layer:** unit tests, shared with the CLI.
+- **Endpoints:** tests against a fixture database built from simulator sessions.
+- **Capture coexistence:** a simulated capture writes to the same databases at full rate while the GUI browses, charts, and saves notes. The GUI stays responsive, the capture loses no frames, its once-a-second commits keep their schedule, and the WAL stays bounded.
+
+### 14.7 Sub-phases (stop for approval after each)
+
+- **9a:** read-only browsing: Home, Sessions, Session detail, Health.
+- **9b:** Mapping workbench and Broadcast explorer.
+- **9c:** Definitions library, Live monitor, Settings.
+
+**Phase 9 is done when:**
+- **Without the command line:** you can review any drive, map a new value from a Creader session, and publish a definitions pack.
+- **Transmit reach:** tests prove no GUI code path can reach a transmit function.
+- **Capture:** the GUI never slows or interrupts a running capture.
+
+### 14.8 Changes this plan asks of Phases 2 to 8 (awaiting approval)
+
+| Phase | Change |
+|---|---|
+| 2, before feature code | **Service layer:** the `services/` and `operations/` split in §14.4, with the CLI kept to parsing and rendering, and the structural test on `lasto.services`. |
+| 2, before feature code | **Safety core imports:** a structural test that `lasto.safety` imports nothing from `lasto` outside itself. That holds today but isn't enforced, and it keeps user settings from ever feeding the safety core. |
+| 2 | **Storage schema:** the capture and workbench databases, session UUIDs, a vehicle ID on every session, and paths relative to the data root (§14.3). |
+| 2 | **Plain records:** hardware-free frame and record types for storage, converted from the safety core's types in the capture process. |
+| 2 | **Rollups:** per broadcast ID, each second's frame count and changed-bit mask, written with the once-a-second commit. Per-signal min, max, mean, and last follow once signals are decoded (Phases 4 and 5). |
+| 2 | **Live feed and liveness:** `live.sqlite`, the heartbeat, and the capture lock file. |
+| 2 | **Stopping `drive` from outside:** `drive` stops cleanly on a stop request from another process (a stop file, or a named event, checked every second), through the same path as Ctrl+C. A GUI, or any parent, can't send Ctrl+C to a background process on Windows. |
+| 2 | **Serial guard in the CLI:** the dispatch order in §14.4, with its tests, as the Phase 3 blocker's second item. |
+| 2 | **Safety configuration records:** each session stores the safety configuration in force; the committed `safety_config.json` and its consistency test. |
+| 3 | **Separate reassembly:** `protocol/` gets its own reassembly (§14.4). |
+| 3 | **Definitions:** stored as plain data with a vehicle-platform field. Verification is a service shared by `lasto verify` and the GUI. |
+| 4 | **`lasto view`:** reads the live feed rather than running inside `drive`. Alarms are evaluated by a hardware-free service. |
+| 5 | **cantools:** the import check in §14.4. |
+| 8 | **Reports and exports:** services that return files, so the GUI's buttons and the CLI make the same thing. |

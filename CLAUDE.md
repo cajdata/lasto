@@ -57,6 +57,7 @@ The safety core defends against accidental or convenient bypasses by code in thi
 6. **Discovery** for anything the Creader never requests. Stop.
 7. **STN transport** for K-line modules (if Phase 2 or 3 shows any) and the crank profile. Stop.
 8. **Analysis, reports, and export packs.** Stop.
+9. **Local web GUI** for desk-side review, the Creader mapping workbench, broadcast decoding, and the definitions library, over the same service layer as the CLI. It never transmits: its safety boundary (`docs/architecture.md` §14.1) is non-negotiable. Sub-phases 9a (read-only browsing), 9b (mapping workbench, broadcast explorer), 9c (definitions library, live monitor, settings); stop after each.
 
 ## In this repo
 
