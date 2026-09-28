@@ -44,6 +44,11 @@ BRANDS = {"Toyota": "Toyota", "Lexus": "Lexus", "Subaru": "Subaru", "PEAK": "PEA
 # Phrases that stop being true when a phase is done.
 STALE = {"nothing runs at the truck": 2, "none recorded yet": 2, "hasn't been done yet": 2}
 
+# "built in ten phases": the count has to match the roadmap.
+PHASE_COUNT = re.compile(r"\bbuilt in (\w+) phases\b", re.I)
+NUMBER_WORDS = {w: n for n, w in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen".split())}
+
 
 class _Scan(HTMLParser):
     def __init__(self) -> None:
@@ -273,8 +278,14 @@ def run(dist: Path, pages: list, site: dict, roadmap: Roadmap, text_cmap: frozen
 
 def _stale(where: str, text: str, roadmap: Roadmap) -> list[str]:
     low = text.lower()
-    return [
+    problems = [
         f"{where}: says {phrase!r}, but Phase {phase} is done"
         for phrase, phase in STALE.items()
         if roadmap.phase(phase).done and phrase in low
     ]
+    for m in PHASE_COUNT.finditer(low):
+        word = m.group(1)
+        count = int(word) if word.isdigit() else NUMBER_WORDS.get(word)
+        if count != len(roadmap.phases):
+            problems.append(f"{where}: says it's {m.group(0)}, but the roadmap has {len(roadmap.phases)}")
+    return problems

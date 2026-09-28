@@ -39,6 +39,16 @@ def test_real_roadmap_loads_and_validates():
     assert r.phase(0).done
 
 
+def test_copy_that_counts_the_phases_must_match_the_roadmap():
+    from sitegen import checks
+
+    r = roadmap(*["planned"] * 10)
+    assert checks._stale("page", "Lasto is built in ten phases, and each one stops.", r) == []
+    problems = checks._stale("page", "It's built in nine phases.", r)
+    assert problems == ["page: says it's built in nine phases, but the roadmap has 10"]
+    assert checks._stale("page", "Lasto gets built in 10 phases.", r) == []
+
+
 def test_status_sentence_follows_the_data():
     r = roadmap("done", "awaiting-approval", *NINE[2:])
     assert r.status_sentence() == "Pre-alpha: Phase 1 is built and waiting on my sign-off, and nothing runs at the truck yet."
