@@ -1,6 +1,6 @@
 # lasto architecture
 
-Status: **Phase 0 approved 2026-09-26.** Decisions are in §0 and override anything below that says *(open)*. Facts about the truck are hypotheses from documentation research until a capture confirms them.
+Status: **Phase 0 approved 2026-09-26. Phase 1 approved 2026-09-28,** with an independent review of the serial guard recorded as a Phase 3 blocker (§13). Decisions are in §0 and override anything below that says *(open)*. Facts about the truck are hypotheses from documentation research until a capture confirms them.
 
 ## 0. Decisions (Phase 0, 2026-09-26)
 
@@ -401,6 +401,7 @@ The bench tests are the only time either adapter transmits on purpose, and only 
 | 2 | **Storage:** estimate per driving hour, then set the disk budget and retention. |
 | 2 | **Bench test:** you decide before the first live test (optional; parts list in §12). |
 | 2 | **"Controller activated" messages:** the first live passive test shows whether the driver sends them routinely. If it does, their re-check stays cheap; if they come with resets, the reopen path handles them. |
+| 3 | **BLOCKER before any MX+ code touches hardware: the serial guard (review finding P2):** safety filters stopped both verification reviews while they analyzed the serial guard, so the P2 fix hasn't been independently verified. Nothing opens a serial port before Phase 3. First: <ul><li>**An independent review of the serial guard:** its path matching (`safety/serial_guard.py`), the test firewall's separate hook (`lasto.sim.pytest_plugin`), and the structural rule on serial device paths (`tests/safety/test_structure.py`).</li><li>**The guard installed before any lasto code can open a port:** the audit hook goes in when the safety core is first imported, and `lasto/__init__.py` doesn't import the safety core today, so code that runs before that import isn't covered. Reconcile this with the Phase 9 GUI import boundary.</li></ul> |
 | 3 | **Creader captures confirm:** 0x7E0 and any new request IDs, the padding byte, and the trimmed manufacturer service list. |
 | 3 | **MX+ checks:** stopping a monitor with a backspace, and silent monitoring on the real adapter. |
 | 3 | **Bootloader window (review finding E, deferred here):** the rule in §3.7 isn't enforced in code yet. `reset()` sends `ATZ` as soon as a connection opens, and again when retried after a prompt timeout. Settle, and verify on the real MX+ with the other MX+ checks: whether to wait for the banner and `>` after opening, reconnecting, or waking before sending anything; never re-send `ATZ` after a prompt timeout without first reading what the adapter sent; and how a Bluetooth reconnect or wake is detected. Nothing in Phase 1 or 2 opens the adapter on real hardware. |
