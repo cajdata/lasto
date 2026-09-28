@@ -25,6 +25,14 @@ class PassiveChannel(PcanChannel):
 def open_passive(channel_name: str, *, pcan: ReadOnlyPcan | None = None) -> PassiveChannel:
     handle = pc.channel_handle(channel_name)
     pcan = load_readonly() if pcan is None else pcan
+    if type(pcan) is not ReadOnlyPcan:
+        # Not a subclass, not a look-alike: only the binding that never looks up CAN_Write (finding #6).
+        refuse(
+            TypeError("passive capture takes the read-only binding from lasto.safety.pcan_dll, and nothing else"),
+            transport="pcan",
+            request=f"open {channel_name} listen-only",
+            reason="passive_needs_the_read_only_binding",
+        )
     api_version = check_driver(pcan)
     check_available(pcan, handle, channel_name)
     status = pcan.set_value(handle, pc.PCAN_LISTEN_ONLY, pc.PCAN_PARAMETER_ON)
