@@ -9,8 +9,9 @@ and to nothing else.
 The Writer doesn't trust its caller. For every frame it runs the policy's
 full stateless check on the exact bytes, confirms the frame is the kind the
 caller says it is, checks the kill switch, holds request frames to the hard
-ceiling (rule 6: at most 20 in any second, by its own clock, across every
-caller), and writes the audit record before the frame goes out. So even a
+ceiling (rule 6: at most 20 in any second, across every caller; on real
+hardware measured with SystemClock), and writes the audit record before the
+frame goes out. So even a
 direct call can only send what the policy allows, no faster than the
 ceiling. The gate adds the checks that need state: flow control only for a
 first frame that is waiting for it, the interlocks, and the per-purpose rates
@@ -30,7 +31,7 @@ from lasto.safety import pcan_constants as pc
 from lasto.safety import policy
 from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import Auditor, refuse
-from lasto.safety.clock import Clock
+from lasto.safety.clock import Clock, require_system_clock
 from lasto.safety.errors import SafetyViolation
 from lasto.safety.killswitch import KILL_SWITCH
 from lasto.safety.pcan_dll import (
@@ -147,8 +148,13 @@ def open_active(
     library: object | None = None,
     broadcast_ids: Collection[int] = frozenset(),
 ) -> tuple[ActiveChannel, Writer]:
-    """Open a channel in normal mode, from the real DLL or a stand-in. Only the polled session calls this."""
+    """Open a channel in normal mode, from the real DLL or a stand-in. Only the polled session calls this.
+
+    On real hardware the write function's ceiling is measured with SystemClock, whatever else a caller has.
+    """
     handle = pc.channel_handle(channel_name)
+    if library is None:
+        require_system_clock(clock, request=f"open {channel_name} in normal mode")
     source: Any = load_library() if library is None else library
     functions = bind_readonly(source)
     pcan = ReadOnlyPcan(functions)

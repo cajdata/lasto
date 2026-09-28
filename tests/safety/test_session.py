@@ -5,9 +5,11 @@ from helpers import CHANNEL, HANDLE, LOGGING_RPM_SPEED, events, open_polled
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety.audit import Auditor
+from lasto.safety.clock import SystemClock
 from lasto.safety.errors import KillSwitchTripped, SafetyViolation
 from lasto.safety.exchange import ExchangeState
 from lasto.safety.session import LISTEN_WINDOW, open_passive_session, open_polled_session
+from lasto.sim.clock import FakeClock
 from lasto.sim.pytest_plugin import HardwareFirewallError
 from lasto.sim.tester import SimTester
 
@@ -91,17 +93,56 @@ def test_a_polled_channel_closed_after_a_kill_records_whether_it_really_closed(s
 
 
 @pytest.mark.parametrize("listen_seconds", [0, LISTEN_WINDOW - 0.01, -1.0, float("nan"), "2"])
-def test_on_real_hardware_the_listen_window_has_a_minimum(clock, auditor, sink, listen_seconds):
+def test_on_real_hardware_the_listen_window_has_a_minimum(auditor, sink, listen_seconds):
     """Finding D: with the real DLL, a polled session can't skip or shorten its listen for other testers."""
     with pytest.raises(SafetyViolation):  # refused before the DLL is even loaded
-        open_polled_session(CHANNEL, profile=[LOGGING_RPM_SPEED], auditor=auditor, clock=clock, listen_seconds=listen_seconds)
+        open_polled_session(
+            CHANNEL, profile=[LOGGING_RPM_SPEED], auditor=auditor, clock=SystemClock(), listen_seconds=listen_seconds
+        )
     assert [r["reason"] for r in events(sink, "rejected")] == ["listen_window_too_short"]
     assert events(sink, "session_refused")[0]["reason"] == "listen_window_too_short"
 
 
-def test_on_real_hardware_the_full_listen_window_passes_that_check(clock, auditor):
+def test_on_real_hardware_the_full_listen_window_passes_that_check(auditor):
     with pytest.raises(HardwareFirewallError):  # it gets as far as loading the DLL, which tests can't
-        open_polled_session(CHANNEL, profile=[LOGGING_RPM_SPEED], auditor=auditor, clock=clock, listen_seconds=LISTEN_WINDOW)
+        open_polled_session(
+            CHANNEL, profile=[LOGGING_RPM_SPEED], auditor=auditor, clock=SystemClock(), listen_seconds=LISTEN_WINDOW
+        )
+
+
+class SlowerSystemClock(SystemClock):
+    """Looks like the system clock, but a subclass could report any time it likes."""
+
+    __slots__ = ()
+
+
+def _polled(clock, auditor):
+    open_polled_session(CHANNEL, profile=[LOGGING_RPM_SPEED], auditor=auditor, clock=clock)
+
+
+def _passive(clock, auditor):
+    open_passive_session(CHANNEL, auditor=auditor, clock=clock)
+
+
+@pytest.mark.parametrize("opener", [_polled, _passive])
+@pytest.mark.parametrize("make_clock", [FakeClock, SlowerSystemClock])
+def test_on_real_hardware_timing_comes_from_the_system_clock(auditor, sink, opener, make_clock):
+    """Finding N2: rate slots, the ceiling, the listen window, and reading ages can't run on a caller's clock."""
+    with pytest.raises(SafetyViolation):  # refused before the DLL is even loaded
+        opener(make_clock(), auditor)
+    assert [r["reason"] for r in events(sink, "rejected")] == ["clock_not_the_system_clock"]
+    assert events(sink, "session_refused")[0]["reason"] == "clock_not_the_system_clock"
+
+
+@pytest.mark.parametrize("opener", [_polled, _passive])
+def test_on_real_hardware_the_system_clock_passes_that_check(auditor, opener):
+    with pytest.raises(HardwareFirewallError):  # as far as loading the DLL, which tests can't
+        opener(SystemClock(), auditor)
+
+
+def test_the_simulator_may_use_its_own_clock(sim, auditor):
+    session = open_polled(sim, auditor)  # library= given: the simulated clock is the right one
+    assert not session.killswitch.tripped
 
 
 def test_kill_switches_the_channel_to_listen_only(sim, auditor, sink):

@@ -21,10 +21,12 @@ import sys
 import threading
 from collections import deque
 from datetime import UTC, datetime
-from typing import NoReturn, Protocol, TextIO
+from typing import TYPE_CHECKING, NoReturn, Protocol, TextIO
 
 from lasto.safety._frozen import SealedProtocolType, SealedType, freeze
-from lasto.safety.clock import Clock
+
+if TYPE_CHECKING:  # clock imports this module, to refuse a clock
+    from lasto.safety.clock import Clock
 
 # Refusals held while no audit log is attached, before the oldest are dropped (and counted).
 REFUSAL_BACKLOG_LIMIT = 10_000

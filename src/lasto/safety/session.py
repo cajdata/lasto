@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import REFUSALS, Auditor, refuse
-from lasto.safety.clock import Clock
+from lasto.safety.clock import Clock, require_system_clock
 from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed, SafetyViolation
 from lasto.safety.exchange import Exchange, ExchangeState
 from lasto.safety.frames import Received
@@ -175,9 +175,14 @@ def open_passive_session(
     library: object | None = None,
     subscribers: Iterable[Subscriber] = (),
 ) -> PassiveSession:
-    """Open a listen-only capture on the real DLL, or on a stand-in `library` such as the simulator's."""
+    """Open a listen-only capture on the real DLL, or on a stand-in `library` such as the simulator's.
+
+    On real hardware the clock must be SystemClock: listen-only re-checks are timed by it.
+    """
     REFUSALS.attach(auditor)
     try:
+        if library is None:
+            require_system_clock(clock, request=f"open a passive session on {channel_name}")
         pcan = load_readonly(library)
         channel = open_passive(channel_name, pcan=pcan)
     except BaseException as exc:
@@ -291,6 +296,9 @@ def open_polled_session(
     session: PolledSession | None = None
     try:
         KILL_SWITCH.check(request=f"open a polled session on {channel_name}")
+        if library is None:
+            # Real hardware: every timing rule runs on the system clock (finding N2).
+            require_system_clock(clock, request=f"open a polled session on {channel_name}")
         if library is None and not (type(listen_seconds) in (int, float) and listen_seconds >= LISTEN_WINDOW):
             # On real hardware the listen for other testers can't be skipped or shortened (finding D).
             refuse(

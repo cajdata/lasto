@@ -5,7 +5,8 @@ from helpers import CHANNEL, HANDLE, events
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety import pcan_dll
-from lasto.safety.audit import Auditor
+from lasto.safety.audit import REFUSALS, Auditor
+from lasto.safety.clock import SystemClock
 from lasto.safety.errors import InterfaceError, KillSwitchTripped, SafetyViolation
 from lasto.safety.killswitch import KILL_SWITCH
 from lasto.safety.pcan_active import ActiveChannel, Writer, open_active
@@ -33,7 +34,16 @@ def test_the_read_only_binding_follows_its_list():
 
 def test_default_loader_is_blocked_in_tests(auditor):
     with pytest.raises(HardwareFirewallError):
+        open_active(CHANNEL, auditor=auditor, clock=SystemClock())
+
+
+def test_on_real_hardware_the_write_function_runs_on_the_system_clock(auditor, sink):
+    """Finding N2: the ceiling's window is measured with the system clock, whatever the caller passes."""
+    REFUSALS.attach(auditor)
+    with pytest.raises(SafetyViolation) as refused:  # refused before the DLL is loaded
         open_active(CHANNEL, auditor=auditor, clock=FakeClock())
+    assert refused.value.reason == "clock_not_the_system_clock"
+    assert [r["reason"] for r in events(sink, "rejected")] == ["clock_not_the_system_clock"]
 
 
 def test_opens_in_normal_mode_and_writes_through_the_writer(sim, auditor, sink):

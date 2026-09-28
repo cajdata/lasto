@@ -11,6 +11,7 @@ from helpers import CHANNEL, HANDLE, events
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety import session as session_module
+from lasto.safety.clock import SystemClock
 from lasto.safety.reader import STATUS_INTERVAL
 from lasto.safety.session import MAX_REOPENS_PER_SESSION, REOPEN_ATTEMPTS, open_passive_session
 from lasto.sim.pytest_plugin import HardwareFirewallError
@@ -170,7 +171,7 @@ def test_close_and_properties(sim, auditor, sink):
     assert len(events(sink, "session_closed")) == 1
 
 
-def test_default_binding_is_the_real_dll_which_tests_cannot_reach(clock, auditor, sink):
+def test_default_binding_is_the_real_dll_which_tests_cannot_reach(auditor, sink):
     with pytest.raises(HardwareFirewallError):
-        open_passive_session(CHANNEL, auditor=auditor, clock=clock)
+        open_passive_session(CHANNEL, auditor=auditor, clock=SystemClock())
     assert events(sink, "session_refused")[0]["reason"] == "HardwareFirewallError"
