@@ -13,6 +13,7 @@ enforce those rules. Every refusal is audited (rule 11).
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import NoReturn, Protocol
 
 from lasto.safety import stn_policy
@@ -44,8 +45,7 @@ class SerialPort(Protocol, metaclass=SealedProtocolType):
         """Close the port."""
 
 
-def open_serial(port_name: str, *, factory: object = None) -> SerialPort:
-    """Open a COM port for the adapter. Only live hardware sessions call this without a factory."""
+def _open_serial(port_name: str, *, factory: Callable[..., SerialPort] | None) -> SerialPort:
     if not isinstance(port_name, str) or _PORT_NAME.fullmatch(port_name) is None:
         refuse(ValueError(f"not a COM port name: {port_name!r}"), transport="stn", reason="bad_port_name")
     if factory is None:
@@ -53,6 +53,15 @@ def open_serial(port_name: str, *, factory: object = None) -> SerialPort:
 
         factory = serial.Serial
     return factory(port=port_name, baudrate=115200, timeout=COMMAND_TIMEOUT, write_timeout=COMMAND_TIMEOUT)
+
+
+def open_adapter(port_name: str, *, auditor: Auditor, factory: Callable[..., SerialPort] | None = None) -> StnAdapter:
+    """Open the OBDLink on a COM port (or a stand-in `factory`, such as the simulator's).
+
+    The port itself is never handed out: it lives inside the adapter, so every
+    line reaching it goes through the allowlist and the audit log (finding N1).
+    """
+    return StnAdapter(_open_serial(port_name, factory=factory), auditor)
 
 
 def _lines(text: str) -> list[str]:

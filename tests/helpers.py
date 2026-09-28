@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import types
+from collections import deque
 from collections.abc import Callable, Iterable
+
+import pytest
 
 from lasto.safety import ecus
 from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
@@ -112,3 +116,57 @@ def park(session: PolledSession) -> None:
     """Read speed and voltage so parked-only requests pass the interlocks."""
     session.request(interlock_probe(0x42))
     session.request(interlock_probe(0x0D))
+
+
+# ---- walking every attribute path from an object (the reachability tests) ----
+
+# Not walked into: functions, methods, modules, classes, and plain values.
+LEAVES = (
+    types.FunctionType,
+    types.BuiltinFunctionType,
+    types.MethodType,
+    types.ModuleType,
+    type,
+    str,
+    bytes,
+    int,
+    float,
+    bool,
+    type(None),
+)
+
+
+def attributes(obj):
+    if isinstance(obj, dict):
+        return [(f"[{key!r}]", value) for key, value in list(obj.items())]
+    if isinstance(obj, list | tuple | set | frozenset | deque):
+        return [(f"[{index}]", value) for index, value in enumerate(list(obj))]
+    found = [(f".{key}", value) for key, value in vars(obj).items()] if hasattr(obj, "__dict__") else []
+    for cls in type(obj).__mro__:
+        for slot in getattr(cls, "__slots__", ()):
+            if isinstance(slot, str) and hasattr(obj, slot):
+                found.append((f".{slot}", getattr(obj, slot)))
+    return found
+
+
+def paths_to(root, match):
+    """Every attribute path from root to an object match() accepts, with the objects passed on the way."""
+    hits, seen, queue = [], {id(root)}, deque([(root, "session", ())])
+    while queue:
+        obj, path, via = queue.popleft()
+        for step, child in attributes(obj):
+            if match(child):
+                hits.append((path + step, via + (obj,), child))
+                continue
+            if isinstance(child, LEAVES) or id(child) in seen:
+                continue
+            seen.add(id(child))
+            queue.append((child, path + step, via + (obj,)))
+    return hits
+
+
+def the_writer(session):
+    hits = paths_to(session, lambda obj: type(obj).__name__ == "Writer")
+    if not hits:
+        pytest.fail("the polled session holds no armored write function")
+    return hits[0][2]

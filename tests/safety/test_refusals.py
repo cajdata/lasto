@@ -25,7 +25,7 @@ from lasto.safety.pcan_passive import open_passive
 from lasto.safety.ratelimit import PURPOSE_RATES, RateLimiter
 from lasto.safety.requests import DtcKind, Purpose
 from lasto.safety.session import open_passive_session
-from lasto.safety.stn_port import StnAdapter, open_serial
+from lasto.safety.stn_port import StnAdapter, open_adapter
 from lasto.sim.clock import FakeClock
 from lasto.sim.fake_pcan import FakePcanDll
 from lasto.sim.fake_stn import FakeStnPort
@@ -67,7 +67,7 @@ SITES = [
     ("channel name", lambda: pc.channel_handle("PCAN_USBBUS99"), ValueError, "bad_channel_name"),
     ("ReadOnlyPcan.set_value", lambda: load_readonly(FakePcanDll()).set_value(HANDLE, pc.PCAN_LISTEN_ONLY, 0), SafetyViolation, "pcan_setting_not_allowed"),
     ("the write function", lambda: _writer()(0x025, bytes(7), purpose="test", kind="request"), SafetyViolation, "frame_length"),
-    ("COM port name", lambda: open_serial("/dev/ttyUSB0"), ValueError, "bad_port_name"),
+    ("COM port name", lambda: open_adapter("/dev/ttyUSB0", auditor=Auditor(MemoryAuditSink(), FakeClock())), ValueError, "bad_port_name"),
     ("STN command", lambda: stn_policy.check_command("0100"), SafetyViolation, "adapter_hex_request"),
 ]
 

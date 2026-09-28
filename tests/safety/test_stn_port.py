@@ -5,7 +5,7 @@ from helpers import events
 
 from lasto.safety import stn_port
 from lasto.safety.errors import AdapterError, SafetyViolation
-from lasto.safety.stn_port import COMMAND_TIMEOUT, StnAdapter, open_serial
+from lasto.safety.stn_port import COMMAND_TIMEOUT, StnAdapter, open_adapter
 from lasto.sim.fake_stn import FakeStnPort
 from lasto.sim.pytest_plugin import HardwareFirewallError
 
@@ -21,26 +21,26 @@ def ready(auditor, **port_options):
     return stn, port
 
 
-def test_open_serial_checks_the_port_name():
+def test_open_adapter_checks_the_port_name(auditor):
     for bad in ["COM0", "COM", "com5", "/dev/ttyUSB0", "COM5 ", None, "COM1234"]:
         with pytest.raises(ValueError):
-            open_serial(bad)
+            open_adapter(bad, auditor=auditor, factory=lambda **kwargs: FakeStnPort())
 
 
-def test_open_serial_uses_the_factory():
+def test_open_adapter_uses_the_factory(auditor):
     seen = {}
 
     def factory(**kwargs):
         seen.update(kwargs)
-        return "port"
+        return FakeStnPort()
 
-    assert open_serial("COM5", factory=factory) == "port"
+    assert isinstance(open_adapter("COM5", auditor=auditor, factory=factory), StnAdapter)
     assert seen == {"port": "COM5", "baudrate": 115200, "timeout": COMMAND_TIMEOUT, "write_timeout": COMMAND_TIMEOUT}
 
 
-def test_opening_a_real_port_is_blocked_in_tests():
+def test_opening_a_real_port_is_blocked_in_tests(auditor):
     with pytest.raises(HardwareFirewallError):
-        open_serial("COM5")
+        open_adapter("COM5", auditor=auditor)
 
 
 def test_reset_waits_for_the_prompt_then_configures(auditor, sink):

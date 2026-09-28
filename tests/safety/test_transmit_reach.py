@@ -11,10 +11,9 @@ import contextlib
 import importlib
 import threading
 import types
-from collections import deque
 
 import pytest
-from helpers import events, open_polled
+from helpers import events, open_polled, paths_to, the_writer
 
 from lasto.safety.errors import KillSwitchTripped, SafetyViolation
 from lasto.sim.violations import VIOLATIONS
@@ -31,49 +30,7 @@ PUBLIC_MODULES = [
     "lasto.safety.stn_port",
 ]
 TRANSMIT_CAPABLE_MODULES = {"lasto.safety.pcan_active", "lasto.safety.gate"}
-LEAVES = (
-    types.FunctionType,
-    types.BuiltinFunctionType,
-    types.MethodType,
-    types.ModuleType,
-    type,
-    str,
-    bytes,
-    int,
-    float,
-    bool,
-    type(None),
-)
 REQUEST = bytes.fromhex("02010C0000000000")
-
-
-def attributes(obj):
-    if isinstance(obj, dict):
-        return [(f"[{key!r}]", value) for key, value in list(obj.items())]
-    if isinstance(obj, list | tuple | set | frozenset | deque):
-        return [(f"[{index}]", value) for index, value in enumerate(list(obj))]
-    found = [(f".{key}", value) for key, value in vars(obj).items()] if hasattr(obj, "__dict__") else []
-    for cls in type(obj).__mro__:
-        for slot in getattr(cls, "__slots__", ()):
-            if isinstance(slot, str) and hasattr(obj, slot):
-                found.append((f".{slot}", getattr(obj, slot)))
-    return found
-
-
-def paths_to(root, match):
-    """Every attribute path from root to an object match() accepts, with the objects passed on the way."""
-    hits, seen, queue = [], {id(root)}, deque([(root, "session", ())])
-    while queue:
-        obj, path, via = queue.popleft()
-        for step, child in attributes(obj):
-            if match(child):
-                hits.append((path + step, via + (obj,), child))
-                continue
-            if isinstance(child, LEAVES) or id(child) in seen:
-                continue
-            seen.add(id(child))
-            queue.append((child, path + step, via + (obj,)))
-    return hits
 
 
 def raw_can_write(dll):
@@ -83,13 +40,6 @@ def raw_can_write(dll):
         return isinstance(obj, types.MethodType) and obj.__self__ is dll and obj.__func__.__name__ in {"CAN_Write", "_can_write"}
 
     return match
-
-
-def the_writer(session):
-    hits = paths_to(session, lambda obj: type(obj).__name__ == "Writer")
-    if not hits:
-        pytest.fail("the polled session holds no armored write function")
-    return hits[0][2]
 
 
 def test_public_modules_expose_nothing_that_can_transmit():

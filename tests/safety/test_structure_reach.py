@@ -40,7 +40,7 @@ PUBLIC_API = {
     "lasto.safety.audit": {"Auditor", "AuditSink", "JsonlAuditSink", "MemoryAuditSink"},
     "lasto.safety.clock": {"Clock", "SystemClock"},
     "lasto.safety.exchange": {"Exchange", "ExchangeState"},
-    "lasto.safety.stn_port": {"StnAdapter", "open_serial"},
+    "lasto.safety.stn_port": {"StnAdapter", "open_adapter"},
 }  # fmt: skip
 
 # The simulator stands in for PCANBasic.dll, so it speaks the DLL's constants and structures.

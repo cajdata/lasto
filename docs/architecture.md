@@ -214,6 +214,7 @@ From the OBDLink Family Reference and Programming Manual (Rev F, Aug 2025) and t
   - baud changes, sleep, GPIO, batch mode
   - header and flow-control shaping, except the gate's own `ATSH` to an approved address
 
+- **The port never leaves the adapter:** `open_adapter(port, auditor=...)` opens the COM port inside `StnAdapter` and returns only the adapter, so nothing outside the safety core holds a raw, writable port. A reachability test walks every attribute path from the adapter to the port.
 - **Routines:** reset (`ATZ`/`ATWS`) and monitor (`STM`/`STMA`) commands are accepted only inside the routines that enforce their rules. Monitoring is stopped with a backspace: it stops a running monitor, and on an idle adapter it edits an empty line. Confirm this on the real MX+ in Phase 3.
 
 **Rule 4 conflict: silent mode can't be read back.** Neither `STCMM` nor `ATCSM` has a query form. Proposed verification, all required before every monitor start:
