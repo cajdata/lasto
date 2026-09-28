@@ -148,6 +148,18 @@ def test_a_flapping_channel_ends_the_session_after_the_per_session_cap(sim, audi
     assert len(events(sink, "passive_channel_distrusted")) == MAX_REOPENS_PER_SESSION + 1
 
 
+def test_a_channel_that_will_not_close_ends_the_session_without_reopening(sim, auditor, sink):
+    """Finding #5: if the untrusted channel can't be uninitialized it may still be on the bus; say so and stop."""
+    session = passive(sim, auditor)
+    sim.dll.uninitialize_status = pc.PCAN_ERROR_ILLOPERATION
+    sim.dll.channel(HANDLE).listen_only = OFF
+    sim.clock.advance(STATUS_INTERVAL)
+    session.pump()
+    assert session.ended and "could not close" in session.end_reason
+    assert len(events(sink, "channel_close_failed")) == 1
+    assert events(sink, "passive_reopen_failed") == []  # nothing is reopened on top of a channel still open
+
+
 def test_close_and_properties(sim, auditor, sink):
     session = passive(sim, auditor)
     assert (session.ended, session.end_reason, session.reopens) == (False, None, 0)

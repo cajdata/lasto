@@ -65,6 +65,30 @@ def test_polled_session_closes_the_channel_if_the_audit_log_fails(sim, clock):
     assert not sim.dll.channel(HANDLE).initialized
 
 
+@pytest.mark.parametrize("mode", ["passive", "polled"])
+def test_closing_a_session_records_whether_the_channel_really_closed(sim, auditor, sink, mode):
+    """Finding #5."""
+    if mode == "passive":
+        session = open_passive_session(CHANNEL, auditor=auditor, clock=sim.clock, library=sim.dll)
+    else:
+        session = open_polled(sim, auditor)
+    sim.dll.uninitialize_status = pc.PCAN_ERROR_ILLOPERATION
+    session.close()
+    [closed] = events(sink, "session_closed")
+    assert closed["channel_uninitialized"] is False
+    assert len(events(sink, "channel_close_failed")) == 1
+
+
+def test_a_polled_channel_closed_after_a_kill_records_whether_it_really_closed(sim, auditor, sink):
+    session = open_polled(sim, auditor)
+    sim.dll.fail_set[pc.PCAN_LISTEN_ONLY] = pc.PCAN_ERROR_ILLOPERATION
+    sim.dll.uninitialize_status = pc.PCAN_ERROR_ILLOPERATION
+    session.killswitch.trip("hotkey")
+    [closed] = events(sink, "polled_channel_closed")
+    assert closed["uninitialized"] is False
+    assert len(events(sink, "channel_close_failed")) == 1
+
+
 def test_kill_switches_the_channel_to_listen_only(sim, auditor, sink):
     session = open_polled(sim, auditor)
     session.killswitch.trip("hotkey")

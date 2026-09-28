@@ -67,6 +67,7 @@ class FakePcanDll:
         self.fail_get: dict[int, int] = {}
         self.fail_set: dict[int, int] = {}
         self.initialize_status = OK
+        self.uninitialize_status = OK  # anything else: the driver refuses and the channel stays initialized
         self.write_status = OK
         self.error_text_status = OK
         self.readback_listen_only: int | None = None
@@ -114,6 +115,8 @@ class FakePcanDll:
     def _can_uninitialize(self, handle) -> int:
         ch = self.channel(_v(handle))
         self.calls.append("CAN_Uninitialize")
+        if self.uninitialize_status != OK:
+            return self.uninitialize_status
         if not ch.initialized:
             return pc.PCAN_ERROR_INITIALIZE
         ch.initialized = False

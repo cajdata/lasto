@@ -7,6 +7,7 @@ from helpers import HANDLE
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety import pcan_dll
+from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
 from lasto.safety.errors import InterfaceError, SafetyViolation
 from lasto.safety.frames import CanFrame, ErrorFrame, ReadError, StatusMessage
 from lasto.safety.pcan_dll import PcanChannel, ReadOnlyPcan, load_readonly
@@ -206,9 +207,32 @@ def test_enable_reporting_failure():
 def test_close_is_idempotent():
     dll = FakePcanDll()
     channel = open_channel(dll)
-    channel.close()
-    channel.close()
+    assert channel.close() is True
+    assert channel.close() is True
     assert dll.calls.count("CAN_Uninitialize") == 1
+
+
+def test_a_close_the_driver_refuses_is_audited_and_can_be_tried_again(clock):
+    """Finding #5: CAN_Uninitialize's answer counts; a channel that didn't close may still be on the bus."""
+    sink = MemoryAuditSink()
+    REFUSALS.attach(Auditor(sink, clock))
+    dll = FakePcanDll()
+    channel = open_channel(dll)
+    dll.uninitialize_status = pc.PCAN_ERROR_ILLOPERATION
+    assert channel.close() is False
+    assert dll.channel(HANDLE).initialized
+    [failed] = [r for r in sink.records if r["event"] == "channel_close_failed"]
+    assert failed["channel"] == "PCAN_USBBUS1" and "0x8000000" in failed["status"]
+    dll.uninitialize_status = pc.PCAN_ERROR_OK
+    assert channel.close() is True
+    assert not dll.channel(HANDLE).initialized
+
+
+def test_a_channel_already_gone_counts_as_closed():
+    dll = FakePcanDll()
+    channel = open_channel(dll)
+    dll.uninitialize_status = pc.PCAN_ERROR_INITIALIZE  # the driver says it isn't initialized
+    assert channel.close() is True
 
 
 def test_channel_names():

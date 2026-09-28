@@ -19,7 +19,7 @@ from typing import Any
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety._frozen import SealedType, freeze
-from lasto.safety.audit import refuse
+from lasto.safety.audit import REFUSALS, refuse
 from lasto.safety.errors import InterfaceError, SafetyViolation
 from lasto.safety.frames import CanFrame, ErrorFrame, ReadError, Received, StatusMessage
 
@@ -271,10 +271,25 @@ class PcanChannel(metaclass=SealedType):
             info[key] = text if status == pc.PCAN_ERROR_OK else "unknown"
         return info
 
-    def close(self) -> None:
-        if self._open:
-            self._open = False
-            self._pcan.uninitialize(self._handle)
+    def close(self) -> bool:
+        """Uninitialize the channel. True once it is closed (or the driver says it already was).
+
+        False if the driver refused: the channel may still be initialized, and on the bus. That is
+        audited (every open audit log, or the next), and a later close() tries again.
+        """
+        if not self._open:
+            return True
+        status = self._pcan.uninitialize(self._handle)
+        if status not in (pc.PCAN_ERROR_OK, pc.PCAN_ERROR_INITIALIZE):
+            REFUSALS.event(
+                "channel_close_failed",
+                channel=self._name,
+                status=self._pcan.error_text(status),
+                detail="CAN_Uninitialize was refused; the channel may still be initialized and on the bus",
+            )
+            return False
+        self._open = False
+        return True
 
 
 freeze(__name__)

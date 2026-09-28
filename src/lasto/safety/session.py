@@ -128,7 +128,10 @@ class PassiveSession(metaclass=SealedType):
             status=None if status is None else f"0x{status:X}",
             detail="closing the channel; the driver's automatic resume is never trusted",
         )
-        self._channel.close()
+        if not self._channel.close():
+            # Still initialized, maybe on the bus: nothing is reopened on top of it (finding #5).
+            self._end(f"could not close the channel after {reason}; it may still be on the bus")
+            return
         for attempt in range(1, REOPEN_ATTEMPTS + 1):
             if self._reopens >= MAX_REOPENS_PER_SESSION:
                 self._end(f"reopened {self._reopens} times already; the channel keeps losing listen-only or failing")
@@ -158,9 +161,9 @@ class PassiveSession(metaclass=SealedType):
     def close(self) -> None:
         if self.ended:
             return
-        self._channel.close()
+        uninitialized = self._channel.close()
         self._end_reason = "closed"
-        self._auditor.event("session_closed", mode="passive")
+        self._auditor.event("session_closed", mode="passive", channel_uninitialized=uninitialized)
         REFUSALS.detach(self._auditor)
 
 
@@ -238,8 +241,10 @@ class PolledSession(metaclass=SealedType):
 
     def close(self) -> None:
         KILL_SWITCH.remove_listener(self._on_kill)
-        self._channel.close()
-        self._auditor.event("session_closed", mode="polled", kill_cause=KILL_SWITCH.cause)
+        uninitialized = self._channel.close()
+        self._auditor.event(
+            "session_closed", mode="polled", kill_cause=KILL_SWITCH.cause, channel_uninitialized=uninitialized
+        )
         REFUSALS.detach(self._auditor)
 
     def _on_kill(self, cause: str) -> None:
@@ -257,8 +262,10 @@ class PolledSession(metaclass=SealedType):
         if self._channel_closed:
             return
         self._channel_closed = True
-        self._channel.close()
-        self._auditor.event("polled_channel_closed", reason=reason, kill_cause=KILL_SWITCH.cause)
+        uninitialized = self._channel.close()
+        self._auditor.event(
+            "polled_channel_closed", reason=reason, kill_cause=KILL_SWITCH.cause, uninitialized=uninitialized
+        )
 
 
 def open_polled_session(
