@@ -10,7 +10,7 @@ from sitegen import data, paths, safety
 from sitegen.data import BuildError
 
 FILES = ["safety/policy.py", "safety/ecus.py", "safety/ratelimit.py", "safety/killswitch.py",
-         "safety/interlocks.py", "safety/gate.py", "safety/hotkey.py", "safety/session.py", "cli.py"]
+         "safety/interlocks.py", "safety/gate.py", "safety/hotkey.py", "safety/session.py", "safety/reader.py", "cli.py"]
 
 
 @pytest.fixture
@@ -44,6 +44,60 @@ def test_real_source_matches_the_rules_in_claude_md():
     assert f.rates["logging"] == 20 and f.rates["discovery"] == 5 and f.ceiling == 20
     assert f.min_engine_off_voltage == 12.0
     assert f.hotkey == "Ctrl+Alt+K"
+
+
+def test_writer_ceiling_and_passive_trust_come_from_source():
+    f = safety.load_facts()
+    # The Writer's own backstop: CEILING_FRAMES request frames in any CEILING_WINDOW seconds.
+    assert f.ceiling_frames == 20 and f.ceiling_window == 1.0
+    # The gate refuses a request whose rate slot is further away than this.
+    assert f.max_rate_wait == 1.0
+    # Passive capture re-reads listen-only on every status check, this often.
+    assert f.status_interval == 0.1
+    # A distrusted passive channel: attempts per incident, and reopens per session.
+    assert f.reopen_attempts == 3 and f.max_reopens == 10
+
+
+def test_read_only_wrappers_and_arithmetic_are_evaluated():
+    env: dict[str, object] = {"A": 20.0, "B": 1.0}
+    assert safety._evaluate(ast.parse("MappingProxyType({1: 2.0})", mode="eval").body, env) == {1: 2.0}
+    assert safety._evaluate(ast.parse("int(A * B)", mode="eval").body, env) == 20
+    assert safety._evaluate(ast.parse("A / 4 - 1", mode="eval").body, env) == 4.0
+
+
+def test_counts_must_be_whole_numbers(tree):
+    # With / allowed, a count can come out fractional. The site must refuse it, never round it down.
+    edit(tree, "safety/killswitch.py", "WINDOW_NRC_LIMIT = 10", "WINDOW_NRC_LIMIT = CONSECUTIVE_NRC_LIMIT * 3.5")
+    with pytest.raises(BuildError, match="WINDOW_NRC_LIMIT"):
+        safety.load_facts(tree)
+
+
+def test_a_whole_number_float_is_a_count(tree):
+    edit(tree, "safety/killswitch.py", "WINDOW_NRC_LIMIT = 10", "WINDOW_NRC_LIMIT = CONSECUTIVE_NRC_LIMIT * 10 / 3")
+    assert safety.load_facts(tree).nrc_window_limit == 10
+
+
+def test_a_constant_computed_from_an_unstable_one_fails_the_build(tree):
+    # The app computes CONSECUTIVE_NRC_LIMIT from whichever _BASE the branch left; the site can't know which.
+    edit(tree, "safety/killswitch.py", "CONSECUTIVE_NRC_LIMIT = 3",
+         "_BASE = 3\nif __debug__:\n    _BASE = 5\nCONSECUTIVE_NRC_LIMIT = _BASE")
+    with pytest.raises(BuildError, match="CONSECUTIVE_NRC_LIMIT"):
+        safety.load_facts(tree)
+
+
+def test_arithmetic_errors_are_build_errors(tree):
+    for source in ("1 / 0", "int(1e400)", "int(1e400 - 1e400)"):
+        with pytest.raises(BuildError):
+            safety._evaluate(ast.parse(source, mode="eval").body, {})
+    edit(tree, "safety/ratelimit.py", "CEILING_WINDOW = 1.0", "CEILING_WINDOW = 0.0")
+    with pytest.raises(BuildError, match="CEILING_WINDOW"):
+        safety.load_facts(tree)
+
+
+def test_other_calls_are_never_evaluated():
+    for source in ("open('x')", "int(open('x'))", "MappingProxyType(globals())", "__import__('os')"):
+        with pytest.raises(BuildError):
+            safety._evaluate(ast.parse(source, mode="eval").body, {})
 
 
 def test_services_file_and_roadmap_agree_with_source():
