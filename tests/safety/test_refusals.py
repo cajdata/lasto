@@ -2,6 +2,10 @@
 
 import ctypes
 import dataclasses
+import io
+import json
+import subprocess
+import sys
 
 import pytest
 from helpers import CHANNEL, HANDLE, GateHarness, events, open_polled
@@ -284,6 +288,110 @@ def test_a_full_backlog_reports_what_it_dropped(clock):
     log.attach(Auditor(sink, clock))
     assert sink.records[0]["event"] == "refusals_dropped" and sink.records[0]["count"] == 2
     assert [r["reason"] for r in sink.records[1:]] == ["r2", "r3", "r4"]
+
+
+# ---- finding #8: a failing audit log loses nothing ----
+
+
+class FailingSink:
+    """Stores records until it has taken `good` of them, then raises on every write."""
+
+    def __init__(self, good=0):
+        self.records = []
+        self.good = good
+
+    def write(self, record):
+        if len(self.records) >= self.good:
+            raise OSError("disk full")
+        self.records.append(record)
+
+
+def _record(log, reason):
+    log.record(transport="pcan", reason=reason, detail="", request="")
+
+
+def test_one_failing_audit_log_does_not_keep_a_refusal_from_the_others(clock):
+    log = RefusalLog()
+    broken, good = FailingSink(), MemoryAuditSink()
+    log.attach(Auditor(broken, clock))
+    log.attach(Auditor(good, clock))
+    with pytest.raises(OSError):
+        _record(log, "a")  # the failure still surfaces, for refuse() to note on the error
+    assert [r["reason"] for r in good.records] == ["a"]
+
+
+def test_a_refusal_no_audit_log_could_take_is_held_for_the_next(clock):
+    log = RefusalLog()
+    broken = Auditor(FailingSink(), clock)
+    log.attach(broken)
+    with pytest.raises(OSError):
+        _record(log, "a")
+    with pytest.raises(OSError):
+        log.event("kill_switch", cause="hotkey")  # events too
+    log.detach(broken)
+    good = MemoryAuditSink()
+    log.attach(Auditor(good, clock))
+    assert [(r["event"], r.get("reason")) for r in good.records] == [("rejected", "a"), ("kill_switch", None)]
+
+
+def test_a_flush_that_fails_part_way_keeps_the_rest_and_does_not_attach(clock):
+    log = RefusalLog()
+    for reason in ("a", "b", "c"):
+        _record(log, reason)  # nothing attached: held
+    flaky = FailingSink(good=1)
+    with pytest.raises(OSError):
+        log.attach(Auditor(flaky, clock))
+    assert [r["reason"] for r in flaky.records] == ["a"]
+    _record(log, "d")  # the flaky log didn't attach, so this is held too
+    good = MemoryAuditSink()
+    log.attach(Auditor(good, clock))
+    assert [r["reason"] for r in good.records] == ["b", "c", "d"]
+
+
+def test_a_failed_flush_keeps_the_count_of_what_was_dropped(clock):
+    log = RefusalLog(backlog_limit=1)
+    _record(log, "a")
+    _record(log, "b")  # "a" is dropped
+    with pytest.raises(OSError):
+        log.attach(Auditor(FailingSink(), clock))
+    good = MemoryAuditSink()
+    log.attach(Auditor(good, clock))
+    assert good.records[0]["event"] == "refusals_dropped" and good.records[0]["count"] == 1
+    assert [r["reason"] for r in good.records[1:]] == ["b"]
+
+
+def test_records_still_held_at_exit_are_reported(clock):
+    log = RefusalLog()
+    _record(log, "a")
+    log.event("kill_switch", cause="hotkey")
+    report = io.StringIO()
+    log.report_held(report)
+    lines = report.getvalue().splitlines()
+    assert "2 audit records" in lines[0]
+    assert [json.loads(line)["kind"] for line in lines[1:]] == ["rejected", "kill_switch"]
+    empty = io.StringIO()
+    RefusalLog().report_held(empty)
+    assert empty.getvalue() == ""
+    full = RefusalLog(backlog_limit=1)
+    _record(full, "a")
+    _record(full, "b")
+    report = io.StringIO()
+    full.report_held(report)
+    assert "1 audit records were never written to an audit log; 1 more were dropped" in report.getvalue()
+
+
+HELD_AT_EXIT = """
+from lasto.safety import requests
+try:
+    requests.read_pid([], purpose=requests.Purpose.LOGGING)  # refused with no session open: held
+except ValueError:
+    pass
+"""
+
+
+def test_a_process_that_exits_with_refusals_held_reports_them():
+    result = subprocess.run([sys.executable, "-c", HELD_AT_EXIT], capture_output=True, text=True, check=True)
+    assert "1 audit records" in result.stderr and "pid_count" in result.stderr
 
 
 def test_refuse_still_raises_when_the_audit_log_fails(clock):

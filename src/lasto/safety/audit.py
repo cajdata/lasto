@@ -14,12 +14,14 @@ kill-switch trip, go through REFUSALS the same way.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import sys
 import threading
 from collections import deque
 from datetime import UTC, datetime
-from typing import NoReturn, Protocol
+from typing import NoReturn, Protocol, TextIO
 
 from lasto.safety._frozen import SealedProtocolType, SealedType, freeze
 from lasto.safety.clock import Clock
@@ -106,10 +108,23 @@ class Auditor(metaclass=SealedType):
         self._write(name, fields)
 
 
+def _write(auditor: Auditor, kind: str, fields: dict[str, object]) -> None:
+    if kind == "rejected":
+        auditor.rejected(**fields)  # type: ignore[arg-type]
+    else:
+        auditor.event(kind, **fields)
+
+
 class RefusalLog(metaclass=SealedType):
     """Where every refusal in the safety core is recorded, and every process-wide safety event (a kill).
 
     Both go to every attached auditor, or are held for the next one to attach.
+    A failing audit log loses nothing (finding #8):
+    - a record goes to every attached auditor even if one of them fails, and
+      one that none of them could take is held;
+    - an auditor that attaches takes the held records one at a time; if a
+      write fails, the rest stay held and the auditor isn't attached;
+    - anything still held when the process exits is reported on stderr.
     """
 
     __slots__ = ("_attached", "_backlog", "_backlog_limit", "_dropped", "_lock")
@@ -125,23 +140,40 @@ class RefusalLog(metaclass=SealedType):
     def attach(self, auditor: Auditor) -> None:
         """Send refusals to this auditor, starting with any held while nothing was attached.
 
-        Attachments are counted, so two sessions sharing one auditor each attach and detach.
+        Attachments are counted, so two sessions sharing one auditor each attach and detach. If
+        writing the held records fails, the rest stay held, the auditor isn't attached, and the
+        error is raised.
         """
-        with self._lock:
-            key = id(auditor)
-            if key in self._attached:
-                self._attached[key] = (auditor, self._attached[key][1] + 1)
-                return
-            self._attached[key] = (auditor, 1)
-            held, self._backlog = list(self._backlog), deque(maxlen=self._backlog_limit)
-            dropped, self._dropped = self._dropped, 0
-        if dropped:
-            auditor.event("refusals_dropped", count=dropped, detail="the held backlog was full")
-        for kind, fields in held:
-            if kind == "rejected":
-                auditor.rejected(**fields)  # type: ignore[arg-type]
-            else:
-                auditor.event(kind, **fields)
+        key = id(auditor)
+        while True:
+            with self._lock:
+                if key in self._attached:
+                    self._attached[key] = (auditor, self._attached[key][1] + 1)
+                    return
+                if not self._backlog and not self._dropped:
+                    self._attached[key] = (auditor, 1)
+                    return
+                held, self._backlog = list(self._backlog), deque(maxlen=self._backlog_limit)
+                dropped, self._dropped = self._dropped, 0
+            self._flush(auditor, held, dropped)
+
+    def _flush(self, auditor: Auditor, held: list[tuple[str, dict[str, object]]], dropped: int) -> None:
+        written = 0
+        try:
+            if dropped:
+                auditor.event("refusals_dropped", count=dropped, detail="the held backlog was full")
+                dropped = 0
+            for kind, fields in held:
+                _write(auditor, kind, fields)
+                written += 1
+        except BaseException:
+            with self._lock:
+                # Back in front of anything held since; the oldest go first if that overflows the backlog.
+                merged = [*held[written:], *self._backlog]
+                overflow = max(0, len(merged) - self._backlog_limit)
+                self._backlog = deque(merged[overflow:], maxlen=self._backlog_limit)
+                self._dropped += dropped + overflow
+            raise
 
     def detach(self, auditor: Auditor) -> None:
         with self._lock:
@@ -155,24 +187,47 @@ class RefusalLog(metaclass=SealedType):
                 del self._attached[key]
 
     def record(self, *, transport: str, reason: str, detail: str, request: str) -> None:
-        fields: dict[str, object] = {"transport": transport, "reason": reason, "detail": detail, "request": request}
-        for auditor in self._auditors_or_hold("rejected", fields):
-            auditor.rejected(transport=transport, reason=reason, detail=detail, request=request)
+        self._deliver("rejected", {"transport": transport, "reason": reason, "detail": detail, "request": request})
 
     def event(self, name: str, **fields: object) -> None:
         """A safety event every open audit log should have, such as a kill-switch trip."""
-        for auditor in self._auditors_or_hold(name, fields):
-            auditor.event(name, **fields)
+        self._deliver(name, fields)
 
-    def _auditors_or_hold(self, kind: str, fields: dict[str, object]) -> list[Auditor]:
-        """The attached auditors; with none attached, hold the record for the next one and return none."""
+    def _deliver(self, kind: str, fields: dict[str, object]) -> None:
+        """Write to every attached auditor. Held if none could take it; the first failure is raised afterwards."""
         with self._lock:
             auditors = [auditor for auditor, _count in self._attached.values()]
             if not auditors:
-                if len(self._backlog) == self._backlog_limit:
-                    self._dropped += 1
-                self._backlog.append((kind, {**fields, "held_since": datetime.now(UTC).isoformat()}))
-        return auditors
+                self._hold(kind, fields)
+                return
+        failures: list[Exception] = []
+        for auditor in auditors:
+            try:
+                _write(auditor, kind, fields)
+            except Exception as exc:
+                failures.append(exc)
+        if len(failures) == len(auditors):
+            with self._lock:
+                self._hold(kind, fields)
+        if failures:
+            raise failures[0]
+
+    def _hold(self, kind: str, fields: dict[str, object]) -> None:
+        if len(self._backlog) == self._backlog_limit:
+            self._dropped += 1
+        self._backlog.append((kind, {**fields, "held_since": datetime.now(UTC).isoformat()}))
+
+    def report_held(self, stream: TextIO | None = None) -> None:
+        """Write anything still held to stderr (or `stream`). Runs at exit, so no held record goes unseen."""
+        with self._lock:
+            held, dropped = list(self._backlog), self._dropped
+        if not held and not dropped:
+            return
+        out = sys.stderr if stream is None else stream
+        more = f"; {dropped} more were dropped" if dropped else ""
+        out.write(f"lasto: {len(held)} audit records were never written to an audit log{more}:\n")
+        for kind, fields in held:
+            out.write(json.dumps({"kind": kind, **fields}, sort_keys=True, default=str) + "\n")
 
     def reset(self) -> None:
         """Detach everything and forget held refusals (between tests)."""
@@ -183,6 +238,7 @@ class RefusalLog(metaclass=SealedType):
 
 
 REFUSALS = RefusalLog()
+atexit.register(REFUSALS.report_held)
 
 
 def refuse(error: BaseException, *, transport: str, request: str = "", reason: str | None = None) -> NoReturn:

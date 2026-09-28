@@ -386,6 +386,7 @@ The bench tests are the only time either adapter transmits on purpose, and only 
 |---|---|
 | 2 | **Save and report on a kill:** the kill switch already stops and logs; flushing capture storage and writing the report arrive with Phase 2 storage. |
 | 2 | **Audit log storage:** the durable audit log (SQLite, alongside the JSON Lines sink) is wired into real sessions. |
+| 2 | **Held audit records on disk:** refusals and kills recorded while no audit log is open are held in memory, handed to the next log that opens, and reported on stderr at exit. Once Phase 2 sets the data location, they also go to a durable fallback file there, so a crash can't lose them. |
 | 2 | **Broadcast IDs:** the gate's set of IDs seen carrying broadcast traffic is produced from capture statistics. |
 | 2 | **Storage:** estimate per driving hour, then set the disk budget and retention. |
 | 2 | **Bench test:** you decide before the first live test (optional; parts list in §12). |
