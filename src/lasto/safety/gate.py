@@ -19,8 +19,9 @@ is ignored and logged.
 
 from __future__ import annotations
 
+import math
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Protocol
 
 from lasto.safety import ecus, isotp, policy
@@ -42,6 +43,8 @@ CONSECUTIVE_FRAME_TIMEOUT = 0.25
 MAX_RESPONSE_PENDING = 10
 # The gate never waits longer than this for a rate-limit slot; the caller retries later.
 MAX_RATE_WAIT = 1.0
+# While it waits for a slot, the gate reads the channel at least this often, so a kill is acted on at once.
+WAIT_SLICE = 0.02
 # A slow answer to the previous request isn't mistaken for another tester.
 LATE_RESPONSE_GRACE = 1.0
 
@@ -73,8 +76,8 @@ def _deny(reason: str, detail: str, request: str) -> None:
 
 class Gate(metaclass=SealedType):
     __slots__ = (
-        "_armed", "_auditor", "_broadcast_ids", "_clock", "_interlocks", "_last", "_last_finished", "_limiter",
-        "_lock", "_nrc_monitor", "_pending", "_profile", "_request_ids", "_writer",
+        "_armed", "_auditor", "_broadcast_ids", "_clock", "_drain", "_interlocks", "_last", "_last_finished",
+        "_limiter", "_lock", "_nrc_monitor", "_pending", "_profile", "_request_ids", "_writer",
     )  # fmt: skip
 
     def __init__(
@@ -86,9 +89,11 @@ class Gate(metaclass=SealedType):
         limiter: RateLimiter,
         nrc_monitor: NrcMonitor,
         *,
+        drain: Callable[[], object],
         profile: Iterable[Request],
         broadcast_ids: Iterable[int] = (),
     ) -> None:
+        """`drain` reads everything the channel has received and checks the bus status now (the polled reader)."""
         keys = set()
         for request in profile:
             if not isinstance(request, Request) or request.purpose is not Purpose.LOGGING:
@@ -101,6 +106,7 @@ class Gate(metaclass=SealedType):
             keys.add(request.key)
         self._profile = frozenset(keys)
         self._writer = writer
+        self._drain = drain
         self._auditor = auditor
         self._clock = clock
         self._interlocks = interlocks
@@ -161,14 +167,28 @@ class Gate(metaclass=SealedType):
         wait = self._limiter.delay(request.purpose, now)
         if wait > MAX_RATE_WAIT:
             _deny("rate_limited", f"next slot in {wait:.3f} s", text)
-        if wait > 0:
-            self._clock.sleep(wait)
-            now = self._clock.monotonic()
+        self._read_before_sending(wait, text)
+        now = self._clock.monotonic()
+        self._interlocks.check(request, now, self._profile)  # again: the readings may have aged while waiting
         self._transmit(can_id, data, purpose=request.purpose.value, kind="request")
         self._limiter.commit(request.purpose, self._clock.monotonic())  # spacing counts from the end of the write
         exchange = Exchange(request, can_id, sent_at=now, deadline=now + P2_TIMEOUT)
         self._pending = exchange
         return exchange
+
+    def _read_before_sending(self, wait: float, text: str) -> None:
+        """Wait out the rate-limit slot in short slices, reading the channel after each; stop at once on a kill.
+
+        The last read comes right before the frame goes out, so every kill trigger that has already
+        arrived (an error frame, a bus-state change, another tester) is seen first (finding A).
+        """
+        slices = math.ceil(wait / WAIT_SLICE) if wait > 0 else 1
+        pause = wait / slices if wait > 0 else 0.0
+        for _ in range(slices):
+            if pause:
+                self._clock.sleep(pause)
+            self._drain()
+            KILL_SWITCH.check(request=text)
 
     def _check(self, can_id: int, data: bytes, kind: str, text: str) -> None:
         """The policy's stateless check on the exact bytes, and that they are the kind of frame intended."""

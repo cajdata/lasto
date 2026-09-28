@@ -262,6 +262,7 @@ def open_polled_session(
         KILL_SWITCH.check(request=f"open a polled session on {channel_name}")
         broadcast = frozenset(broadcast_ids)
         channel, writer = open_active(channel_name, auditor=auditor, clock=clock, library=library, broadcast_ids=broadcast)
+        reader = Reader(channel, clock, trips_kill_switch=True)
         gate = Gate(
             writer,
             auditor,
@@ -269,10 +270,12 @@ def open_polled_session(
             Interlocks(),
             RateLimiter(),
             NrcMonitor(),
+            drain=lambda: reader.poll_once(status_now=True),
             profile=profile,
             broadcast_ids=broadcast,
         )
-        reader = Reader(channel, clock, trips_kill_switch=True, subscribers=(gate.on_frame, *subscribers))
+        for subscriber in (gate.on_frame, *subscribers):
+            reader.subscribe(subscriber)
         session = PolledSession(channel, gate, reader, auditor, clock)
         KILL_SWITCH.add_listener(session._on_kill)
         auditor.event("session_opened", mode="polled", **channel.describe())

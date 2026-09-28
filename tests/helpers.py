@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from lasto.safety import ecus
 from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
@@ -64,6 +64,8 @@ class GateHarness:
         self.limiter = RateLimiter()
         self.nrc = NrcMonitor()
         self.writer = StubWriter(clock)
+        self.drained: list[float] = []  # when the gate read the channel before sending
+        self.on_drain: Callable[[], None] | None = None
         self.gate = Gate(
             self.writer,
             auditor,
@@ -71,12 +73,18 @@ class GateHarness:
             self.interlocks,
             self.limiter,
             self.nrc,
+            drain=self._drain,
             profile=profile,
             broadcast_ids=broadcast_ids,
         )
         if armed:
             self.gate.arm()
         REFUSALS.attach(auditor)
+
+    def _drain(self) -> None:
+        self.drained.append(self.clock.monotonic())
+        if self.on_drain is not None:
+            self.on_drain()
 
     def park(self, *, volts: float = 12.6, rpm: float = 0.0) -> None:
         now = self.clock.monotonic()

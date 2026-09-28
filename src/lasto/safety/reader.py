@@ -79,7 +79,8 @@ class Reader(metaclass=SealedType):
     def subscribe(self, subscriber: Subscriber) -> None:
         self._subscribers.append(subscriber)
 
-    def poll_once(self) -> list[Received]:
+    def poll_once(self, *, status_now: bool = False) -> list[Received]:
+        """Read everything waiting, then check the bus status if it's due, or now if `status_now` (before a send)."""
         if self.failed:
             return []
         items = self._channel.drain()
@@ -88,7 +89,7 @@ class Reader(metaclass=SealedType):
             for subscriber in self._subscribers:
                 self._deliver(subscriber, item)
         now = self._clock.monotonic()
-        if not self.failed and now >= self._next_status:
+        if not self.failed and (status_now or now >= self._next_status):
             self._next_status = now + STATUS_INTERVAL
             self._check_status(self._channel.status())
             self._check_listen_only()
