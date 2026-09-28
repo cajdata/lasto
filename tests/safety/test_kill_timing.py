@@ -1,12 +1,16 @@
-"""Finding A: every kill trigger is seen before anything is sent.
+"""Findings A and B: every kill trigger is seen before anything is sent, and a killed channel never stays in normal mode.
 
-A polled session reads everything already waiting (and asks for the bus
+A: a polled session reads everything already waiting (and asks for the bus
 status) before each request goes out, keeps reading while it waits for a
 rate-limit slot, and checks the interlocks again at the moment of sending.
+
+B: after a kill, a channel that can't be confirmed in listen-only, or whose
+interface failed, is closed, and capture keeps checking listen-only for as
+long as it runs, so the driver can't quietly resume it in normal mode.
 """
 
 import pytest
-from helpers import HANDLE, LOGGING_RPM_SPEED, GateHarness, open_polled
+from helpers import HANDLE, LOGGING_RPM_SPEED, GateHarness, events, open_polled
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety import requests as rq
@@ -92,3 +96,52 @@ def test_the_interlocks_are_checked_again_when_the_frame_goes_out(clock, auditor
         h.gate.submit(rq.read_dtcs(DtcKind.STORED, purpose=Purpose.SNAPSHOT))
     assert refused.value.reason == "vehicle_not_confirmed_stationary"  # 1.3 s old by the time it would go out
     assert h.writer.frames == []
+
+
+# ---- B: a killed channel never stays in normal mode ----
+
+
+def test_a_kill_whose_switch_to_listen_only_fails_closes_the_channel(sim, auditor, sink):
+    session = open_polled(sim, auditor)
+    sim.dll.fail_set[pc.PCAN_LISTEN_ONLY] = pc.PCAN_ERROR_ILLOPERATION
+    session.killswitch.trip("hotkey")
+    assert not sim.dll.channel(HANDLE).initialized
+    [closed] = events(sink, "polled_channel_closed")
+    assert closed["reason"] == "listen_only_not_confirmed_after_kill"
+    sim.clock.advance(0.2)
+    assert session.pump() == []
+
+
+def test_an_interface_failure_closes_the_polled_channel(sim, auditor, sink):
+    session = open_polled(sim, auditor)
+    sim.dll.unplug(HANDLE)
+    sim.clock.advance(0.2)
+    session.pump()
+    assert session.killswitch.cause == "interface_failed"
+    assert not sim.dll.channel(HANDLE).initialized  # so a replug can't bring it back in normal mode
+    assert len(events(sink, "polled_channel_closed")) == 1
+    sim.dll.plug_back(HANDLE)
+    sim.clock.advance(0.2)
+    assert session.pump() == []
+    assert not sim.dll.channel(HANDLE).initialized
+
+
+def test_after_a_kill_capture_keeps_checking_listen_only(sim, auditor, sink):
+    session = open_polled(sim, auditor)
+    session.killswitch.trip("hotkey")
+    sim.clock.advance(0.2)
+    assert session.pump()  # capture goes on in listen-only
+    sim.dll.driver_resumes(HANDLE, listen_only=pc.PCAN_PARAMETER_OFF)  # the driver brings it back in normal mode
+    session.pump()
+    assert not sim.dll.channel(HANDLE).initialized
+    assert [e["reason"] for e in events(sink, "polled_channel_closed")] == ["listen_only_lost"]
+
+
+def test_capture_after_a_kill_stops_on_a_quiet_loss_of_listen_only_too(sim, auditor, sink):
+    session = open_polled(sim, auditor)
+    session.killswitch.trip("hotkey")
+    sim.dll.channel(HANDLE).listen_only = pc.PCAN_PARAMETER_OFF  # no status message this time
+    sim.clock.advance(0.2)
+    session.pump()
+    assert not sim.dll.channel(HANDLE).initialized
+    assert [e["reason"] for e in events(sink, "polled_channel_closed")] == ["listen_only_lost"]

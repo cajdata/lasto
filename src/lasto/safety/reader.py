@@ -79,6 +79,10 @@ class Reader(metaclass=SealedType):
     def subscribe(self, subscriber: Subscriber) -> None:
         self._subscribers.append(subscriber)
 
+    def verify_listen_only(self) -> None:
+        """From now on, re-check listen-only on every status check (a polled channel after a kill)."""
+        self._verify_listen_only = True
+
     def poll_once(self, *, status_now: bool = False) -> list[Received]:
         """Read everything waiting, then check the bus status if it's due, or now if `status_now` (before a send)."""
         if self.failed:

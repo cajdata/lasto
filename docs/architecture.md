@@ -132,6 +132,7 @@ For every request, in order, stopping at the first failure:
 6. **Rate limit:** a token bucket per purpose (logging 20/s, discovery 5/s), under a hard ceiling constant. One outstanding request per ECU; wait for the response or the P2/P2* timeout.
    - The `Writer` enforces the ceiling again on its own: at most 20 request frames in any 1.0 s window, by its own clock readings, with a lock so concurrent callers can't slip past together. Flow control frames don't count (the gate sends at most one per first frame).
    - So the gate never meets that backstop, it counts the shared spacing from the end of each write and adds a 1 ms margin, making its fastest pace 19.6 requests per second. Pacing at exactly 50 ms would put 21 frames inside one second through float rounding alone.
+   - **Reading before sending:** the gate waits for its slot in slices of at most 20 ms and reads the channel after each (the polled reader, with an immediate status check), stopping at once on a kill. The last read comes right before the frame goes out, so every kill trigger that has already arrived is seen first: an error frame, a bus-off shown only in the status, or another tester. Then the interlocks are checked again with that moment's readings.
 7. **Audit, write-ahead:** log the frame and purpose. If the audit write fails, don't transmit.
 8. **Write**, then log the result.
 
@@ -158,9 +159,9 @@ Rejections are logged with the reason and raised as `SafetyViolation`.
 
 **On a kill:**
 1. Latch the gate closed and stop the scheduler.
-2. Switch the channel to listen-only and read it back. On the SJA1000 this passes briefly through controller reset, which is off-bus and harmless. If the readback fails, the gate stays latched, so no transmit path is reachable.
+2. Switch the channel to listen-only and read it back. On the SJA1000 this passes briefly through controller reset, which is off-bus and harmless. If the readback fails, the channel is closed (uninitialized), so it can't stay on the bus in normal mode.
 3. Flush storage and record the cause.
-4. Keep passive capture running unless the interface failed. Nothing retries automatically.
+4. Keep capture running in listen-only, with listen-only re-read on every status check and at once when the driver reports the controller reactivated. If it's ever lost, or the interface fails, the channel is closed, so the driver can't resume it in normal mode after a replug. Nothing retries automatically.
 
 **One kill switch for the process (`KILL_SWITCH`):**
 - **It latches until lasto restarts.** After a kill, `open_polled_session` refuses before touching the adapter, audited as `kill_switch`. Passive sessions still open, since they can't transmit.

@@ -190,9 +190,15 @@ def open_passive_session(
 
 
 class PolledSession(metaclass=SealedType):
-    """Normal-mode capture that can send the allowlisted reads of a typed request."""
+    """Normal-mode capture that can send the allowlisted reads of a typed request.
 
-    __slots__ = ("_auditor", "_channel", "_clock", "_gate", "_reader")
+    After a kill, capture goes on in listen-only, re-checked on every status
+    check. The channel is closed (uninitialized) instead if listen-only can't
+    be confirmed after the kill, if it is lost later, or if the interface
+    fails, so the driver can never carry on with it in normal mode (finding B).
+    """
+
+    __slots__ = ("_auditor", "_channel", "_channel_closed", "_clock", "_gate", "_reader")
 
     def __init__(self, channel: ActiveChannel, gate: Gate, reader: Reader, auditor: Auditor, clock: Clock) -> None:
         self._channel = channel
@@ -200,6 +206,7 @@ class PolledSession(metaclass=SealedType):
         self._reader = reader
         self._auditor = auditor
         self._clock = clock
+        self._channel_closed = False
 
     @property
     def killswitch(self) -> KillSwitch:
@@ -211,7 +218,12 @@ class PolledSession(metaclass=SealedType):
         return self._reader
 
     def pump(self) -> list[Received]:
+        if self._channel_closed:
+            return []
         items = self._reader.poll_once()
+        if self._reader.failed:
+            self._close_channel(self._reader.failure_reason)  # type: ignore[arg-type]
+            return items
         self._gate.poll()
         return items
 
@@ -235,6 +247,18 @@ class PolledSession(metaclass=SealedType):
             self._gate.abort()
             confirmed = self._channel.enter_listen_only()
             self._auditor.event("kill_listen_only", cause=cause, listen_only_confirmed=confirmed)
+            if confirmed:
+                self._reader.verify_listen_only()
+            else:
+                self._close_channel("listen_only_not_confirmed_after_kill")
+
+    def _close_channel(self, reason: str) -> None:
+        """Uninitialize the channel and stop capture: it can't be trusted to stay off the bus."""
+        if self._channel_closed:
+            return
+        self._channel_closed = True
+        self._channel.close()
+        self._auditor.event("polled_channel_closed", reason=reason, kill_cause=KILL_SWITCH.cause)
 
 
 def open_polled_session(
