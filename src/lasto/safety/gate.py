@@ -400,9 +400,14 @@ class Gate(metaclass=SealedType):
             self._nrc_monitor.record_timeout(_target_key(exchange.request))
 
     def _trip(self, cause: str, detail: str) -> None:
-        self._auditor.event("gate_anomaly", cause=cause, detail=detail)
-        KILL_SWITCH.trip(cause)
-        self.abort()
+        """Latch the kill switch first, then audit, then abort, so a failing audit log can't stop the kill (N4)."""
+        try:
+            KILL_SWITCH.trip(cause)
+        finally:
+            try:
+                self._auditor.event("gate_anomaly", cause=cause, detail=detail)
+            finally:
+                self.abort()
 
 
 freeze(__name__)

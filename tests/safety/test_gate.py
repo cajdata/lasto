@@ -5,6 +5,7 @@ from helpers import LOGGING_RPM_SPEED, GateHarness, LooksLikeTheEngineId, events
 
 from lasto.safety import ecus
 from lasto.safety import requests as rq
+from lasto.safety.audit import Auditor, MemoryAuditSink
 from lasto.safety.ecus import ENGINE, Ecu, EcuKind
 from lasto.safety.errors import InterfaceError, KillSwitchTripped, SafetyViolation
 from lasto.safety.frames import CanFrame, ErrorFrame
@@ -267,6 +268,25 @@ def test_logging_flat_out_stays_under_the_write_functions_own_ceiling(sim, audit
 def test_write_failure_trips_the_kill_switch(h):
     h.writer.fail = InterfaceError("adapter unplugged")
     with pytest.raises(InterfaceError):
+        h.gate.submit(LOGGING_RPM_SPEED)
+    assert h.killswitch.cause == "interface_write_failed"
+    assert h.gate.pending is None
+
+
+class RefusesAnomalyRecords(MemoryAuditSink):
+    """An audit log that fails on exactly the record the gate writes when it trips the kill switch."""
+
+    def write(self, record):
+        if record["event"] == "gate_anomaly":
+            raise OSError("disk full")
+        super().write(record)
+
+
+def test_the_kill_latches_even_if_the_anomaly_cannot_be_audited(clock):
+    """Finding N4: the gate trips first, then audits."""
+    h = GateHarness(clock, Auditor(RefusesAnomalyRecords(), clock))
+    h.writer.fail = InterfaceError("adapter unplugged")
+    with pytest.raises((OSError, InterfaceError)):
         h.gate.submit(LOGGING_RPM_SPEED)
     assert h.killswitch.cause == "interface_write_failed"
     assert h.gate.pending is None
