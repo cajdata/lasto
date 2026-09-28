@@ -176,6 +176,16 @@ def test_only_the_approved_entry_itself_reaches_the_bus(h, request_id):
     assert h.writer.frames == []
 
 
+def test_a_target_that_is_not_an_ecu_entry_is_refused_not_crashed_on(h, sink):
+    """Finding #9: only reachable by forging a Request past its constructor, but refused and audited all the same."""
+    forged = object.__new__(rq.Request)
+    for name, value in (("target", 0x7E0), ("payload", b"\x21\x01"), ("purpose", Purpose.SNAPSHOT), ("_token", None)):
+        object.__setattr__(forged, name, value)
+    refused(h.gate, forged, "ecu_not_approved")
+    assert events(sink, "rejected")[-1]["detail"] == "ecu_not_approved: 0x7E0"
+    assert h.writer.frames == []
+
+
 def test_interlocks_apply(h):
     refused(h.gate, rq.read_pid([0x05], purpose=Purpose.LOGGING, ecu=ENGINE), "not_in_logging_profile")
     refused(h.gate, rq.read_dtcs(DtcKind.STORED, purpose=Purpose.SNAPSHOT), "vehicle_not_confirmed_stationary")
@@ -397,6 +407,18 @@ def test_multi_frame_reassembly_and_sequence_errors(h, sink):
     assert exchange.state is ExchangeState.ABORTED
     assert events(sink, "isotp_sequence_error")
     assert not h.killswitch.tripped
+
+
+def test_a_second_responders_first_frame_is_logged_when_it_is_dropped(clock, auditor, sink):
+    """Finding #9: while one multi-frame answer is being received, another gets no flow control, and the log says so."""
+    request = rq.read_pid([0x0D], purpose=Purpose.LOGGING)
+    h = GateHarness(clock, auditor, profile=[request])
+    h.gate.submit(request)
+    h.gate.on_frame(frame(0x7E8, 0x10, 0x09, 0x41, 0x0D, 0x00, 0x0C, 0x0B, 0xB8))
+    h.gate.on_frame(frame(0x7E9, 0x10, 0x09, 0x41, 0x0D, 0x00, 0x0C, 0x0B, 0xB8))
+    [abandoned] = events(sink, "response_abandoned")
+    assert abandoned["can_id"] == "0x7E9" and "already receiving" in abandoned["detail"]
+    assert [f for f in h.writer.frames if f[1] == FC] == [(0x7E0, FC)]  # flow control only for the first
 
 
 def test_consecutive_frames_outside_the_accepted_transfer_are_ignored(clock, auditor):

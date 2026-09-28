@@ -54,6 +54,8 @@ SITES = [
     ("builder: raw CAN ID instead of an ECU", lambda: rq.read_local_id(0x7E0, 1, purpose=P), TypeError, "not_an_ecu_entry"),
     ("builder: bad purpose", lambda: rq.read_pid([1], purpose="logging"), TypeError, "bad_purpose"),
     ("builder: no PIDs", lambda: rq.read_pid([], purpose=P), ValueError, "pid_count"),
+    ("builder: PIDs that aren't a list", lambda: rq.read_pid(12, purpose=P), TypeError, "bad_argument"),  # finding #9
+    ("builder: probe PID as a float", lambda: rq.interlock_probe(13.0), ValueError, "bad_argument"),  # finding #9
     ("builder: DTC kind as a number", lambda: rq.read_dtcs(0x04, purpose=P), TypeError, "bad_dtc_kind"),
     ("builder: too many 0x19 parameters", lambda: rq.read_dtc_information(ENGINE, 2, 1, 2, 3, 4, 5, 6, purpose=P), ValueError, "too_many_parameters"),
     ("builder: probe PID", lambda: rq.interlock_probe(0x05), ValueError, "not_a_probe_pid"),

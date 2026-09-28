@@ -120,7 +120,11 @@ def _build(target: Ecu | None, payload: list[int], purpose: object) -> Request:
 
 def read_pid(pids: Iterable[int], *, purpose: Purpose, ecu: Ecu | None = None) -> Request:
     """OBD Mode 01: current data, up to six PIDs in one request."""
-    pid_list = [_byte("pid", pid) for pid in pids]
+    try:
+        items = list(pids)
+    except TypeError:
+        _refuse_argument(TypeError(f"pids must be a list of PID numbers, got {pids!r}"), "bad_argument", repr(pids))
+    pid_list = [_byte("pid", pid) for pid in items]
     if not 1 <= len(pid_list) <= MAX_PIDS_PER_REQUEST:
         _refuse_argument(ValueError(f"ask for 1 to {MAX_PIDS_PER_REQUEST} PIDs per request"), "pid_count", repr(pid_list))
     return _build(_optional_ecu(ecu), [0x01, *pid_list], purpose)
@@ -190,6 +194,7 @@ def read_dtc_information(ecu: Ecu, subfunction: int, *parameters: int, purpose: 
 
 def interlock_probe(pid: int, *, ecu: Ecu | None = None) -> Request:
     """A Mode 01 read of speed, RPM, or module voltage for the motion interlock and battery guard."""
+    pid = _byte("pid", pid)  # 13.0 equals 0x0D, but isn't a PID number
     if pid not in policy.PROBE_PIDS:
         _refuse_argument(ValueError("interlock probes read PID 0x0C, 0x0D, or 0x42"), "not_a_probe_pid", repr(pid))
     return _build(_optional_ecu(ecu), [0x01, pid], Purpose.INTERLOCK_PROBE)

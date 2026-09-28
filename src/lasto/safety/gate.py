@@ -156,7 +156,7 @@ class Gate(metaclass=SealedType):
             _deny("request_outstanding", "wait for the previous request to finish", text)
         target = request.target
         if target is not None and not ecus.is_approved(target):
-            _deny("ecu_not_approved", target.name, text)
+            _deny("ecu_not_approved", getattr(target, "name", _hex_id(target)), text)  # a forged target may be anything
         now = self._clock.monotonic()
         self._interlocks.check(request, now, self._profile)
         can_id = policy.FUNCTIONAL_REQUEST_ID if target is None else target.request_id
@@ -286,7 +286,12 @@ class Gate(metaclass=SealedType):
 
     def _handle_first_frame(self, pending: Exchange, can_id: int, parsed: isotp.IsoTpFrame, now: float) -> None:
         if pending._rx_id is not None:
-            return  # already receiving from another responder; this one gets no flow control
+            self._auditor.event(
+                "response_abandoned",
+                can_id=_hex_id(can_id),
+                detail=f"already receiving a multi-frame answer from {_hex_id(pending._rx_id)}; no flow control",
+            )
+            return
         ecu = ecus.by_response_id(can_id)
         if ecu is None:
             self._auditor.event(
