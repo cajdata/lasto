@@ -102,6 +102,15 @@ def test_a_frozen_package_binds_each_submodule_once(scratch):
     assert refused(package, "ghost", None)  # and only a module that is really loaded
 
 
+def test_a_frozen_module_that_is_not_a_package_binds_no_submodule(scratch):
+    """Finding N8: only a package has submodules for the import system to bind."""
+    module = scratch("lasto.safety.probe_leaf")
+    freeze(module.__name__)
+    child = scratch("lasto.safety.probe_leaf.child")  # registered where an import would put it
+    assert refused(module, "child", child)
+    assert "child" not in vars(module)
+
+
 def test_classes_and_members_change_freely_until_sealed():
     class Draft(SealedEnum):  # made here and never frozen
         ONLY = 1

@@ -115,9 +115,11 @@ class FrozenModule(types.ModuleType, metaclass=SealedType):
     """A safety module after freeze(): its names can't be rebound or deleted."""
 
     def __setattr__(self, name: str, value: object) -> None:
+        names = vars(self)
         submodule = sys.modules.get(f"{self.__name__}.{name}")
-        if submodule is not None and value is submodule and name not in vars(self):
-            super().__setattr__(name, value)  # the import system binding a submodule that just finished loading
+        # Only a package (it has __path__) has submodules; each is bound once, as it finishes loading (N8).
+        if "__path__" in names and submodule is not None and value is submodule and name not in names:
+            super().__setattr__(name, value)
             return
         _refuse("safety_core_frozen", f"set {self.__name__}.{name}")
 
