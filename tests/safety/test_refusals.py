@@ -210,9 +210,8 @@ def test_every_attached_auditor_gets_the_refusal(clock):
     assert len(first.records) == len(second.records) == 1
 
 
-def test_a_full_backlog_reports_what_it_dropped(clock, monkeypatch):
-    monkeypatch.setattr(RefusalLog, "BACKLOG_LIMIT", 3)
-    log = RefusalLog()
+def test_a_full_backlog_reports_what_it_dropped(clock):
+    log = RefusalLog(backlog_limit=3)
     for i in range(5):
         log.record(transport="pcan", reason=f"r{i}", detail="", request="")
     sink = MemoryAuditSink()

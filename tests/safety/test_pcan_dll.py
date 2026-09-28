@@ -48,10 +48,11 @@ def test_loading_the_real_dll_is_blocked_by_the_test_firewall():
         load_readonly()
 
 
-def test_load_library_needs_64_bit_python(monkeypatch):
-    monkeypatch.setattr(pcan_dll, "POINTER_BYTES", 4)
+def test_load_library_needs_64_bit_python():
     with pytest.raises(InterfaceError, match="64-bit"):
-        pcan_dll.load_library()
+        pcan_dll.require_64_bit(4)
+    pcan_dll.require_64_bit(8)
+    assert pcan_dll.POINTER_BYTES == 8  # the process these tests run in
 
 
 def test_load_library_reports_a_missing_dll(monkeypatch):

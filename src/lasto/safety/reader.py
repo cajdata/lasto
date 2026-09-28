@@ -16,6 +16,7 @@ from collections.abc import Callable, Iterable
 from typing import Protocol
 
 from lasto.safety import pcan_constants as pc
+from lasto.safety._frozen import SealedProtocolType, SealedType, freeze
 from lasto.safety.audit import Auditor
 from lasto.safety.clock import Clock
 from lasto.safety.frames import ErrorFrame, ReadError, Received, StatusMessage
@@ -26,7 +27,7 @@ STATUS_INTERVAL = 0.1
 Subscriber = Callable[[Received], None]
 
 
-class Channel(Protocol):
+class Channel(Protocol, metaclass=SealedProtocolType):
     def drain(self) -> list[Received]:
         """Everything waiting in the receive queue."""
 
@@ -37,7 +38,12 @@ class Channel(Protocol):
         """Whether listen-only reads back as ON."""
 
 
-class Reader:
+class Reader(metaclass=SealedType):
+    __slots__ = (
+        "_auditor", "_channel", "_clock", "_failed_status", "_failure_reason", "_killswitch", "_next_status",
+        "_subscribers", "_verify_listen_only",
+    )  # fmt: skip
+
     def __init__(
         self,
         channel: Channel,
@@ -55,12 +61,20 @@ class Reader:
         self._verify_listen_only = verify_listen_only
         self._auditor = auditor
         self._next_status = float("-inf")
-        self.failure_reason: str | None = None
-        self.failed_status: int | None = None
+        self._failure_reason: str | None = None
+        self._failed_status: int | None = None
+
+    @property
+    def failure_reason(self) -> str | None:
+        return self._failure_reason
+
+    @property
+    def failed_status(self) -> int | None:
+        return self._failed_status
 
     @property
     def failed(self) -> bool:
-        return self.failure_reason is not None
+        return self._failure_reason is not None
 
     def subscribe(self, subscriber: Subscriber) -> None:
         self._subscribers.append(subscriber)
@@ -104,8 +118,8 @@ class Reader:
             self._fail("listen_only_lost", None)
 
     def _fail(self, reason: str, status: int | None) -> None:
-        self.failure_reason = reason
-        self.failed_status = status
+        self._failure_reason = reason
+        self._failed_status = status
         self._trip(reason)
 
     def _trip(self, cause: str) -> None:
@@ -120,3 +134,6 @@ class Reader:
             subscriber(item)
         except Exception as exc:
             self._killswitch.trip(f"subscriber_error:{type(exc).__name__}")
+
+
+freeze(__name__)

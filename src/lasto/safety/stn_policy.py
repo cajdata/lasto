@@ -19,6 +19,7 @@ import re
 import string
 from typing import NoReturn
 
+from lasto.safety._frozen import freeze
 from lasto.safety.audit import refuse
 from lasto.safety.errors import SafetyViolation
 
@@ -144,3 +145,6 @@ def silent_by_default(parameters: dict[int, tuple[int, bool]]) -> bool:
         return False
     value, on = entry
     return not on or value == 0xFF
+
+
+freeze(__name__)

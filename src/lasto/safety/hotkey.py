@@ -12,6 +12,7 @@ import ctypes
 import threading
 from ctypes import wintypes
 
+from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.errors import InterfaceError
 from lasto.safety.killswitch import KillSwitch
 
@@ -25,11 +26,21 @@ HOTKEY_ID = 0x4C4B
 START_TIMEOUT = 2.0
 
 
-class HotkeyKillSwitch:
-    def __init__(self, killswitch: KillSwitch, *, user32: object = None, kernel32: object = None) -> None:
+class HotkeyKillSwitch(metaclass=SealedType):
+    __slots__ = ("_error", "_kernel32", "_killswitch", "_ready", "_start_timeout", "_thread", "_thread_id", "_user32")
+
+    def __init__(
+        self,
+        killswitch: KillSwitch,
+        *,
+        user32: object = None,
+        kernel32: object = None,
+        start_timeout: float = START_TIMEOUT,
+    ) -> None:
         self._killswitch = killswitch
         self._user32 = ctypes.windll.user32 if user32 is None else user32
         self._kernel32 = ctypes.windll.kernel32 if kernel32 is None else kernel32
+        self._start_timeout = start_timeout
         self._thread: threading.Thread | None = None
         self._thread_id = 0
         self._ready = threading.Event()
@@ -38,7 +49,7 @@ class HotkeyKillSwitch:
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="lasto-kill-hotkey", daemon=True)
         self._thread.start()
-        if not self._ready.wait(START_TIMEOUT):
+        if not self._ready.wait(self._start_timeout):
             raise InterfaceError("the kill-switch hotkey thread didn't start")
         if self._error is not None:
             raise InterfaceError(self._error)
@@ -49,7 +60,7 @@ class HotkeyKillSwitch:
             return
         self._thread = None
         self._user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
-        thread.join(START_TIMEOUT)
+        thread.join(self._start_timeout)
 
     def _run(self) -> None:
         self._thread_id = self._kernel32.GetCurrentThreadId()
@@ -65,3 +76,6 @@ class HotkeyKillSwitch:
                     self._killswitch.trip("hotkey")
         finally:
             self._user32.UnregisterHotKey(None, HOTKEY_ID)
+
+
+freeze(__name__)

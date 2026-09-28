@@ -10,6 +10,7 @@ call; tests/safety/test_structure.py enforces that.
 from __future__ import annotations
 
 from lasto.safety import pcan_constants as pc
+from lasto.safety._frozen import freeze
 from lasto.safety.audit import refuse
 from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed
 from lasto.safety.pcan_dll import PcanChannel, ReadOnlyPcan, check_available, check_driver, load_readonly
@@ -17,6 +18,8 @@ from lasto.safety.pcan_dll import PcanChannel, ReadOnlyPcan, check_available, ch
 
 class PassiveChannel(PcanChannel):
     """A PCAN channel confirmed to be in hardware listen-only mode. It has no way to transmit."""
+
+    __slots__ = ()
 
 
 def open_passive(channel_name: str, *, pcan: ReadOnlyPcan | None = None) -> PassiveChannel:
@@ -53,3 +56,6 @@ def open_passive(channel_name: str, *, pcan: ReadOnlyPcan | None = None) -> Pass
         channel.close()
         raise
     return channel
+
+
+freeze(__name__)

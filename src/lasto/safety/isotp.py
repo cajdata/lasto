@@ -11,15 +11,15 @@ refusal; when they were a received response, the gate treats it as an anomaly.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 
+from lasto.safety._frozen import SealedEnum, SealedType, freeze
 from lasto.safety.audit import refuse
 from lasto.safety.errors import SafetyViolation
 
 FRAME_BYTES = 8
 
 
-class IsoTpError(ValueError):
+class IsoTpError(ValueError, metaclass=SealedType):
     """Bytes that aren't a well-formed ISO-TP frame."""
 
     def __init__(self, reason: str, detail: str) -> None:
@@ -28,7 +28,7 @@ class IsoTpError(ValueError):
         self.detail = detail
 
 
-class FrameKind(Enum):
+class FrameKind(SealedEnum):
     SINGLE = "single"
     FIRST = "first"
     CONSECUTIVE = "consecutive"
@@ -36,7 +36,7 @@ class FrameKind(Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class IsoTpFrame:
+class IsoTpFrame(metaclass=SealedType):
     kind: FrameKind
     payload: bytes = b""
     length: int = 0
@@ -99,3 +99,6 @@ def parse(data: bytes, *, ext_address: int | None) -> IsoTpFrame:
             raise IsoTpError("isotp_malformed", "short flow control")
         return IsoTpFrame(FrameKind.FLOW_CONTROL, flow_status=low, block_size=body[1], st_min=body[2])
     raise IsoTpError("isotp_malformed", f"unknown frame type {frame_type}")
+
+
+freeze(__name__)

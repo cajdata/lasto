@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from enum import Enum
 
 from lasto.safety import policy
+from lasto.safety._frozen import SealedEnum, SealedType, freeze
 from lasto.safety.audit import refuse
 from lasto.safety.ecus import Ecu
 
@@ -22,7 +22,7 @@ MAX_PIDS_PER_REQUEST = 6
 MAX_DTC_INFORMATION_PARAMETERS = 5
 
 
-class Purpose(Enum):
+class Purpose(SealedEnum):
     LOGGING = "logging"
     SNAPSHOT = "snapshot"
     IDENTIFY = "identify"
@@ -30,7 +30,7 @@ class Purpose(Enum):
     INTERLOCK_PROBE = "interlock_probe"
 
 
-class DtcKind(Enum):
+class DtcKind(SealedEnum):
     STORED = 0x03
     PENDING = 0x07
     PERMANENT = 0x0A
@@ -44,7 +44,7 @@ def describe(target: object, payload: object, purpose: object) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class Request:
+class Request(metaclass=SealedType):
     """A read request for one ECU (target) or for every OBD ECU (target None, the functional ID)."""
 
     target: Ecu | None
@@ -193,3 +193,6 @@ def interlock_probe(pid: int, *, ecu: Ecu | None = None) -> Request:
     if pid not in policy.PROBE_PIDS:
         _refuse_argument(ValueError("interlock probes read PID 0x0C, 0x0D, or 0x42"), "not_a_probe_pid", repr(pid))
     return _build(_optional_ecu(ecu), [0x01, pid], Purpose.INTERLOCK_PROBE)
+
+
+freeze(__name__)

@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import ctypes
 import re
+from types import MappingProxyType
 
+from lasto.safety._frozen import freeze, sealed_metaclass
 from lasto.safety.audit import refuse
 
 # Channel handles. Only PCAN-USB, the hardware this project uses.
 PCAN_NONEBUS = 0x00
-USB_CHANNELS = {n: (0x50 + n if n <= 8 else 0x500 + n) for n in range(1, 17)}
+USB_CHANNELS = MappingProxyType({n: (0x50 + n if n <= 8 else 0x500 + n) for n in range(1, 17)})
 _CHANNEL_NAME = re.compile(r"PCAN_USBBUS([1-9]|1[0-6])")
 
 # Status codes. These are bit flags; test them with masks.
@@ -89,21 +91,25 @@ MIN_API_VERSION = (4, 7, 0)
 BROKEN_API_VERSIONS = frozenset({(5, 0, 0)})
 
 
-class TPCANMsg(ctypes.Structure):
-    _fields_ = [
+# Sealed, so a field can't be swapped on the class: the ID the write function checked is the ID written.
+SealedStructType = sealed_metaclass(type(ctypes.Structure))
+
+
+class TPCANMsg(ctypes.Structure, metaclass=SealedStructType):
+    _fields_ = (
         ("ID", ctypes.c_uint32),
         ("MSGTYPE", ctypes.c_uint8),
         ("LEN", ctypes.c_uint8),
         ("DATA", ctypes.c_uint8 * 8),
-    ]
+    )
 
 
-class TPCANTimestamp(ctypes.Structure):
-    _fields_ = [
+class TPCANTimestamp(ctypes.Structure, metaclass=SealedStructType):
+    _fields_ = (
         ("millis", ctypes.c_uint32),
         ("millis_overflow", ctypes.c_uint16),
         ("micros", ctypes.c_uint16),
-    ]
+    )
 
 
 def channel_handle(name: str) -> int:
@@ -128,3 +134,6 @@ def parse_api_version(text: str) -> tuple[int, int, int] | None:
 
 def api_version_supported(version: tuple[int, int, int] | None) -> bool:
     return version is not None and version >= MIN_API_VERSION and version not in BROKEN_API_VERSIONS
+
+
+freeze(__name__)

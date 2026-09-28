@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Collection
 
 from lasto.safety import ecus, isotp
+from lasto.safety._frozen import freeze
 from lasto.safety.audit import refuse
 from lasto.safety.errors import SafetyViolation
 
@@ -136,3 +137,6 @@ def check_frame(can_id: object, data: object, *, broadcast_ids: Collection[int] 
     check_service(service, functional=ecu is None, request=text)
     check_sensitive(service, sensitive=ecu is not None and ecu.kind in ecus.SENSITIVE_KINDS, request=text)
     return "request"
+
+
+freeze(__name__)

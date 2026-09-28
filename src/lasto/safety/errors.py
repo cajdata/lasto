@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from lasto.safety._frozen import SealedType, freeze
 
-class SafetyError(Exception):
+
+class SafetyError(Exception, metaclass=SealedType):
     """Base class for refusals raised on purpose by the safety core."""
 
 
@@ -29,9 +31,12 @@ class PassiveModeUnconfirmed(SafetyError):
     """Listen-only mode could not be confirmed, so passive capture refused to start."""
 
 
-class InterfaceError(Exception):
+class InterfaceError(Exception, metaclass=SealedType):
     """The CAN interface or its driver reported an error, or couldn't be opened."""
 
 
-class AdapterError(Exception):
+class AdapterError(Exception, metaclass=SealedType):
     """The STN adapter gave a response the safety core can't accept."""
+
+
+freeze(__name__)

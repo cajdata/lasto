@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import REFUSALS, Auditor
 from lasto.safety.clock import Clock
 from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed
@@ -58,7 +59,7 @@ def _refused(auditor: Auditor, mode: str, channel_name: str, error: BaseExceptio
         REFUSALS.detach(auditor)
 
 
-class PassiveSession:
+class PassiveSession(metaclass=SealedType):
     """Listen-only capture that never trusts a channel that changed under it.
 
     The reader re-checks listen-only continuously. If it ever reads anything
@@ -68,6 +69,10 @@ class PassiveSession:
     listen-only before initializing, read it back). If that doesn't work
     within a few attempts, the session ends and logs why.
     """
+
+    __slots__ = (
+        "_auditor", "_channel", "_channel_name", "_clock", "_end_reason", "_pcan", "_reader", "_reopens", "_subscribers",
+    )  # fmt: skip
 
     def __init__(
         self,
@@ -184,8 +189,10 @@ def open_passive_session(
     return PassiveSession(channel_name, pcan, channel, auditor, clock, subscribers)
 
 
-class PolledSession:
+class PolledSession(metaclass=SealedType):
     """Normal-mode capture that can send the allowlisted reads of a typed request."""
+
+    __slots__ = ("_auditor", "_channel", "_clock", "_gate", "_killswitch", "_reader")
 
     def __init__(
         self,
@@ -287,3 +294,6 @@ def open_polled_session(
         _refused(auditor, "polled", channel_name, exc)
         raise
     return session
+
+
+freeze(__name__)

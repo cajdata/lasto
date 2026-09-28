@@ -24,6 +24,7 @@ from collections.abc import Iterable
 from typing import Protocol
 
 from lasto.safety import ecus, isotp, policy
+from lasto.safety._frozen import SealedProtocolType, SealedType, freeze
 from lasto.safety.audit import Auditor, refuse
 from lasto.safety.clock import Clock
 from lasto.safety.errors import InterfaceError, SafetyError, SafetyViolation
@@ -50,7 +51,7 @@ NRC_RESPONSE_PENDING = 0x78
 POSITIVE_RESPONSE_OFFSET = 0x40
 
 
-class WriteFunction(Protocol):
+class WriteFunction(Protocol, metaclass=SealedProtocolType):
     def __call__(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
         """Check one 8-byte standard frame, audit it, and put it on the bus; or refuse, or raise InterfaceError."""
 
@@ -70,7 +71,12 @@ def _deny(reason: str, detail: str, request: str) -> None:
     refuse(SafetyViolation(reason, detail), transport="pcan", request=request)
 
 
-class Gate:
+class Gate(metaclass=SealedType):
+    __slots__ = (
+        "_armed", "_auditor", "_broadcast_ids", "_clock", "_interlocks", "_killswitch", "_last", "_last_finished",
+        "_limiter", "_lock", "_nrc_monitor", "_pending", "_profile", "_request_ids", "_writer",
+    )  # fmt: skip
+
     def __init__(
         self,
         writer: WriteFunction,
@@ -175,9 +181,9 @@ class Gate:
     def _check_flow_control_wanted(self, can_id: int, text: str) -> None:
         """Flow control only answers the first frame waiting for it, once, on that ECU's request ID."""
         pending = self._pending
-        if pending is None or pending.rx_id is None or pending.flow_control_sent:
+        if pending is None or pending._rx_id is None or pending._flow_control_sent:
             _deny("flow_control_unsolicited", "no first frame is waiting for flow control", text)
-        ecu = ecus.by_response_id(pending.rx_id)  # type: ignore[union-attr,arg-type]
+        ecu = ecus.by_response_id(pending._rx_id)  # type: ignore[union-attr,arg-type]
         if ecu is None or can_id != ecu.request_id:
             _deny("flow_control_wrong_id", _hex_id(can_id), text)
 
@@ -230,7 +236,7 @@ class Gate:
             now = self._clock.monotonic()
             if pending is None or now < pending.deadline:
                 return
-            if pending.can_id == policy.FUNCTIONAL_REQUEST_ID and pending.responses and pending.rx_id is None:
+            if pending.can_id == policy.FUNCTIONAL_REQUEST_ID and pending._responses and pending._rx_id is None:
                 self._finish(pending, ExchangeState.DONE, now)
             else:
                 self._finish_timeout(pending, now)
@@ -261,7 +267,7 @@ class Gate:
             self._trip("unexpected_flow_control", "an ECU sent flow control, but lasto never sends first frames")
 
     def _handle_first_frame(self, pending: Exchange, can_id: int, parsed: isotp.IsoTpFrame, now: float) -> None:
-        if pending.rx_id is not None:
+        if pending._rx_id is not None:
             return  # already receiving from another responder; this one gets no flow control
         ecu = ecus.by_response_id(can_id)
         if ecu is None:
@@ -269,33 +275,33 @@ class Gate:
                 "response_abandoned", can_id=_hex_id(can_id), detail="multi-frame response from an unapproved ECU"
             )
             return
-        pending.rx_id = can_id
-        pending.rx_length = parsed.length
-        pending.rx_data = bytearray(parsed.payload)
-        pending.rx_sequence = 1
-        pending.deadline = now + CONSECUTIVE_FRAME_TIMEOUT
+        pending._rx_id = can_id
+        pending._rx_length = parsed.length
+        pending._rx_data = bytearray(parsed.payload)
+        pending._rx_sequence = 1
+        pending._deadline = now + CONSECUTIVE_FRAME_TIMEOUT
         flow_control = isotp.encode_flow_control(ext_address=ecu.ext_address, padding=policy.PADDING_BYTE)
         try:
             self._transmit(ecu.request_id, flow_control, purpose=pending.request.purpose.value, kind="flow_control")
         except SafetyError as exc:  # already audited where it was refused
             self._trip("flow_control_refused", str(exc))
             return
-        pending.flow_control_sent = True
+        pending._flow_control_sent = True
 
     def _handle_consecutive_frame(self, pending: Exchange, can_id: int, parsed: isotp.IsoTpFrame, now: float) -> None:
-        if pending.rx_id != can_id:
+        if pending._rx_id != can_id:
             return
-        if parsed.sequence != pending.rx_sequence:
-            self._auditor.event("isotp_sequence_error", can_id=_hex_id(can_id), expected=pending.rx_sequence)
+        if parsed.sequence != pending._rx_sequence:
+            self._auditor.event("isotp_sequence_error", can_id=_hex_id(can_id), expected=pending._rx_sequence)
             self._finish(pending, ExchangeState.ABORTED, now)
             return
-        pending.rx_data.extend(parsed.payload)
-        pending.rx_sequence = (pending.rx_sequence + 1) & 0x0F
-        pending.deadline = now + CONSECUTIVE_FRAME_TIMEOUT
-        if len(pending.rx_data) >= pending.rx_length:
-            payload = bytes(pending.rx_data[: pending.rx_length])
-            pending.rx_id = None
-            pending.flow_control_sent = False
+        pending._rx_data.extend(parsed.payload)
+        pending._rx_sequence = (pending._rx_sequence + 1) & 0x0F
+        pending._deadline = now + CONSECUTIVE_FRAME_TIMEOUT
+        if len(pending._rx_data) >= pending._rx_length:
+            payload = bytes(pending._rx_data[: pending._rx_length])
+            pending._rx_id = None
+            pending._flow_control_sent = False
             self._handle_payload(pending, can_id, payload, now)
 
     def _handle_payload(self, pending: Exchange, can_id: int, payload: bytes, now: float) -> None:
@@ -306,11 +312,11 @@ class Gate:
                 return
             nrc = payload[2]
             if nrc == NRC_RESPONSE_PENDING:
-                pending.pending_extensions += 1
-                if pending.pending_extensions > MAX_RESPONSE_PENDING:
+                pending._pending_extensions += 1
+                if pending._pending_extensions > MAX_RESPONSE_PENDING:
                     self._finish_timeout(pending, now)
                 else:
-                    pending.deadline = now + P2_STAR_TIMEOUT
+                    pending._deadline = now + P2_STAR_TIMEOUT
                 return
             if nrc == NRC_BUSY_REPEAT_REQUEST:
                 self._limiter.backoff(now)
@@ -323,7 +329,7 @@ class Gate:
         if payload[0] != request.service + POSITIVE_RESPONSE_OFFSET:
             self._trip("unexpected_response", f"response 0x{payload[0]:02X} to service 0x{request.service:02X}")
             return
-        pending.responses.append((can_id, payload))
+        pending._responses.append((can_id, payload))
         self._nrc_monitor.record_positive(request.key, _target_key(request))
         self._limiter.clear_backoff()
         self._feed_interlocks(payload, now)
@@ -345,8 +351,8 @@ class Gate:
     # ---- finishing ----
 
     def _finish(self, exchange: Exchange, state: ExchangeState, now: float, *, nrc: int | None = None) -> None:
-        exchange.state = state
-        exchange.nrc = nrc
+        exchange._state = state
+        exchange._nrc = nrc
         self._pending = None
         self._last = exchange
         self._last_finished = now
@@ -360,3 +366,6 @@ class Gate:
         self._auditor.event("gate_anomaly", cause=cause, detail=detail)
         self._killswitch.trip(cause)
         self.abort()
+
+
+freeze(__name__)

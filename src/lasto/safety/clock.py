@@ -6,8 +6,10 @@ import time
 from datetime import UTC, datetime
 from typing import Protocol
 
+from lasto.safety._frozen import SealedProtocolType, SealedType, freeze
 
-class Clock(Protocol):
+
+class Clock(Protocol, metaclass=SealedProtocolType):
     def monotonic(self) -> float:
         """Seconds from an arbitrary start; never goes backwards."""
 
@@ -18,8 +20,10 @@ class Clock(Protocol):
         """Block for the given number of seconds (no-op for zero or less)."""
 
 
-class SystemClock:
+class SystemClock(metaclass=SealedType):
     """The real clock."""
+
+    __slots__ = ()
 
     def monotonic(self) -> float:
         return time.monotonic()
@@ -29,3 +33,6 @@ class SystemClock:
 
     def sleep(self, seconds: float) -> None:
         time.sleep(max(0.0, seconds))
+
+
+freeze(__name__)

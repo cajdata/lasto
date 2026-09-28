@@ -10,6 +10,7 @@ import threading
 from collections import deque
 from collections.abc import Callable, Hashable
 
+from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import Auditor, refuse
 from lasto.safety.errors import KillSwitchTripped
 from lasto.safety.requests import Purpose
@@ -27,7 +28,9 @@ DISCOVERY_WINDOW_SECONDS = 60.0
 CONSECUTIVE_TIMEOUT_LIMIT = 5
 
 
-class KillSwitch:
+class KillSwitch(metaclass=SealedType):
+    __slots__ = ("_auditor", "_cause", "_listeners", "_lock")
+
     def __init__(self, auditor: Auditor | None = None) -> None:
         self._auditor = auditor
         self._lock = threading.Lock()
@@ -73,8 +76,10 @@ def _trim(window: deque[float], now: float, span: float) -> None:
         window.popleft()
 
 
-class NrcMonitor:
+class NrcMonitor(metaclass=SealedType):
     """Counts negative responses and timeouts, and trips the kill switch when they repeat."""
+
+    __slots__ = ("_consecutive", "_discovery_window", "_killswitch", "_timeouts", "_window")
 
     def __init__(self, killswitch: KillSwitch) -> None:
         self._killswitch = killswitch
@@ -106,3 +111,6 @@ class NrcMonitor:
         self._timeouts[target_key] = count
         if count >= CONSECUTIVE_TIMEOUT_LIMIT:
             self._killswitch.trip("repeated_timeouts")
+
+
+freeze(__name__)

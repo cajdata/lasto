@@ -14,9 +14,11 @@ from __future__ import annotations
 import ctypes
 import os
 from collections.abc import Callable, Mapping
+from types import MappingProxyType
 from typing import Any
 
 from lasto.safety import pcan_constants as pc
+from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import refuse
 from lasto.safety.errors import InterfaceError, SafetyViolation
 from lasto.safety.frames import CanFrame, ErrorFrame, ReadError, Received, StatusMessage
@@ -41,10 +43,14 @@ def dll_path() -> str:
     return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "PCANBasic.dll")
 
 
+def require_64_bit(pointer_bytes: int) -> None:
+    if pointer_bytes != 8:
+        raise InterfaceError("lasto needs 64-bit Python to load the 64-bit PCANBasic.dll")
+
+
 def load_library() -> object:
     """Load the real 64-bit PCANBasic.dll by absolute path. Only live hardware sessions get here."""
-    if POINTER_BYTES != 8:
-        raise InterfaceError("lasto needs 64-bit Python to load the 64-bit PCANBasic.dll")
+    require_64_bit(POINTER_BYTES)
     path = dll_path()
     try:
         return ctypes.WinDLL(path)
@@ -71,8 +77,10 @@ def load_readonly(library: object | None = None) -> ReadOnlyPcan:
     return ReadOnlyPcan(bind_readonly(source))
 
 
-class ReadOnlyPcan:
+class ReadOnlyPcan(metaclass=SealedType):
     """PCAN-Basic calls that can't transmit. CAN_SetValue only accepts an explicit list of settings."""
+
+    __slots__ = ("_functions",)
 
     SETVALUE_ALLOWED: frozenset[tuple[int, int]] = frozenset(
         {
@@ -83,7 +91,7 @@ class ReadOnlyPcan:
     )
 
     def __init__(self, functions: Mapping[str, Callable[..., int]]) -> None:
-        self._functions = dict(functions)
+        self._functions = MappingProxyType(dict(functions))
 
     def _call(self, name: str, *args: object) -> int:
         return int(self._functions[name](*args)) & 0xFFFFFFFF
@@ -196,8 +204,10 @@ def check_available(pcan: ReadOnlyPcan, handle: int, name: str) -> None:
         )
 
 
-class PcanChannel:
+class PcanChannel(metaclass=SealedType):
     """An initialized PCAN channel. Read operations only."""
+
+    __slots__ = ("_api_version", "_handle", "_name", "_open", "_pcan")
 
     def __init__(self, pcan: ReadOnlyPcan, handle: int, name: str, api_version: str) -> None:
         self._pcan = pcan
@@ -256,3 +266,6 @@ class PcanChannel:
         if self._open:
             self._open = False
             self._pcan.uninitialize(self._handle)
+
+
+freeze(__name__)

@@ -28,6 +28,7 @@ from typing import Any
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety import policy
+from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import Auditor, refuse
 from lasto.safety.clock import Clock
 from lasto.safety.errors import InterfaceError, SafetyViolation
@@ -46,13 +47,15 @@ from lasto.safety.ratelimit import CEILING_FRAMES, CEILING_WINDOW
 class ActiveChannel(PcanChannel):
     """A PCAN channel in normal mode. It reads; it has no way to write."""
 
+    __slots__ = ()
+
     def enter_listen_only(self) -> bool:
         """Switch to listen-only after a kill, and report whether it read back as on."""
         status = self._pcan.set_value(self._handle, pc.PCAN_LISTEN_ONLY, pc.PCAN_PARAMETER_ON)
         return status == pc.PCAN_ERROR_OK and self.listen_only()
 
 
-class Writer:
+class Writer(metaclass=SealedType):
     """The one function that puts a frame on the bus. Called as writer(can_id, data, purpose=..., kind=...)."""
 
     __slots__ = (
@@ -175,3 +178,6 @@ def open_active(
         channel.close()
         raise
     return channel, writer
+
+
+freeze(__name__)

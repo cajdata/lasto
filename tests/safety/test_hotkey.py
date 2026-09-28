@@ -5,7 +5,6 @@ import threading
 
 import pytest
 
-from lasto.safety import hotkey
 from lasto.safety.errors import InterfaceError
 from lasto.safety.hotkey import HOTKEY_ID, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, VK_K, WM_HOTKEY, WM_QUIT, HotkeyKillSwitch
 from lasto.safety.killswitch import KillSwitch
@@ -77,11 +76,10 @@ def test_refuses_when_the_hotkey_is_taken():
     assert user32.unregistered == []
 
 
-def test_refuses_when_the_thread_does_not_start(monkeypatch):
-    monkeypatch.setattr(hotkey, "START_TIMEOUT", 0.05)
+def test_refuses_when_the_thread_does_not_start():
     hold = threading.Event()
     user32 = FakeUser32(hold_register=hold)
-    listener = HotkeyKillSwitch(KillSwitch(), user32=user32, kernel32=FakeKernel32())
+    listener = HotkeyKillSwitch(KillSwitch(), user32=user32, kernel32=FakeKernel32(), start_timeout=0.05)
     with pytest.raises(InterfaceError, match="didn't start"):
         listener.start()
     hold.set()

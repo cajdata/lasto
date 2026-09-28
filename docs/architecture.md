@@ -223,6 +223,18 @@ A K-line session needs an init sequence. Fast init and 5-baud init both end in S
 - Disable keep-alives with `ATSW 00`, and keep requests under the P3 timeout (5 s) so the session stays up without 0x3E.
 - K-line passive monitoring of Creader sessions uses a preset with no autoinit, so it transmits nothing.
 
+### 3.9 The policy can't change at runtime
+
+Every safety module ends with `freeze(__name__)` (`safety/_frozen.py`):
+
+- **Classes are sealed.** Every class in the core has a sealing metaclass, including enums, protocols, exceptions, dataclasses and the ctypes structures. Once sealed, none of its attributes can be set or deleted. That closes method swaps, `__eq__`/`__hash__` changes that would move an ECU out of `SENSITIVE_KINDS`, and field swaps on `TPCANMsg` that would write a different ID from the one checked. Enum members can't change either, since a member's name is its hash. `SealedType` is its own metaclass, so the guards can't be swapped out.
+- **Modules are frozen.** No name can be rebound or deleted. The package still lets the import system bind each submodule once, and its search path becomes a tuple.
+- **Tables are immutable:** frozensets, tuples and `MappingProxyType`, never a list, dict or set.
+- **Instances keep their state in private slots.** They have no `__dict__` and no public writable attributes. An `Exchange` is read-only outside the gate.
+- **Refusals are audited:** a refused change is recorded as `safety_core_frozen` (transport `core`).
+
+What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr__` called directly, frames, gc, ctypes, builtins, pickle) is banned in `src/` by the deliberate-routes test (§7). The static change test catches any assignment, deletion, in-place change, `setattr`, monkeypatch or `mock.patch` aimed at a safety module, class or module-level object, from `src/` and from the tests. Tests may change only instances they made.
+
 ## 4. Capture and storage
 
 - **Reader thread** per channel, owned by the safety core. It pushes to subscribers in order: raw recorder → kill-switch monitor → gate response matcher → ISO-TP/KWP conversation tracker → live decoder.
@@ -261,7 +273,9 @@ A K-line session needs an init sequence. Fast init and 5-baud init both end in S
   - only `safety/stn_port.py` opens or writes serial
   - nothing outside `lasto.safety` imports the DLL bindings or pyserial
   - code outside the safety core uses only its public API. Names are resolved through every re-export and attribute chain back to the module that defines them (`tests/scan.py`).
-  - no code in `src/` uses a deliberate route around the core's guards (ctypes, gc, inspect, importlib, `sys.modules`, `vars`/`globals`/`setattr`/`delattr`, `getattr` with a private or computed name, attribute-guard dunders, or, outside the safety core, another object's private attributes), except an explicit exemption list in `tests/safety/test_structure_reach.py`. Each new exemption is its own commit, approved by the owner.
+  - no code in `src/` uses a deliberate route around the core's guards (ctypes, gc, inspect, importlib, builtins, pickle and other code-rebuilding modules, `sys.modules`, `vars`/`globals`/`setattr`/`delattr`, `getattr` with a private or computed name, attribute-guard dunders, function defaults, frames and tracebacks, trace and import hooks, or, outside the safety core, another object's private attributes), except an explicit exemption list in `tests/safety/test_structure_reach.py`. Each new exemption is its own commit, approved by the owner.
+  - nothing in `src/` or the tests changes a safety module, class or module-level object (§3.9), and the safety core has no `global` statements
+- **Runtime freeze tests** (`tests/safety/test_frozen.py`) try to change every name in every safety module, every attribute of every safety class, and every enum member, and expect each attempt to be refused and audited. They also check that every module-level value is immutable and that every instance keeps its state in private slots.
   - passive modules contain no write reference
   - every argparse parser has `allow_abbrev=False`
 - **Reachability tests** walk every attribute path from a live polled session: the raw `CAN_Write` is reachable only inside the `Writer`, and the reader's channel can't write.
@@ -282,6 +296,7 @@ src/lasto/
     pcan_dll.py              # ctypes: load_readonly(), the read-only binding
     pcan_active.py           # open_active() -> (ActiveChannel, Writer); the one CAN_Write lookup
     exchange.py              # Exchange and ExchangeState, the public result of a request
+    _frozen.py               # freeze(): sealed classes, frozen modules (§3.9)
     pcan_passive.py  stn_port.py  reader.py
   capture/  protocol/  storage/  decode/  mapping/  polling/  snapshot/  identify/  discover/
   analysis/  report/  export/  view/

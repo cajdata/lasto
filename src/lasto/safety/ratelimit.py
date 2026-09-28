@@ -14,6 +14,10 @@ now and then by rounding or scheduling jitter.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
+from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import refuse
 from lasto.safety.requests import Purpose
 
@@ -26,22 +30,26 @@ CEILING_FRAMES = int(HARD_CEILING_PER_SECOND * CEILING_WINDOW)
 # Added to the gate's shared spacing, so its fastest pace (19.6 per second) never meets the backstop.
 PACING_MARGIN = 0.001
 
-PURPOSE_RATES = {
-    Purpose.LOGGING: 20.0,
-    Purpose.SNAPSHOT: 5.0,
-    Purpose.IDENTIFY: 5.0,
-    Purpose.DISCOVERY: 5.0,
-    Purpose.INTERLOCK_PROBE: 2.0,
-}
+PURPOSE_RATES = MappingProxyType(
+    {
+        Purpose.LOGGING: 20.0,
+        Purpose.SNAPSHOT: 5.0,
+        Purpose.IDENTIFY: 5.0,
+        Purpose.DISCOVERY: 5.0,
+        Purpose.INTERLOCK_PROBE: 2.0,
+    }
+)
 
 BACKOFF_START = 0.2
 BACKOFF_MAX = 5.0
 
 
-class RateLimiter:
-    def __init__(self, rates: dict[Purpose, float] | None = None) -> None:
+class RateLimiter(metaclass=SealedType):
+    __slots__ = ("_backoff", "_backoff_until", "_interval", "_next", "_next_any")
+
+    def __init__(self, rates: Mapping[Purpose, float] | None = None) -> None:
         rates = PURPOSE_RATES if rates is None else rates
-        self._interval: dict[Purpose, float] = {}
+        interval: dict[Purpose, float] = {}
         for purpose in Purpose:
             rate = rates[purpose]
             if not 0 < rate <= HARD_CEILING_PER_SECOND:
@@ -50,7 +58,8 @@ class RateLimiter:
                     transport="pcan",
                     reason="rate_above_ceiling",
                 )
-            self._interval[purpose] = 1.0 / rate
+            interval[purpose] = 1.0 / rate
+        self._interval = MappingProxyType(interval)
         self._next_any = float("-inf")
         self._next = dict.fromkeys(Purpose, float("-inf"))
         self._backoff = 0.0
@@ -71,3 +80,6 @@ class RateLimiter:
 
     def clear_backoff(self) -> None:
         self._backoff = 0.0
+
+
+freeze(__name__)

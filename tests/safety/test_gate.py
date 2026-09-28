@@ -38,7 +38,7 @@ def test_logging_request_round_trip(sim, auditor, sink):
     sim.vehicle.state.rpm = 750
     exchange = session.request(LOGGING_RPM_SPEED)
     assert exchange.state is ExchangeState.DONE and exchange.done
-    assert exchange.responses == [(0x7E8, bytes.fromhex("410C0BB80D00"))]
+    assert exchange.responses == ((0x7E8, bytes.fromhex("410C0BB80D00")),)
     assert sim.dll.writes == [(0x51, 0x7E0, bytes.fromhex("03010C0D00000000"))]
     [record] = events(sink, "transmit")
     assert (record["can_id"], record["kind"], record["purpose"]) == ("0x7E0", "request", "logging")
@@ -57,7 +57,7 @@ def test_parked_multi_frame_read_sends_flow_control_on_the_request_id(sim, audit
     park(session)
     exchange = session.request(rq.read_vehicle_info(0x02, purpose=Purpose.IDENTIFY, ecu=ENGINE))
     assert exchange.state is ExchangeState.DONE
-    assert exchange.responses == [(0x7E8, b"\x49\x02\x01" + b"JTJBT20X060000001")]
+    assert exchange.responses == ((0x7E8, b"\x49\x02\x01" + b"JTJBT20X060000001"),)
     assert (0x51, 0x7E0, FC) in sim.dll.writes
     assert [r["kind"] for r in events(sink, "transmit")].count("flow_control") == 1
 
@@ -280,12 +280,12 @@ def test_flow_control_only_answers_a_waiting_first_frame(h):
     assert fc() == "flow_control_unsolicited"  # nothing pending
     exchange = h.gate.submit(LOGGING_RPM_SPEED)
     assert fc() == "flow_control_unsolicited"  # pending, but no first frame
-    exchange.rx_id = 0x7E9
+    exchange._rx_id = 0x7E9
     assert fc() == "flow_control_wrong_id"  # responder isn't approved
-    exchange.rx_id = 0x7E8
+    exchange._rx_id = 0x7E8
     assert fc(can_id=0x7DF) == "flow_control_wrong_id"
     assert fc(data=bytes.fromhex("3001000000000000")) == "flow_control_malformed"
-    exchange.flow_control_sent = True
+    exchange._flow_control_sent = True
     assert fc() == "flow_control_unsolicited"  # at most one per first frame
     assert h.writer.frames == [(0x7E0, bytes.fromhex("03010C0D00000000"))]
 
@@ -397,7 +397,7 @@ def test_consecutive_frames_outside_the_accepted_transfer_are_ignored(clock, aud
     h.gate.on_frame(frame(0x7E8, 0x10, 0x09, 0x41, 0x0D, 0x00, 0x0C, 0x0B, 0xB8))
     h.gate.on_frame(frame(0x7E9, 0x21, 9, 9, 9, 9, 9, 9, 9))  # another ECU's frame
     assert exchange.state is ExchangeState.PENDING
-    assert exchange.rx_data == bytearray(bytes.fromhex("410D000C0BB8"))
+    assert exchange._rx_data == bytearray(bytes.fromhex("410D000C0BB8"))
     assert not h.killswitch.tripped
 
 
@@ -406,7 +406,7 @@ def test_multi_frame_completes(h):
     h.gate.on_frame(frame(0x7E8, 0x10, 0x09, 0x41, 0x0C, 0x0B, 0xB8, 0x0D, 0x00))
     h.gate.on_frame(frame(0x7E8, 0x21, 0x05, 0x50, 0xAA))
     assert exchange.state is ExchangeState.DONE
-    assert exchange.responses == [(0x7E8, bytes.fromhex("410C0BB80D000550AA"))]
+    assert exchange.responses == ((0x7E8, bytes.fromhex("410C0BB80D000550AA")),)
 
 
 def test_functional_timeouts_are_not_counted(clock, auditor):

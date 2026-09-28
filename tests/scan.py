@@ -37,7 +37,7 @@ def sources() -> dict[str, ast.Module]:
 
 
 @cache
-def test_sources() -> dict[str, ast.Module]:
+def sources_of_tests() -> dict[str, ast.Module]:
     """Every test module, by a dotted name under 'tests'."""
     return {
         "tests." + _module_name(path, TESTS): ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -134,14 +134,25 @@ def in_safety(target: Target) -> bool:
 
 # ---- the deliberate routes around the safety core ----
 
-BANNED_MODULES = {"ctypes", "gc", "inspect", "importlib"}
+# Modules that reach into objects, rewrite code, or rebuild objects from bytes (builtins: rebinding
+# `type` or `isinstance` there would defeat checks in the safety core without touching it).
+BANNED_MODULES = {
+    "ctypes", "gc", "inspect", "importlib", "builtins",
+    "pickle", "marshal", "copyreg", "shelve", "runpy", "code", "codeop",
+}  # fmt: skip
 BANNED_CALLS = {"__import__", "globals", "vars", "setattr", "delattr", "eval", "exec", "compile"}
 NAME_ARGUMENT_CALLS = {"getattr", "hasattr"}
 BANNED_DUNDERS = {
     "__dict__", "__closure__", "__globals__", "__code__", "__self__", "__func__", "__wrapped__",
-    "__subclasses__", "__mro__", "__bases__", "__builtins__", "__class__", "__new__",
-    "__setattr__", "__delattr__", "__getattribute__",
-    "__reduce__", "__reduce_ex__", "__getstate__", "__setstate__",
+    "__subclasses__", "__mro__", "__bases__", "__base__", "__builtins__", "__class__", "__new__",
+    "__setattr__", "__delattr__", "__getattribute__", "__defaults__", "__kwdefaults__",
+    "__reduce__", "__reduce_ex__", "__getstate__", "__setstate__", "__traceback__",
+}  # fmt: skip
+# Frames (whose globals and locals can be changed), tracing hooks, and import hooks that could
+# hand the session a different gate when it imports one.
+BANNED_ATTRIBUTES = {
+    "tb_frame", "f_globals", "f_builtins", "f_locals", "f_back", "gi_frame", "cr_frame", "ag_frame",
+    "settrace", "setprofile", "meta_path", "path_hooks", "path_importer_cache",
 }  # fmt: skip
 
 
@@ -174,7 +185,7 @@ def deliberate_routes(module: str, tree: ast.AST) -> list[tuple[str, str]]:
             chain = attribute_chain(node)
             if chain and len(chain) >= 2 and chain[1] == "modules" and names.get(chain[0]) == ("module", "sys"):
                 found.append(("sys.modules", line))
-            if node.attr in BANNED_DUNDERS:
+            if node.attr in BANNED_DUNDERS or node.attr in BANNED_ATTRIBUTES:
                 found.append((node.attr, line))
             elif (
                 outside_safety
@@ -183,4 +194,74 @@ def deliberate_routes(module: str, tree: ast.AST) -> list[tuple[str, str]]:
                 and not (isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"})
             ):
                 found.append((f"private attribute .{node.attr}", line))
+    return found
+
+
+# ---- changes to the safety core (finding #2) ----
+
+# Methods that change a container in place.
+MUTATING_METHODS = {
+    "append", "extend", "insert", "remove", "pop", "popitem", "clear", "update", "setdefault",
+    "add", "discard", "difference_update", "intersection_update", "symmetric_difference_update",
+    "sort", "reverse", "appendleft", "extendleft", "popleft", "rotate",
+    "__iadd__", "__ior__", "__iand__", "__isub__", "__ixor__",
+}  # fmt: skip
+# Calls whose first argument is what they change: setattr and friends, their dunder forms (called on
+# object or type to get past a guard), and pytest's monkeypatch and unittest.mock's patch.
+SETTERS = {
+    "setattr", "delattr", "setitem", "delitem", "patch", "object",
+    "__setattr__", "__delattr__", "__setitem__", "__delitem__",
+}  # fmt: skip
+
+
+def resolve_expr(node: ast.AST, names: dict[str, tuple[str, ...]]) -> Target | None:
+    """What an expression refers to through the module's imports: a module or a member of one, or None."""
+    if isinstance(node, ast.Name):
+        binding = names.get(node.id)
+        return None if binding is None else resolve_binding(binding)
+    if isinstance(node, ast.Attribute):
+        base = resolve_expr(node.value, names)
+        if base is not None and base[0] == "module":
+            return resolve_member(base[1], node.attr)
+        return base  # an attribute of a member is still part of that member
+    if isinstance(node, ast.Subscript):
+        return resolve_expr(node.value, names)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"vars", "getattr"} and node.args:
+        return resolve_expr(node.args[0], names)
+    return None
+
+
+def _into_safety(node: ast.AST, names: dict[str, tuple[str, ...]]) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value == "lasto.safety" or node.value.startswith("lasto.safety.")  # a patch target by name
+    target = resolve_expr(node, names)
+    return target is not None and in_safety(target)
+
+
+def changes_to_the_safety_core(module: str, tree: ast.AST) -> list[tuple[str, str]]:
+    """(change, where) for every assignment, deletion, or in-place change to a safety module, class, or member.
+
+    Resolved through imports, re-exports, and attribute chains, so an alias or a
+    `from ... import` doesn't hide it. A value the code made itself (a local
+    variable, self) doesn't resolve, so changing an instance stays allowed.
+    Also, inside the safety core, a `global` statement, which could rebind a
+    module's names past its freeze.
+    """
+    names = bindings(tree)
+    found: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        line = f"{module}:{getattr(node, 'lineno', '?')}"
+        if isinstance(node, ast.Attribute | ast.Subscript) and isinstance(node.ctx, ast.Store | ast.Del):
+            if _into_safety(node, names):
+                verb = "delete" if isinstance(node.ctx, ast.Del) else "assign"
+                found.append((f"{verb} {ast.unparse(node)}", line))
+        elif isinstance(node, ast.Call):
+            func = node.func
+            called = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            if called in SETTERS and node.args and _into_safety(node.args[0], names):
+                found.append((f"{ast.unparse(func)}({ast.unparse(node.args[0])}, ...)", line))
+            elif isinstance(func, ast.Attribute) and called in MUTATING_METHODS | SETTERS and _into_safety(func.value, names):
+                found.append((f"{ast.unparse(func)}(...)", line))
+        elif isinstance(node, ast.Global) and in_safety(("module", module)):
+            found.append((f"global {', '.join(node.names)}", line))
     return found

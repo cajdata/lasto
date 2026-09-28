@@ -8,15 +8,17 @@ Every refusal is audited (rule 11).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from lasto.safety import policy
+from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import refuse
 from lasto.safety.ecus import SENSITIVE_KINDS, EcuKind
 from lasto.safety.errors import SafetyViolation
 from lasto.safety.requests import Purpose, Request
 
 # How old a reading may be and still count, by where it came from.
-SPEED_MAX_AGE = {"broadcast": 0.5, "poll": 1.0}
+SPEED_MAX_AGE = MappingProxyType({"broadcast": 0.5, "poll": 1.0})
 RPM_MAX_AGE = 2.0
 VOLTAGE_MAX_AGE = 2.0
 MIN_ENGINE_OFF_VOLTAGE = 12.0
@@ -25,7 +27,7 @@ PARKED_PURPOSES = frozenset({Purpose.SNAPSHOT, Purpose.IDENTIFY, Purpose.DISCOVE
 
 
 @dataclass(frozen=True, slots=True)
-class Sample:
+class Sample(metaclass=SealedType):
     value: float
     time: float
     source: str
@@ -42,7 +44,9 @@ def is_probe(request: Request) -> bool:
     )
 
 
-class Interlocks:
+class Interlocks(metaclass=SealedType):
+    __slots__ = ("_rpm", "_speed", "_voltage")
+
     def __init__(self) -> None:
         self._speed: Sample | None = None
         self._rpm: Sample | None = None
@@ -94,3 +98,6 @@ class Interlocks:
                 deny("vehicle_not_confirmed_stationary", purpose.value)
             if self.engine_off(now) and not self.battery_ok(now):
                 deny("battery_low_or_unknown", purpose.value)
+
+
+freeze(__name__)

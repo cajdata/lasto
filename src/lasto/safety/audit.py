@@ -20,26 +20,38 @@ from collections import deque
 from datetime import UTC, datetime
 from typing import NoReturn, Protocol
 
+from lasto.safety._frozen import SealedProtocolType, SealedType, freeze
 from lasto.safety.clock import Clock
 
+# Refusals held while no audit log is attached, before the oldest are dropped (and counted).
+REFUSAL_BACKLOG_LIMIT = 10_000
 
-class AuditSink(Protocol):
+
+class AuditSink(Protocol, metaclass=SealedProtocolType):
     def write(self, record: dict[str, object]) -> None:
         """Store one record durably, or raise."""
 
 
-class MemoryAuditSink:
+class MemoryAuditSink(metaclass=SealedType):
     """Keeps records in memory (tests and the simulator)."""
 
+    __slots__ = ("_records",)
+
     def __init__(self) -> None:
-        self.records: list[dict[str, object]] = []
+        self._records: list[dict[str, object]] = []
+
+    @property
+    def records(self) -> list[dict[str, object]]:
+        return self._records
 
     def write(self, record: dict[str, object]) -> None:
-        self.records.append(record)
+        self._records.append(record)
 
 
-class JsonlAuditSink:
+class JsonlAuditSink(metaclass=SealedType):
     """Append-only JSON Lines file. Each record is flushed and fsynced before write() returns."""
+
+    __slots__ = ("_file",)
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
         self._file = open(path, "a", encoding="utf-8", newline="\n")  # held open for the session
@@ -53,7 +65,9 @@ class JsonlAuditSink:
         self._file.close()
 
 
-class Auditor:
+class Auditor(metaclass=SealedType):
+    __slots__ = ("_clock", "_sink")
+
     def __init__(self, sink: AuditSink, clock: Clock) -> None:
         self._sink = sink
         self._clock = clock
@@ -91,15 +105,16 @@ class Auditor:
         self._write(name, fields)
 
 
-class RefusalLog:
+class RefusalLog(metaclass=SealedType):
     """Where every refusal in the safety core is recorded."""
 
-    BACKLOG_LIMIT = 10_000
+    __slots__ = ("_attached", "_backlog", "_backlog_limit", "_dropped", "_lock")
 
-    def __init__(self) -> None:
+    def __init__(self, *, backlog_limit: int = REFUSAL_BACKLOG_LIMIT) -> None:
         self._lock = threading.Lock()
         self._attached: dict[int, tuple[Auditor, int]] = {}
-        self._backlog: deque[dict[str, object]] = deque(maxlen=self.BACKLOG_LIMIT)
+        self._backlog_limit = backlog_limit
+        self._backlog: deque[dict[str, object]] = deque(maxlen=backlog_limit)
         self._dropped = 0
 
     def attach(self, auditor: Auditor) -> None:
@@ -113,7 +128,7 @@ class RefusalLog:
                 self._attached[key] = (auditor, self._attached[key][1] + 1)
                 return
             self._attached[key] = (auditor, 1)
-            held, self._backlog = list(self._backlog), deque(maxlen=self.BACKLOG_LIMIT)
+            held, self._backlog = list(self._backlog), deque(maxlen=self._backlog_limit)
             dropped, self._dropped = self._dropped, 0
         if dropped:
             auditor.event("refusals_dropped", count=dropped, detail="the held backlog was full")
@@ -135,7 +150,7 @@ class RefusalLog:
         with self._lock:
             auditors = [auditor for auditor, _count in self._attached.values()]
             if not auditors:
-                if len(self._backlog) == self.BACKLOG_LIMIT:
+                if len(self._backlog) == self._backlog_limit:
                     self._dropped += 1
                 self._backlog.append(
                     {
@@ -154,7 +169,7 @@ class RefusalLog:
         """Detach everything and forget held refusals (between tests)."""
         with self._lock:
             self._attached = {}
-            self._backlog = deque(maxlen=self.BACKLOG_LIMIT)
+            self._backlog = deque(maxlen=self._backlog_limit)
             self._dropped = 0
 
 
@@ -169,3 +184,6 @@ def refuse(error: BaseException, *, transport: str, request: str = "", reason: s
     except Exception as audit_error:
         error.add_note(f"lasto could not write this refusal to the audit log: {audit_error!r}")
     raise error
+
+
+freeze(__name__)

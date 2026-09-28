@@ -5,11 +5,17 @@
   `from lasto.safety.session import open_active` counts as using
   lasto.safety.pcan_active.open_active.
 - No code anywhere in src/ uses a deliberate route around the core's guards
-  (ctypes, gc, inspect, importlib, sys.modules, vars/globals/setattr/delattr,
-  getattr with a private or computed name, attribute-guard dunders, or,
-  outside the safety core, another object's private attributes), except the
-  exemptions listed below. Adding an exemption is its own commit, approved by
-  the owner.
+  (ctypes, gc, inspect, importlib, builtins, pickle and friends, sys.modules,
+  vars/globals/setattr/delattr, getattr with a private or computed name,
+  attribute-guard dunders, function defaults, frames, trace and import hooks,
+  or, outside the safety core, another object's private attributes), except
+  the exemptions listed below. Adding an exemption is its own commit,
+  approved by the owner.
+- Nothing in src/ or the tests changes a safety module, class, or
+  module-level object: no assignment, deletion, in-place change, setattr,
+  monkeypatch, or mock.patch aimed at one, however it is imported. Tests may
+  change instances they made. test_frozen.py shows the same changes refused
+  at runtime.
 """
 
 from __future__ import annotations
@@ -17,7 +23,7 @@ from __future__ import annotations
 import ast
 
 import pytest
-from scan import deliberate_routes, in_safety, sources, uses
+from scan import changes_to_the_safety_core, deliberate_routes, in_safety, sources, sources_of_tests, uses
 
 PUBLIC_API = {
     "lasto.safety.session": {"open_passive_session", "open_polled_session", "PassiveSession", "PolledSession"},
@@ -125,6 +131,16 @@ def test_the_scanner_follows_reexports_and_attribute_chains(snippet, flagged):
         "fn.__closure__[0].cell_contents",
         "session.reader._channel.write(1, b'')",
         "__import__('lasto.safety.pcan_active')",
+        "import builtins\nbuiltins.isinstance = lambda *args: True",
+        "import pickle",
+        "from marshal import loads",
+        "open_passive_session.__kwdefaults__['library'] = fake",
+        "check_frame.__defaults__ = ()",
+        "error.__traceback__.tb_frame.f_globals['policy'] = None",
+        "frame.f_locals['data'] = b''",
+        "import sys\nsys.settrace(tracer)",
+        "import sys\nsys.meta_path.insert(0, finder)",
+        "().__class__.__base__.__subclasses__()",
     ],
 )
 def test_every_deliberate_route_is_caught(snippet):
@@ -132,8 +148,80 @@ def test_every_deliberate_route_is_caught(snippet):
 
 
 def test_ordinary_code_is_not_flagged():
-    snippet = "getattr(args, 'live', False)\nhasattr(value, 'value')\nself._private = 1\ncls._table\ntype(x).__name__"
+    snippet = (
+        "getattr(args, 'live', False)\nhasattr(value, 'value')\nself._private = 1\ncls._table\ntype(x).__name__\n"
+        "import sys\nsys.argv\nsys.exit(1)\nimport json\njson.dumps(record)\nimport types\ntypes.MappingProxyType({})"
+    )
     assert deliberate_routes("lasto.probe", ast.parse(snippet)) == []
+
+
+# ---- nothing changes the safety core (finding #2) ----
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "from lasto.safety import policy\npolicy.NEVER_SERVICES = frozenset()",
+        "import lasto.safety.policy as p\ndel p.NEVER_SERVICES",
+        "import lasto\nlasto.safety.policy.NEVER_SERVICES = frozenset()",
+        "import lasto\nlasto.safety = None",
+        "from lasto.safety import ecus\necus.APPROVED_ECUS += (forged,)",
+        "from lasto.safety.ratelimit import PURPOSE_RATES\nPURPOSE_RATES[purpose] = 1000.0",
+        "from lasto.safety import ratelimit\nratelimit.PURPOSE_RATES.update({})",
+        "from lasto.safety.audit import REFUSALS\nREFUSALS._backlog = None",
+        "from lasto.safety.gate import Gate\nGate._transmit = lambda *args, **kwargs: None",
+        "from lasto.safety.ecus import EcuKind\nEcuKind.SRS._name_ = 'ENGINE'",
+        "from lasto.safety.session import open_passive_session\nopen_passive_session.__kwdefaults__['library'] = fake",
+        "import lasto.safety\nlasto.safety.__path__.insert(0, 'elsewhere')",
+        "from lasto.safety import policy\nvars(policy)['NEVER_SERVICES'] = frozenset()",
+        "from lasto.safety import policy\npolicy.__dict__['NEVER_SERVICES'] = frozenset()",
+        "from lasto.safety import policy\nsetattr(policy, 'NEVER_SERVICES', frozenset())",
+        "from lasto.safety import policy\ndelattr(policy, 'NEVER_SERVICES')",
+        "from lasto.safety import policy\nobject.__setattr__(policy, 'NEVER_SERVICES', frozenset())",
+        "from lasto.safety.gate import Gate\ntype.__setattr__(Gate, 'submit', f)",
+        "from lasto.safety import policy\npolicy.__setattr__('NEVER_SERVICES', frozenset())",
+        "from lasto.safety import pcan_dll\nmonkeypatch.setattr(pcan_dll, 'POINTER_BYTES', 4)",
+        "monkeypatch.setattr('lasto.safety.policy.NEVER_SERVICES', frozenset())",
+        "from unittest import mock\nmock.patch('lasto.safety.policy.check_frame', always_fine)",
+        "from unittest import mock\nfrom lasto.safety import policy\nmock.patch.object(policy, 'check_frame', always_fine)",
+        "from lasto.safety import policy\nfor policy.PADDING_BYTE in range(3):\n    pass",
+    ],
+)
+def test_every_change_to_the_safety_core_is_caught(snippet):
+    assert changes_to_the_safety_core("tests.probe", ast.parse(snippet))
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "exchange._rx_id = 0x7E8",  # an instance the test made
+        "self._armed = True",
+        "sim.dll.write_status = 5",
+        "sim.clock.sleep = sleep_and_replug",
+        "from lasto.safety.audit import REFUSALS\nREFUSALS.reset()",
+        "from lasto.safety.ratelimit import PURPOSE_RATES\nrates = {**PURPOSE_RATES}\nrates['x'] = 1.0",
+        "import ctypes\nmonkeypatch.setattr(ctypes, 'WinDLL', missing)",
+        "import sys\nmonkeypatch.setattr(sys, 'argv', ['lasto'])",
+        "import os\nos.environ['SystemRoot'] = 'D:'",
+        "from lasto.safety.session import open_polled_session\nsession = open_polled_session('x')\nsession.request(r)",
+    ],
+)
+def test_changing_what_the_code_made_itself_is_not_flagged(snippet):
+    assert changes_to_the_safety_core("tests.probe", ast.parse(snippet)) == []
+
+
+def test_global_statements_are_caught_only_in_the_safety_core():
+    snippet = ast.parse("def rebind():\n    global NEVER_SERVICES\n    NEVER_SERVICES = frozenset()")
+    assert changes_to_the_safety_core("lasto.safety.probe", snippet)
+    assert changes_to_the_safety_core("lasto.cli", snippet) == []
+
+
+def test_nothing_anywhere_changes_the_safety_core():
+    """Tests may change instances they made, never safety modules, classes, or module-level objects."""
+    everything = {**sources(), **sources_of_tests()}
+    assert "tests.conftest" in everything and "lasto.safety.gate" in everything
+    found = [f"{where}: {change}" for module, tree in everything.items() for change, where in changes_to_the_safety_core(module, tree)]
+    assert found == []
 
 
 def test_no_deliberate_routes_outside_the_exemption_list():

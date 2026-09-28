@@ -16,6 +16,7 @@ import re
 from typing import Protocol
 
 from lasto.safety import stn_policy
+from lasto.safety._frozen import SealedProtocolType, SealedType, freeze
 from lasto.safety.audit import REFUSALS, Auditor, refuse
 from lasto.safety.errors import AdapterError, SafetyViolation
 
@@ -30,7 +31,7 @@ _PORT_NAME = re.compile(r"COM[1-9][0-9]{0,2}")
 _VOLTAGE = re.compile(r"\d{1,2}\.\d{1,3}")
 
 
-class SerialPort(Protocol):
+class SerialPort(Protocol, metaclass=SealedProtocolType):
     timeout: float | None
 
     def write(self, data: bytes) -> int | None:
@@ -58,7 +59,9 @@ def _lines(text: str) -> list[str]:
     return [line.strip() for line in text.replace("\n", "\r").split("\r") if line.strip()]
 
 
-class StnAdapter:
+class StnAdapter(metaclass=SealedType):
+    __slots__ = ("_auditor", "_configured", "_monitoring", "_port", "_rx")
+
     def __init__(self, port: SerialPort, auditor: Auditor) -> None:
         self._port = port
         self._auditor = auditor
@@ -214,3 +217,6 @@ class StnAdapter:
     def close(self) -> None:
         self._port.close()
         REFUSALS.detach(self._auditor)
+
+
+freeze(__name__)
