@@ -143,7 +143,7 @@ Rejections are logged with the reason and raised as `SafetyViolation`.
 
 **Approved request IDs and K-line addresses** live in `safety/ecus.py`. It starts with 0x7E0 only. Each entry records the response ID, addressing mode, ECU kind (engine, transmission, abs_vsc, kdss, suspension, tpms, srs, immobilizer, body), and the evidence (which capture). Adding one is a safety core change: it needs your approval, the ask rule fires, and it gets its own commit. An unclassified ID can't be approved. *(open)*
 
-**Foreign tester guard:** a polled session listens for 2 s before its first transmission and keeps watching. Any frame on an approved request ID that we didn't send (the Creader, or broadcast traffic) stops polling. Two testers at once can confuse ECUs.
+**Foreign tester guard:** a polled session listens for 2 s before its first transmission and keeps watching. On real hardware (no simulator library) a shorter window, or one that isn't a number, is refused before the DLL is loaded; only the simulator may shorten it. Any frame on an approved request ID that we didn't send (the Creader, or broadcast traffic) stops polling. Two testers at once can confuse ECUs.
 
 ### 3.4 Kill switch (rule 7)
 

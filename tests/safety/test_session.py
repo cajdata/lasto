@@ -5,9 +5,10 @@ from helpers import CHANNEL, HANDLE, LOGGING_RPM_SPEED, events, open_polled
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety.audit import Auditor
-from lasto.safety.errors import KillSwitchTripped
+from lasto.safety.errors import KillSwitchTripped, SafetyViolation
 from lasto.safety.exchange import ExchangeState
-from lasto.safety.session import LISTEN_WINDOW, open_passive_session
+from lasto.safety.session import LISTEN_WINDOW, open_passive_session, open_polled_session
+from lasto.sim.pytest_plugin import HardwareFirewallError
 from lasto.sim.tester import SimTester
 
 
@@ -87,6 +88,20 @@ def test_a_polled_channel_closed_after_a_kill_records_whether_it_really_closed(s
     [closed] = events(sink, "polled_channel_closed")
     assert closed["uninitialized"] is False
     assert len(events(sink, "channel_close_failed")) == 1
+
+
+@pytest.mark.parametrize("listen_seconds", [0, LISTEN_WINDOW - 0.01, -1.0, float("nan"), "2"])
+def test_on_real_hardware_the_listen_window_has_a_minimum(clock, auditor, sink, listen_seconds):
+    """Finding D: with the real DLL, a polled session can't skip or shorten its listen for other testers."""
+    with pytest.raises(SafetyViolation):  # refused before the DLL is even loaded
+        open_polled_session(CHANNEL, profile=[LOGGING_RPM_SPEED], auditor=auditor, clock=clock, listen_seconds=listen_seconds)
+    assert [r["reason"] for r in events(sink, "rejected")] == ["listen_window_too_short"]
+    assert events(sink, "session_refused")[0]["reason"] == "listen_window_too_short"
+
+
+def test_on_real_hardware_the_full_listen_window_passes_that_check(clock, auditor):
+    with pytest.raises(HardwareFirewallError):  # it gets as far as loading the DLL, which tests can't
+        open_polled_session(CHANNEL, profile=[LOGGING_RPM_SPEED], auditor=auditor, clock=clock, listen_seconds=LISTEN_WINDOW)
 
 
 def test_kill_switches_the_channel_to_listen_only(sim, auditor, sink):

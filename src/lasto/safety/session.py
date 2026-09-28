@@ -18,9 +18,9 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from lasto.safety._frozen import SealedType, freeze
-from lasto.safety.audit import REFUSALS, Auditor
+from lasto.safety.audit import REFUSALS, Auditor, refuse
 from lasto.safety.clock import Clock
-from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed
+from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed, SafetyViolation
 from lasto.safety.exchange import Exchange, ExchangeState
 from lasto.safety.frames import Received
 from lasto.safety.interlocks import Interlocks
@@ -291,6 +291,15 @@ def open_polled_session(
     session: PolledSession | None = None
     try:
         KILL_SWITCH.check(request=f"open a polled session on {channel_name}")
+        if library is None and not (type(listen_seconds) in (int, float) and listen_seconds >= LISTEN_WINDOW):
+            # On real hardware the listen for other testers can't be skipped or shortened (finding D).
+            refuse(
+                SafetyViolation(
+                    "listen_window_too_short", f"{listen_seconds!r} s; on real hardware it is at least {LISTEN_WINDOW:g} s"
+                ),
+                transport="pcan",
+                request=f"open a polled session on {channel_name}",
+            )
         broadcast = frozenset(broadcast_ids)
         channel, writer = open_active(channel_name, auditor=auditor, clock=clock, library=library, broadcast_ids=broadcast)
         reader = Reader(channel, clock, trips_kill_switch=True)
