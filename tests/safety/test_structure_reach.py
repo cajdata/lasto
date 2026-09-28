@@ -48,6 +48,12 @@ EXEMPTIONS = {
     ("ctypes", "lasto.safety.hotkey"): "user32/kernel32 calls for the Ctrl+Alt+K kill-switch hotkey",
     ("ctypes", "lasto.sim.pytest_plugin"): "the test hardware firewall wraps ctypes.CDLL.__init__",
     ("sys.modules", "lasto.sim.pytest_plugin"): "the test hardware firewall replaces pyserial with a stub",
+    # The freezing helper (finding #2): what it takes to make the rest of the core unchangeable.
+    ("sys.modules", "lasto.safety._frozen"): "find the module being frozen, and each submodule its package may bind",
+    ("vars", "lasto.safety._frozen"): "read a module's names, to seal the classes it defines and see what is bound",
+    ("__class__", "lasto.safety._frozen"): "turn each module into a FrozenModule, and make SealedType its own metaclass",
+    ("__setattr__", "lasto.safety._frozen"): "the guards pass a change through until the class is sealed",
+    ("__delattr__", "lasto.safety._frozen"): "the guards pass a deletion through until the class is sealed",
 }
 
 
