@@ -24,7 +24,7 @@ from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed
 from lasto.safety.exchange import Exchange, ExchangeState
 from lasto.safety.frames import Received
 from lasto.safety.interlocks import Interlocks
-from lasto.safety.killswitch import KillSwitch, NrcMonitor
+from lasto.safety.killswitch import KILL_SWITCH, KillSwitch, NrcMonitor
 from lasto.safety.pcan_dll import ReadOnlyPcan, load_readonly
 from lasto.safety.pcan_passive import PassiveChannel, open_passive
 from lasto.safety.ratelimit import RateLimiter
@@ -192,27 +192,19 @@ def open_passive_session(
 class PolledSession(metaclass=SealedType):
     """Normal-mode capture that can send the allowlisted reads of a typed request."""
 
-    __slots__ = ("_auditor", "_channel", "_clock", "_gate", "_killswitch", "_reader")
+    __slots__ = ("_auditor", "_channel", "_clock", "_gate", "_reader")
 
-    def __init__(
-        self,
-        channel: ActiveChannel,
-        gate: Gate,
-        reader: Reader,
-        killswitch: KillSwitch,
-        auditor: Auditor,
-        clock: Clock,
-    ) -> None:
+    def __init__(self, channel: ActiveChannel, gate: Gate, reader: Reader, auditor: Auditor, clock: Clock) -> None:
         self._channel = channel
         self._gate = gate
         self._reader = reader
-        self._killswitch = killswitch
         self._auditor = auditor
         self._clock = clock
 
     @property
     def killswitch(self) -> KillSwitch:
-        return self._killswitch
+        """The process kill switch, shared by every session. Anyone may trip it; nothing resets it."""
+        return KILL_SWITCH
 
     @property
     def reader(self) -> Reader:
@@ -233,8 +225,9 @@ class PolledSession(metaclass=SealedType):
         return exchange
 
     def close(self) -> None:
+        KILL_SWITCH.remove_listener(self._on_kill)
         self._channel.close()
-        self._auditor.event("session_closed", mode="polled", kill_cause=self._killswitch.cause)
+        self._auditor.event("session_closed", mode="polled", kill_cause=KILL_SWITCH.cause)
         REFUSALS.detach(self._auditor)
 
     def _on_kill(self, cause: str) -> None:
@@ -255,40 +248,43 @@ def open_polled_session(
     subscribers: Iterable[Subscriber] = (),
     listen_seconds: float = LISTEN_WINDOW,
 ) -> PolledSession:
-    """Open a normal-mode capture that may send typed requests, on the real DLL or a stand-in `library`."""
+    """Open a normal-mode capture that may send typed requests, on the real DLL or a stand-in `library`.
+
+    Refused, before the adapter is touched, once the process kill switch has tripped.
+    """
     from lasto.safety.gate import Gate
     from lasto.safety.pcan_active import open_active
 
     REFUSALS.attach(auditor)
     channel: ActiveChannel | None = None
+    session: PolledSession | None = None
     try:
+        KILL_SWITCH.check(request=f"open a polled session on {channel_name}")
         broadcast = frozenset(broadcast_ids)
-        killswitch = KillSwitch(auditor)
-        channel, writer = open_active(
-            channel_name, killswitch=killswitch, auditor=auditor, clock=clock, library=library, broadcast_ids=broadcast
-        )
+        channel, writer = open_active(channel_name, auditor=auditor, clock=clock, library=library, broadcast_ids=broadcast)
         gate = Gate(
             writer,
             auditor,
             clock,
-            killswitch,
             Interlocks(),
             RateLimiter(),
-            NrcMonitor(killswitch),
+            NrcMonitor(),
             profile=profile,
             broadcast_ids=broadcast,
         )
-        reader = Reader(channel, clock, killswitch=killswitch, subscribers=(gate.on_frame, *subscribers))
-        session = PolledSession(channel, gate, reader, killswitch, auditor, clock)
-        killswitch.add_listener(session._on_kill)
+        reader = Reader(channel, clock, trips_kill_switch=True, subscribers=(gate.on_frame, *subscribers))
+        session = PolledSession(channel, gate, reader, auditor, clock)
+        KILL_SWITCH.add_listener(session._on_kill)
         auditor.event("session_opened", mode="polled", **channel.describe())
         deadline = clock.monotonic() + listen_seconds
-        while clock.monotonic() < deadline and not killswitch.tripped:
+        while clock.monotonic() < deadline and not KILL_SWITCH.tripped:
             session.pump()
             clock.sleep(PUMP_INTERVAL)
-        killswitch.check(request=f"open a polled session on {channel_name}")
+        KILL_SWITCH.check(request=f"open a polled session on {channel_name}")
         gate.arm()
     except BaseException as exc:
+        if session is not None:
+            KILL_SWITCH.remove_listener(session._on_kill)
         if channel is not None:
             channel.close()
         _refused(auditor, "polled", channel_name, exc)

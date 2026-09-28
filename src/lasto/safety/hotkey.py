@@ -2,7 +2,7 @@
 
 RegisterHotKey on a background thread that runs a Windows message loop, so
 the hotkey works even when the terminal isn't focused. Pressing it trips the
-kill switch. A polled session shouldn't start if the hotkey can't be
+process kill switch. A polled session shouldn't start if the hotkey can't be
 registered.
 """
 
@@ -14,7 +14,7 @@ from ctypes import wintypes
 
 from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.errors import InterfaceError
-from lasto.safety.killswitch import KillSwitch
+from lasto.safety.killswitch import KILL_SWITCH
 
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
@@ -27,17 +27,9 @@ START_TIMEOUT = 2.0
 
 
 class HotkeyKillSwitch(metaclass=SealedType):
-    __slots__ = ("_error", "_kernel32", "_killswitch", "_ready", "_start_timeout", "_thread", "_thread_id", "_user32")
+    __slots__ = ("_error", "_kernel32", "_ready", "_start_timeout", "_thread", "_thread_id", "_user32")
 
-    def __init__(
-        self,
-        killswitch: KillSwitch,
-        *,
-        user32: object = None,
-        kernel32: object = None,
-        start_timeout: float = START_TIMEOUT,
-    ) -> None:
-        self._killswitch = killswitch
+    def __init__(self, *, user32: object = None, kernel32: object = None, start_timeout: float = START_TIMEOUT) -> None:
         self._user32 = ctypes.windll.user32 if user32 is None else user32
         self._kernel32 = ctypes.windll.kernel32 if kernel32 is None else kernel32
         self._start_timeout = start_timeout
@@ -73,7 +65,7 @@ class HotkeyKillSwitch(metaclass=SealedType):
         try:
             while self._user32.GetMessageW(ctypes.pointer(message), None, 0, 0) > 0:
                 if message.message == WM_HOTKEY and message.wParam == HOTKEY_ID:
-                    self._killswitch.trip("hotkey")
+                    KILL_SWITCH.trip("hotkey")
         finally:
             self._user32.UnregisterHotKey(None, HOTKEY_ID)
 

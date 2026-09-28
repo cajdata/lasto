@@ -43,6 +43,15 @@ def dll_path() -> str:
     return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "PCANBasic.dll")
 
 
+def hardware_firewall_installed() -> bool:
+    """True only in a test run: the test plugin (lasto.sim.pytest_plugin) has made loading the PCAN DLL fail.
+
+    The plugin marks its wrapper of ctypes.CDLL.__init__. Nothing outside the safety core and that
+    plugin may use ctypes, so nothing else can put the mark there.
+    """
+    return getattr(ctypes.CDLL.__init__, "lasto_hardware_firewall", False) is True
+
+
 def require_64_bit(pointer_bytes: int) -> None:
     if pointer_bytes != 8:
         raise InterfaceError("lasto needs 64-bit Python to load the 64-bit PCANBasic.dll")

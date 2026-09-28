@@ -6,7 +6,7 @@ import pytest
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety.frames import CanFrame, ErrorFrame, ReadError, StatusMessage
-from lasto.safety.killswitch import KillSwitch
+from lasto.safety.killswitch import KILL_SWITCH
 from lasto.safety.reader import STATUS_INTERVAL, Reader
 
 FRAME = CanFrame(0x025, b"\x07\xff", 1)
@@ -33,10 +33,9 @@ class StubChannel:
 
 
 def polled_reader(clock, *batches, statuses=()):
-    killswitch = KillSwitch()
     seen = []
-    reader = Reader(StubChannel(*batches, statuses=statuses), clock, killswitch=killswitch, subscribers=[seen.append])
-    return reader, killswitch, seen
+    reader = Reader(StubChannel(*batches, statuses=statuses), clock, trips_kill_switch=True, subscribers=[seen.append])
+    return reader, KILL_SWITCH, seen
 
 
 def test_frames_reach_subscribers_in_order(clock):

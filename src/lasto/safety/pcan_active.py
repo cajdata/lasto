@@ -32,7 +32,7 @@ from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import Auditor, refuse
 from lasto.safety.clock import Clock
 from lasto.safety.errors import InterfaceError, SafetyViolation
-from lasto.safety.killswitch import KillSwitch
+from lasto.safety.killswitch import KILL_SWITCH
 from lasto.safety.pcan_dll import (
     PcanChannel,
     ReadOnlyPcan,
@@ -59,8 +59,8 @@ class Writer(metaclass=SealedType):
     """The one function that puts a frame on the bus. Called as writer(can_id, data, purpose=..., kind=...)."""
 
     __slots__ = (
-        "_auditor", "_broadcast_ids", "_can_write", "_channel_name", "_clock", "_error_text", "_handle",
-        "_killswitch", "_lock", "_recent_requests",
+        "_auditor", "_broadcast_ids", "_can_write", "_channel_name", "_clock", "_error_text", "_handle", "_lock",
+        "_recent_requests",
     )  # fmt: skip
 
     def __init__(
@@ -69,7 +69,6 @@ class Writer(metaclass=SealedType):
         handle: int,
         channel_name: str,
         error_text: Callable[[int], str],
-        killswitch: KillSwitch,
         auditor: Auditor,
         clock: Clock,
         broadcast_ids: frozenset[int],
@@ -78,7 +77,6 @@ class Writer(metaclass=SealedType):
         self._handle = handle
         self._channel_name = channel_name
         self._error_text = error_text
-        self._killswitch = killswitch
         self._auditor = auditor
         self._clock = clock
         self._broadcast_ids = broadcast_ids
@@ -99,7 +97,7 @@ class Writer(metaclass=SealedType):
                 transport="pcan",
                 request=text,
             )
-        self._killswitch.check(request=text)
+        KILL_SWITCH.check(request=text)
         now = self._clock.monotonic()
         recent = self._recent_requests
         if kind == "request" and len(recent) == CEILING_FRAMES and now - recent[0] < CEILING_WINDOW:
@@ -139,7 +137,6 @@ def _clear_listen_only(set_value: Callable[..., int], handle: int) -> int:
 def open_active(
     channel_name: str,
     *,
-    killswitch: KillSwitch,
     auditor: Auditor,
     clock: Clock,
     library: object | None = None,
@@ -169,7 +166,6 @@ def open_active(
             handle,
             channel_name,
             pcan.error_text,
-            killswitch,
             auditor,
             clock,
             frozenset(broadcast_ids),

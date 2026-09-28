@@ -7,7 +7,7 @@ from lasto.safety import pcan_constants as pc
 from lasto.safety import pcan_dll
 from lasto.safety.audit import Auditor
 from lasto.safety.errors import InterfaceError, KillSwitchTripped, SafetyViolation
-from lasto.safety.killswitch import KillSwitch
+from lasto.safety.killswitch import KILL_SWITCH
 from lasto.safety.pcan_active import ActiveChannel, Writer, open_active
 from lasto.sim.clock import FakeClock
 from lasto.sim.fake_pcan import FakePcanDll
@@ -17,7 +17,6 @@ REQUEST = bytes.fromhex("02010C0000000000")
 
 
 def opened(library, auditor, **options):
-    options.setdefault("killswitch", KillSwitch())
     options.setdefault("clock", FakeClock())
     return open_active(CHANNEL, library=library, auditor=auditor, **options)
 
@@ -34,7 +33,7 @@ def test_the_read_only_binding_follows_its_list():
 
 def test_default_loader_is_blocked_in_tests(auditor):
     with pytest.raises(HardwareFirewallError):
-        open_active(CHANNEL, killswitch=KillSwitch(), auditor=auditor, clock=FakeClock())
+        open_active(CHANNEL, auditor=auditor, clock=FakeClock())
 
 
 def test_opens_in_normal_mode_and_writes_through_the_writer(sim, auditor, sink):
@@ -77,9 +76,8 @@ def test_the_writer_writes_nothing_if_the_audit_log_fails(auditor):
 
 def test_the_writer_checks_the_kill_switch(auditor):
     dll = FakePcanDll()
-    killswitch = KillSwitch()
-    _channel, writer = opened(dll, auditor, killswitch=killswitch)
-    killswitch.trip("hotkey")
+    _channel, writer = opened(dll, auditor)
+    KILL_SWITCH.trip("hotkey")
     with pytest.raises(KillSwitchTripped):
         writer(0x7E0, REQUEST, purpose="test", kind="request")
     assert dll.writes == []

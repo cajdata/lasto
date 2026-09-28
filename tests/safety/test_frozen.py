@@ -31,6 +31,7 @@ from scan import in_safety, sources
 import lasto.safety
 from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
 from lasto.safety.errors import SafetyViolation
+from lasto.safety.killswitch import KILL_SWITCH
 
 SENTINEL = object()
 MISSING = object()
@@ -153,7 +154,8 @@ def _acceptable(name: str, value: object) -> bool:
         return True  # type annotations
     if name == "annotations":  # from __future__ import annotations
         return True
-    return value is REFUSALS  # the process-wide refusal log: stateful by design, private slots only
+    # The two process-wide objects, stateful by design with private slots only: the refusal log and the kill switch.
+    return value is REFUSALS or value is KILL_SWITCH
 
 
 def test_every_module_level_value_is_immutable():

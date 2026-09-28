@@ -31,7 +31,7 @@ from lasto.safety.errors import InterfaceError, SafetyError, SafetyViolation
 from lasto.safety.exchange import Exchange, ExchangeState
 from lasto.safety.frames import CanFrame, Received
 from lasto.safety.interlocks import Interlocks
-from lasto.safety.killswitch import KillSwitch, NrcMonitor
+from lasto.safety.killswitch import KILL_SWITCH, NrcMonitor
 from lasto.safety.ratelimit import RateLimiter
 from lasto.safety.requests import Purpose, Request
 
@@ -73,8 +73,8 @@ def _deny(reason: str, detail: str, request: str) -> None:
 
 class Gate(metaclass=SealedType):
     __slots__ = (
-        "_armed", "_auditor", "_broadcast_ids", "_clock", "_interlocks", "_killswitch", "_last", "_last_finished",
-        "_limiter", "_lock", "_nrc_monitor", "_pending", "_profile", "_request_ids", "_writer",
+        "_armed", "_auditor", "_broadcast_ids", "_clock", "_interlocks", "_last", "_last_finished", "_limiter",
+        "_lock", "_nrc_monitor", "_pending", "_profile", "_request_ids", "_writer",
     )  # fmt: skip
 
     def __init__(
@@ -82,7 +82,6 @@ class Gate(metaclass=SealedType):
         writer: WriteFunction,
         auditor: Auditor,
         clock: Clock,
-        killswitch: KillSwitch,
         interlocks: Interlocks,
         limiter: RateLimiter,
         nrc_monitor: NrcMonitor,
@@ -104,7 +103,6 @@ class Gate(metaclass=SealedType):
         self._writer = writer
         self._auditor = auditor
         self._clock = clock
-        self._killswitch = killswitch
         self._interlocks = interlocks
         self._limiter = limiter
         self._nrc_monitor = nrc_monitor
@@ -143,7 +141,7 @@ class Gate(metaclass=SealedType):
 
     def _submit(self, request: Request) -> Exchange:
         text = _describe(request)
-        self._killswitch.check(request=text)
+        KILL_SWITCH.check(request=text)
         if not self._armed:
             _deny("gate_not_armed", "the polled session hasn't finished its listen window", text)
         if not isinstance(request, Request):
@@ -195,7 +193,7 @@ class Gate(metaclass=SealedType):
         elif kind != "request":
             _deny("unknown_frame_kind", repr(kind), text)
         self._check(can_id, data, kind, text)
-        self._killswitch.check(request=text)
+        KILL_SWITCH.check(request=text)
         try:
             self._writer(can_id, data, purpose=purpose, kind=kind)
         except InterfaceError as exc:
@@ -364,7 +362,7 @@ class Gate(metaclass=SealedType):
 
     def _trip(self, cause: str, detail: str) -> None:
         self._auditor.event("gate_anomaly", cause=cause, detail=detail)
-        self._killswitch.trip(cause)
+        KILL_SWITCH.trip(cause)
         self.abort()
 
 

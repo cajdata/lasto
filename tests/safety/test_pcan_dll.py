@@ -48,6 +48,11 @@ def test_loading_the_real_dll_is_blocked_by_the_test_firewall():
         load_readonly()
 
 
+def test_the_test_run_is_seen_as_firewalled():
+    # The plugin marked its wrapper; test_killswitch.py shows a process without it isn't seen as firewalled.
+    assert pcan_dll.hardware_firewall_installed()
+
+
 def test_load_library_needs_64_bit_python():
     with pytest.raises(InterfaceError, match="64-bit"):
         pcan_dll.require_64_bit(4)

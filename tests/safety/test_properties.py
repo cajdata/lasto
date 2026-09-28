@@ -14,7 +14,6 @@ from lasto.safety import requests as rq
 from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
 from lasto.safety.ecus import ENGINE, Ecu, EcuKind
 from lasto.safety.errors import AdapterError, KillSwitchTripped, SafetyViolation
-from lasto.safety.killswitch import KillSwitch
 from lasto.safety.pcan_active import open_active
 from lasto.safety.requests import DtcKind, Purpose
 from lasto.safety.session import open_passive_session
@@ -22,6 +21,7 @@ from lasto.safety.stn_port import StnAdapter
 from lasto.sim.clock import FakeClock
 from lasto.sim.fake_pcan import FakePcanDll
 from lasto.sim.fake_stn import FakeStnPort
+from lasto.sim.pytest_plugin import fresh_kill_switch
 from lasto.sim.tester import SimTester
 from lasto.sim.vehicle import build_sim
 from lasto.sim.violations import VIOLATIONS
@@ -58,6 +58,7 @@ def assert_allowed(can_id, data):
 
 def fresh_harness(**options):
     """A gate with its own audit sink attached to the refusal log (and nothing else attached)."""
+    fresh_kill_switch()  # many examples run in one test
     REFUSALS.reset()
     clock = FakeClock()
     sink = MemoryAuditSink()
@@ -100,13 +101,14 @@ def test_fuzzed_frames_at_the_last_check_before_the_wire(can_id, data, kind, wai
 @given(can_id=can_ids, data=payloads, kind=st.sampled_from(["request", "flow_control", "first", ""]))
 def test_fuzzed_frames_straight_into_the_write_function(can_id, data, kind):
     """Called directly, around the gate, the one holder of CAN_Write still sends nothing the spec forbids."""
+    fresh_kill_switch()  # many examples run in one test
     REFUSALS.reset()
     clock = FakeClock()
     sink = MemoryAuditSink()
     auditor = Auditor(sink, clock)
     REFUSALS.attach(auditor)
     dll = FakePcanDll()
-    _channel, writer = open_active(CHANNEL, library=dll, killswitch=KillSwitch(), auditor=auditor, clock=clock)
+    _channel, writer = open_active(CHANNEL, library=dll, auditor=auditor, clock=clock)
     refused = False
     with VIOLATIONS.expect() as oracle:
         try:
@@ -125,13 +127,14 @@ def test_fuzzed_frames_straight_into_the_write_function(can_id, data, kind):
 @given(steps=st.lists(st.tuples(st.floats(0, 0.15), st.sampled_from(["request", "flow_control"])), max_size=90))
 def test_no_second_ever_holds_more_than_20_requests_from_the_write_function(steps):
     """The write function's own ceiling, from the spec: 20 requests per second. It refuses only when full."""
+    fresh_kill_switch()  # many examples run in one test
     REFUSALS.reset()
     clock = FakeClock()
     sink = MemoryAuditSink()
     auditor = Auditor(sink, clock)
     REFUSALS.attach(auditor)
     dll = FakePcanDll()
-    _channel, writer = open_active(CHANNEL, library=dll, killswitch=KillSwitch(), auditor=auditor, clock=clock)
+    _channel, writer = open_active(CHANNEL, library=dll, auditor=auditor, clock=clock)
     sent: list[float] = []
     flow_controls = 0
     with VIOLATIONS.expect() as oracle:  # unsolicited flow control on purpose (see above)
@@ -341,6 +344,7 @@ def test_passive_sessions_never_transmit(injections, run_for):
     )
 )
 def test_polled_sessions_only_send_allowed_frames(plan):
+    fresh_kill_switch()  # many examples run in one test
     REFUSALS.reset()
     sim = build_sim()
     functional = rq.read_pid([0x0D], purpose=Purpose.LOGGING)

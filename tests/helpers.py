@@ -10,7 +10,7 @@ from lasto.safety.errors import InterfaceError
 from lasto.safety.frames import CanFrame
 from lasto.safety.gate import Gate
 from lasto.safety.interlocks import Interlocks
-from lasto.safety.killswitch import KillSwitch, NrcMonitor
+from lasto.safety.killswitch import KILL_SWITCH, NrcMonitor
 from lasto.safety.ratelimit import RateLimiter
 from lasto.safety.requests import Purpose, Request, interlock_probe, read_pid
 from lasto.safety.session import PolledSession, open_polled_session
@@ -59,16 +59,15 @@ class GateHarness:
         armed: bool = True,
     ) -> None:
         self.clock = clock
-        self.killswitch = KillSwitch(auditor)
+        self.killswitch = KILL_SWITCH  # the process kill switch; the test plugin clears it before each test
         self.interlocks = Interlocks()
         self.limiter = RateLimiter()
-        self.nrc = NrcMonitor(self.killswitch)
+        self.nrc = NrcMonitor()
         self.writer = StubWriter(clock)
         self.gate = Gate(
             self.writer,
             auditor,
             clock,
-            self.killswitch,
             self.interlocks,
             self.limiter,
             self.nrc,

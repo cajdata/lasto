@@ -162,6 +162,14 @@ Rejections are logged with the reason and raised as `SafetyViolation`.
 3. Flush storage and record the cause.
 4. Keep passive capture running unless the interface failed. Nothing retries automatically.
 
+**One kill switch for the process (`KILL_SWITCH`):**
+- **It latches until lasto restarts.** After a kill, `open_polled_session` refuses before touching the adapter, audited as `kill_switch`. Passive sessions still open, since they can't transmit.
+- **Nothing takes it as a parameter.** The gate, the write function, the polled reader, the NRC monitor and the hotkey all use it directly, so none can be handed a fresh one.
+- **Every session hears a kill.** Each open polled session registers a listener that switches its channel to listen-only, and removes it when the session closes. Every listener runs even if one fails.
+- **Every trip is audited.** It reaches every open audit log, or is held for the next one if none is open.
+- **There is no production reset.** The test suite runs as one process, so the test plugin clears the kill switch before each test with `reset_for_tests()`. That reset refuses (audited) unless the test hardware firewall is installed, which `pcan_dll.hardware_firewall_installed()` checks through a mark only code allowed to use ctypes can set. Every reset is audited.
+- **Structural tests hold it to the plugin.** Only the plugin references the reset, nothing in `src/` imports the plugin, and a subprocess test shows the reset refused, with the kill still latched, in a process without the firewall.
+
 **Hotkey:** Ctrl+Alt+K, a global Windows hotkey (`RegisterHotKey` via ctypes, no dependency), so it works when the terminal isn't focused. It's built and tested in Phase 1 (`safety/hotkey.py`) and gets wired into polled sessions with the polled `drive` command in Phase 4. A polled session refuses to start if the hotkey can't be registered.
 
 ### 3.5 Motion interlock (rule 8)

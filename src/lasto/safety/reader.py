@@ -2,7 +2,7 @@
 
 In a polled session the reader is also a kill-switch trigger (rule 7): error
 frames, error-passive or bus-off, receive overruns, interface failure, and a
-subscriber that raises all trip it. In a passive session listen-only mode
+subscriber that raises all trip the process kill switch. In a passive session listen-only mode
 forces the controller error-passive, so bus state is only recorded. Instead
 the reader re-reads listen-only on every status check, and at once whenever
 the driver reports the controller (re)activated. If listen-only reads
@@ -20,7 +20,7 @@ from lasto.safety._frozen import SealedProtocolType, SealedType, freeze
 from lasto.safety.audit import Auditor
 from lasto.safety.clock import Clock
 from lasto.safety.frames import ErrorFrame, ReadError, Received, StatusMessage
-from lasto.safety.killswitch import KillSwitch
+from lasto.safety.killswitch import KILL_SWITCH
 
 STATUS_INTERVAL = 0.1
 
@@ -40,8 +40,8 @@ class Channel(Protocol, metaclass=SealedProtocolType):
 
 class Reader(metaclass=SealedType):
     __slots__ = (
-        "_auditor", "_channel", "_clock", "_failed_status", "_failure_reason", "_killswitch", "_next_status",
-        "_subscribers", "_verify_listen_only",
+        "_auditor", "_channel", "_clock", "_failed_status", "_failure_reason", "_next_status", "_subscribers",
+        "_trips_kill_switch", "_verify_listen_only",
     )  # fmt: skip
 
     def __init__(
@@ -49,14 +49,14 @@ class Reader(metaclass=SealedType):
         channel: Channel,
         clock: Clock,
         *,
-        killswitch: KillSwitch | None = None,
+        trips_kill_switch: bool = False,
         subscribers: Iterable[Subscriber] = (),
         verify_listen_only: bool = False,
         auditor: Auditor | None = None,
     ) -> None:
         self._channel = channel
         self._clock = clock
-        self._killswitch = killswitch
+        self._trips_kill_switch = trips_kill_switch
         self._subscribers = list(subscribers)
         self._verify_listen_only = verify_listen_only
         self._auditor = auditor
@@ -123,17 +123,17 @@ class Reader(metaclass=SealedType):
         self._trip(reason)
 
     def _trip(self, cause: str) -> None:
-        if self._killswitch is not None:
-            self._killswitch.trip(cause)
+        if self._trips_kill_switch:
+            KILL_SWITCH.trip(cause)
 
     def _deliver(self, subscriber: Subscriber, item: Received) -> None:
-        if self._killswitch is None:
+        if not self._trips_kill_switch:
             subscriber(item)
             return
         try:
             subscriber(item)
         except Exception as exc:
-            self._killswitch.trip(f"subscriber_error:{type(exc).__name__}")
+            KILL_SWITCH.trip(f"subscriber_error:{type(exc).__name__}")
 
 
 freeze(__name__)

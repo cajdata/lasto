@@ -45,6 +45,8 @@ PUBLIC_API = {
 
 # The simulator stands in for PCANBasic.dll, so it speaks the DLL's constants and structures.
 SIMULATOR_ALSO_USES = {"lasto.safety.pcan_constants"}
+# The test plugin clears the process kill switch before each test (finding C). Nothing else may.
+PLUGIN_ALSO_USES = {("lasto.sim.pytest_plugin", ("name", "lasto.safety.killswitch", "reset_for_tests"))}
 
 # Every allowed deliberate route, with its reason. Keep this minimal; changes need the owner's approval.
 EXEMPTIONS = {
@@ -65,6 +67,8 @@ EXEMPTIONS = {
 
 def allowed(target: tuple[str, ...], user: str) -> bool:
     if user.startswith("lasto.sim") and target[1] in SIMULATOR_ALSO_USES:
+        return True
+    if (user, target) in PLUGIN_ALSO_USES:
         return True
     if target[0] == "module":
         return target[1] == "lasto.safety" or target[1] in PUBLIC_API

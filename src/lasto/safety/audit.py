@@ -8,7 +8,8 @@ refuses a request, frame, setting, or command calls refuse(), which records
 the refusal in REFUSALS and then raises it. Open sessions attach their
 Auditor to REFUSALS. A refusal raised while nothing is attached (a bad request
 built before any session starts, say) is held and written to the next Auditor
-that attaches, so none goes unrecorded.
+that attaches, so none goes unrecorded. Process-wide safety events, such as a
+kill-switch trip, go through REFUSALS the same way.
 """
 
 from __future__ import annotations
@@ -106,7 +107,10 @@ class Auditor(metaclass=SealedType):
 
 
 class RefusalLog(metaclass=SealedType):
-    """Where every refusal in the safety core is recorded."""
+    """Where every refusal in the safety core is recorded, and every process-wide safety event (a kill).
+
+    Both go to every attached auditor, or are held for the next one to attach.
+    """
 
     __slots__ = ("_attached", "_backlog", "_backlog_limit", "_dropped", "_lock")
 
@@ -114,7 +118,8 @@ class RefusalLog(metaclass=SealedType):
         self._lock = threading.Lock()
         self._attached: dict[int, tuple[Auditor, int]] = {}
         self._backlog_limit = backlog_limit
-        self._backlog: deque[dict[str, object]] = deque(maxlen=backlog_limit)
+        # Held records: ("rejected", fields) or (event name, fields).
+        self._backlog: deque[tuple[str, dict[str, object]]] = deque(maxlen=backlog_limit)
         self._dropped = 0
 
     def attach(self, auditor: Auditor) -> None:
@@ -132,8 +137,11 @@ class RefusalLog(metaclass=SealedType):
             dropped, self._dropped = self._dropped, 0
         if dropped:
             auditor.event("refusals_dropped", count=dropped, detail="the held backlog was full")
-        for fields in held:
-            auditor.rejected(**fields)  # type: ignore[arg-type]
+        for kind, fields in held:
+            if kind == "rejected":
+                auditor.rejected(**fields)  # type: ignore[arg-type]
+            else:
+                auditor.event(kind, **fields)
 
     def detach(self, auditor: Auditor) -> None:
         with self._lock:
@@ -147,23 +155,24 @@ class RefusalLog(metaclass=SealedType):
                 del self._attached[key]
 
     def record(self, *, transport: str, reason: str, detail: str, request: str) -> None:
+        fields: dict[str, object] = {"transport": transport, "reason": reason, "detail": detail, "request": request}
+        for auditor in self._auditors_or_hold("rejected", fields):
+            auditor.rejected(transport=transport, reason=reason, detail=detail, request=request)
+
+    def event(self, name: str, **fields: object) -> None:
+        """A safety event every open audit log should have, such as a kill-switch trip."""
+        for auditor in self._auditors_or_hold(name, fields):
+            auditor.event(name, **fields)
+
+    def _auditors_or_hold(self, kind: str, fields: dict[str, object]) -> list[Auditor]:
+        """The attached auditors; with none attached, hold the record for the next one and return none."""
         with self._lock:
             auditors = [auditor for auditor, _count in self._attached.values()]
             if not auditors:
                 if len(self._backlog) == self._backlog_limit:
                     self._dropped += 1
-                self._backlog.append(
-                    {
-                        "transport": transport,
-                        "reason": reason,
-                        "detail": detail,
-                        "request": request,
-                        "held_since": datetime.now(UTC).isoformat(),
-                    }
-                )
-                return
-        for auditor in auditors:
-            auditor.rejected(transport=transport, reason=reason, detail=detail, request=request)
+                self._backlog.append((kind, {**fields, "held_since": datetime.now(UTC).isoformat()}))
+        return auditors
 
     def reset(self) -> None:
         """Detach everything and forget held refusals (between tests)."""

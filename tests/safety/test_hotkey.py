@@ -7,7 +7,7 @@ import pytest
 
 from lasto.safety.errors import InterfaceError
 from lasto.safety.hotkey import HOTKEY_ID, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, VK_K, WM_HOTKEY, WM_QUIT, HotkeyKillSwitch
-from lasto.safety.killswitch import KillSwitch
+from lasto.safety.killswitch import KILL_SWITCH
 
 
 class FakeUser32:
@@ -46,31 +46,30 @@ class FakeKernel32:
         return 4242
 
 
-def test_the_hotkey_trips_the_kill_switch():
-    killswitch = KillSwitch()
+def test_the_hotkey_trips_the_process_kill_switch():
     tripped = threading.Event()
-    killswitch.add_listener(lambda cause: tripped.set())
+    KILL_SWITCH.add_listener(lambda cause: tripped.set())
     user32 = FakeUser32()
-    listener = HotkeyKillSwitch(killswitch, user32=user32, kernel32=FakeKernel32())
+    listener = HotkeyKillSwitch(user32=user32, kernel32=FakeKernel32())
     listener.start()
     assert user32.registered == [(HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_K)]
     user32.messages.put((WM_HOTKEY, HOTKEY_ID + 1))  # someone else's hotkey
     user32.messages.put((0x0100, HOTKEY_ID))  # not a hotkey message
     user32.messages.put((WM_HOTKEY, HOTKEY_ID))
     assert tripped.wait(5)
-    assert killswitch.cause == "hotkey"
+    assert KILL_SWITCH.cause == "hotkey"
     listener.stop()
     listener.stop()  # stopping twice is harmless
     assert user32.unregistered == [HOTKEY_ID]
 
 
 def test_stop_before_start_is_harmless():
-    HotkeyKillSwitch(KillSwitch(), user32=FakeUser32(), kernel32=FakeKernel32()).stop()
+    HotkeyKillSwitch(user32=FakeUser32(), kernel32=FakeKernel32()).stop()
 
 
 def test_refuses_when_the_hotkey_is_taken():
     user32 = FakeUser32(register_ok=False)
-    listener = HotkeyKillSwitch(KillSwitch(), user32=user32, kernel32=FakeKernel32())
+    listener = HotkeyKillSwitch(user32=user32, kernel32=FakeKernel32())
     with pytest.raises(InterfaceError, match="Ctrl\\+Alt\\+K"):
         listener.start()
     assert user32.unregistered == []
@@ -79,7 +78,7 @@ def test_refuses_when_the_hotkey_is_taken():
 def test_refuses_when_the_thread_does_not_start():
     hold = threading.Event()
     user32 = FakeUser32(hold_register=hold)
-    listener = HotkeyKillSwitch(KillSwitch(), user32=user32, kernel32=FakeKernel32(), start_timeout=0.05)
+    listener = HotkeyKillSwitch(user32=user32, kernel32=FakeKernel32(), start_timeout=0.05)
     with pytest.raises(InterfaceError, match="didn't start"):
         listener.start()
     hold.set()
@@ -87,5 +86,5 @@ def test_refuses_when_the_thread_does_not_start():
 
 
 def test_defaults_to_the_real_windows_libraries():
-    listener = HotkeyKillSwitch(KillSwitch())
+    listener = HotkeyKillSwitch()
     assert listener._user32 is not None and listener._kernel32 is not None
