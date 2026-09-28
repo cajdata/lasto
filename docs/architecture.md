@@ -250,7 +250,7 @@ A K-line session needs an init sequence. Fast init and 5-baud init both end in S
   - K-line ECUs behind `FakeStnPort`
   - a simulated Creader that holds conversations for mapping tests
 - **Labeling:** every broadcast ID and local ID is labeled fictional until a real capture replaces it.
-- **Violation recorder:** any frame written while listen-only is on, any frame on a non-diagnostic ID, and any denied service or STN command is recorded even if the code under test catches the exception. A pytest plugin fails the run at session end if anything was recorded.
+- **Violation recorder:** any frame written while listen-only is on, any frame on an ID other than 0x7DF and the approved 0x7E0 (the oracle is exactly as strict as the policy, kept by hand), and any denied service or STN command is recorded even if the code under test catches the exception. A pytest plugin fails the run at session end if anything was recorded.
 
 ## 7. How the tests prove the rules
 

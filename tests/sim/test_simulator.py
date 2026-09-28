@@ -37,7 +37,11 @@ def test_oracle_accepts_allowed_frames():
     ("kwargs", "text"),
     [
         ({"can_id": 0x7E0, "data": GOOD, "listen_only": True}, "listen-only"),
-        ({"can_id": 0x025, "data": GOOD}, "non-diagnostic ID"),
+        ({"can_id": 0x025, "data": GOOD}, "ID lasto may not transmit on"),
+        # Diagnostic request IDs, but not approved: only 0x7DF and the engine's 0x7E0 are.
+        ({"can_id": 0x7E1, "data": GOOD}, "ID lasto may not transmit on"),
+        ({"can_id": 0x7E7, "data": GOOD}, "ID lasto may not transmit on"),
+        ({"can_id": 0x7E1, "data": bytes.fromhex("3000000000000000"), "awaiting": {0x7E1}}, "ID lasto may not transmit on"),
         ({"can_id": 0x7E0, "data": GOOD, "broadcast": {0x7E0}}, "broadcast"),
         ({"can_id": 0x7E0, "data": GOOD[:7]}, "not 8 bytes"),
         ({"can_id": 0x7E0, "data": bytes.fromhex("0010000000000000")}, "malformed single frame"),
@@ -86,7 +90,7 @@ def test_writes_on_broadcast_ids_and_denied_services_are_violations():
     with VIOLATIONS.expect() as caught:
         written_by_hand(sim.dll, STEERING_ANGLE_ID, GOOD)
         written_by_hand(sim.dll, 0x7E0, bytes.fromhex("0211010000000000"))  # ECU reset
-    assert len(caught) == 3  # non-diagnostic, broadcast, denied service
+    assert len(caught) == 3  # ID not allowed, broadcast, denied service
 
 
 def test_writes_before_initialize_are_violations():

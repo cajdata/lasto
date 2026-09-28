@@ -1,7 +1,9 @@
 """The simulator's own judgment of every frame lasto writes.
 
 Written separately from lasto.safety.policy on purpose: if the safety core's
-allowlists had a mistake, it shouldn't be able to hide itself here too.
+allowlists had a mistake, it shouldn't be able to hide itself here too. So it
+is exactly as strict as the real policy: when an ECU is approved (a safety
+core commit), its request ID is added here by hand as well.
 """
 
 from __future__ import annotations
@@ -9,8 +11,9 @@ from __future__ import annotations
 from collections.abc import Collection
 
 FUNCTIONAL_ID = 0x7DF
-# ISO 15765-4 11-bit request IDs: functional plus the eight physical ones.
-DIAGNOSTIC_REQUEST_IDS = frozenset({FUNCTIONAL_ID, *range(0x7E0, 0x7E8)})
+ENGINE_REQUEST_ID = 0x7E0
+# The functional ID, plus the physical request ID of each approved ECU (only the engine so far).
+ALLOWED_REQUEST_IDS = frozenset({FUNCTIONAL_ID, ENGINE_REQUEST_ID})
 # Read-only services from the project spec: OBD 01, 02, 03, 06, 07, 09, 0A and manufacturer reads.
 READ_ONLY_SERVICES = frozenset({0x01, 0x02, 0x03, 0x06, 0x07, 0x09, 0x0A, 0x13, 0x17, 0x18, 0x19, 0x1A, 0x21, 0x22})
 OBD_ONLY = frozenset({0x01, 0x02, 0x03, 0x06, 0x07, 0x09, 0x0A})
@@ -28,8 +31,8 @@ def frame_violations(
     if listen_only:
         return [f"frame written while the channel is listen-only: {frame}"]
     found: list[str] = []
-    if can_id not in DIAGNOSTIC_REQUEST_IDS:
-        found.append(f"frame on a non-diagnostic ID: {frame}")
+    if can_id not in ALLOWED_REQUEST_IDS:
+        found.append(f"frame on an ID lasto may not transmit on (only 0x7DF and 0x7E0): {frame}")
     if can_id in broadcast_ids:
         found.append(f"frame on an ID that carries broadcast traffic: {frame}")
     if len(data) != 8:
