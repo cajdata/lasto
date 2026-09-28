@@ -14,14 +14,17 @@ from lasto.safety import requests as rq
 from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
 from lasto.safety.ecus import ENGINE, Ecu, EcuKind
 from lasto.safety.errors import AdapterError, KillSwitchTripped, SafetyViolation
-from lasto.safety.pcan_dll import load_readonly
+from lasto.safety.killswitch import KillSwitch
+from lasto.safety.pcan_active import open_active
 from lasto.safety.requests import DtcKind, Purpose
 from lasto.safety.session import open_passive_session
 from lasto.safety.stn_port import StnAdapter
 from lasto.sim.clock import FakeClock
+from lasto.sim.fake_pcan import FakePcanDll
 from lasto.sim.fake_stn import FakeStnPort
 from lasto.sim.tester import SimTester
 from lasto.sim.vehicle import build_sim
+from lasto.sim.violations import VIOLATIONS
 
 SPEC_OBD = {0x01, 0x02, 0x03, 0x06, 0x07, 0x09, 0x0A}
 SPEC_MANUFACTURER = {0x21, 0x22, 0x1A, 0x13, 0x17, 0x18, 0x19}
@@ -81,17 +84,42 @@ def test_fuzzed_frames_at_the_last_check_before_the_wire(can_id, data, kind, wai
     if waiting:
         h.gate.submit(LOGGING_RPM_SPEED)
         h.gate.on_frame(frame(0x7E8, 0x10, 0x0E, 0x41, 0x0C, 0x0B, 0xB8, 0x0D, 0x00))
-    before = list(h.link.frames)
+    before = list(h.writer.frames)
     audited_before = len(refusals(h.sink))
     refused = False
     try:
         h.gate._transmit(can_id, data, purpose="fuzz", kind=kind)
     except SafetyViolation:
         refused = True
-        assert h.link.frames == before
-    for sent in h.link.frames:
+        assert h.writer.frames == before
+    for sent in h.writer.frames:
         assert_allowed(*sent)
     assert len(refusals(h.sink)) - audited_before == (1 if refused else 0)  # every refusal audited, once
+
+
+@given(can_id=can_ids, data=payloads, kind=st.sampled_from(["request", "flow_control", "first", ""]))
+def test_fuzzed_frames_straight_into_the_write_function(can_id, data, kind):
+    """Called directly, around the gate, the one holder of CAN_Write still sends nothing the spec forbids."""
+    REFUSALS.reset()
+    clock = FakeClock()
+    sink = MemoryAuditSink()
+    auditor = Auditor(sink, clock)
+    REFUSALS.attach(auditor)
+    dll = FakePcanDll()
+    _channel, writer = open_active(CHANNEL, library=dll, killswitch=KillSwitch(), auditor=auditor)
+    refused = False
+    with VIOLATIONS.expect() as oracle:
+        try:
+            writer(can_id, data, purpose="fuzz", kind=kind)
+        except SafetyViolation:
+            refused = True
+    for _handle, sent_id, sent in dll.writes:
+        assert_allowed(sent_id, sent)
+    assert refused == (dll.writes == [])
+    assert len(refusals(sink)) == (1 if refused else 0)
+    assert len([r for r in sink.records if r["event"] == "transmit"]) == len(dll.writes)  # audited before writing
+    # The write function keeps no state, so whether a first frame is waiting for flow control is the gate's check.
+    assert all(item.startswith("flow control no ECU asked for") for item in oracle)
 
 
 BUILDERS = [
@@ -134,11 +162,11 @@ def test_fuzzed_typed_requests(index, args, purpose, ecu, moving, volts):
         h.gate.submit(request)
     except SafetyViolation:
         refused = True
-        assert h.link.frames == []
+        assert h.writer.frames == []
     assert len(refusals(h.sink)) == (1 if refused else 0)
-    for sent in h.link.frames:
+    for sent in h.writer.frames:
         assert_allowed(*sent)
-    if h.link.frames:
+    if h.writer.frames:
         assert ecu is None or ecu == ENGINE
         assert not (request.purpose in PARKED and (moving or volts < 12.0))
 
@@ -162,7 +190,7 @@ def test_fuzzed_responses_only_ever_draw_valid_flow_control(frames, functional):
     request = rq.read_pid([0x0D], purpose=Purpose.LOGGING) if functional else LOGGING_RPM_SPEED
     h = fresh_harness(profile=[request])
     sent_at_kill = []
-    h.killswitch.add_listener(lambda cause: sent_at_kill.append(len(h.link.frames)))
+    h.killswitch.add_listener(lambda cause: sent_at_kill.append(len(h.writer.frames)))
     h.gate.submit(request)
     first_frames = 0
     for can_id, data, gap in frames:
@@ -172,12 +200,12 @@ def test_fuzzed_responses_only_ever_draw_valid_flow_control(frames, functional):
         h.gate.on_frame(received)
         h.clock.advance(gap)
         h.gate.poll()
-    request_frame, *flow_controls = h.link.frames
+    request_frame, *flow_controls = h.writer.frames
     assert_allowed(*request_frame)
     assert all(sent == (0x7E0, FC) for sent in flow_controls)
     assert len(flow_controls) <= first_frames
     if sent_at_kill:
-        assert len(h.link.frames) == sent_at_kill[0]  # nothing after a kill
+        assert len(h.writer.frames) == sent_at_kill[0]  # nothing after a kill
 
 
 ADAPTER_WORDS = ["STCMM 1", "ATSP0", "STPX", "ATPP 21 SV 00", "STI", "STVR", "ATZ", "STMA", "0100", "ATSH7E0", "STP22", "ATSW92"]
@@ -251,7 +279,7 @@ def test_any_sequence_of_adapter_operations_stays_silent(steps):
 def test_passive_sessions_never_transmit(injections, run_for):
     REFUSALS.reset()
     sim = build_sim()
-    session = open_passive_session(CHANNEL, auditor=Auditor(MemoryAuditSink(), sim.clock), clock=sim.clock, pcan=load_readonly(sim.dll))
+    session = open_passive_session(CHANNEL, auditor=Auditor(MemoryAuditSink(), sim.clock), clock=sim.clock, library=sim.dll)
     for kind, value, data in injections:
         if kind == "frame":
             sim.dll.inject_frame(0x51, value, data)

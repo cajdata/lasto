@@ -7,11 +7,15 @@ written frame reaches the simulated bus only in normal mode. The simulator's
 oracle judges every write, and every function the binding looks up is
 recorded, so a test can prove the passive path never even looked up
 CAN_Write.
+
+Like a ctypes library, it hands out its functions by name as attributes
+(dll.CAN_Read and so on). The functions themselves are private methods.
 """
 
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 
 from lasto.safety import pcan_constants as pc
 from lasto.sim.bus import SimBus
@@ -46,6 +50,9 @@ class FakeChannelState:
 
 
 class FakePcanDll:
+    # The PCAN-Basic functions by name. Empty until __init__ fills it, so lookups before then fail cleanly.
+    _api: dict[str, Callable[..., int]] = {}
+
     def __init__(
         self, bus: SimBus | None = None, *, api_version: str = "4.7.0.11", hardware: str = "PCAN-USB (simulated)"
     ) -> None:
@@ -63,18 +70,31 @@ class FakePcanDll:
         self.write_status = OK
         self.error_text_status = OK
         self.readback_listen_only: int | None = None
+        self._api = {
+            "CAN_Initialize": self._can_initialize,
+            "CAN_Uninitialize": self._can_uninitialize,
+            "CAN_GetValue": self._can_get_value,
+            "CAN_SetValue": self._can_set_value,
+            "CAN_GetStatus": self._can_get_status,
+            "CAN_Read": self._can_read,
+            "CAN_Write": self._can_write,
+            "CAN_GetErrorText": self._can_get_error_text,
+        }
 
-    def __getattribute__(self, name: str) -> object:
-        if name.startswith("CAN_"):
-            object.__getattribute__(self, "looked_up").append(name)
-        return object.__getattribute__(self, name)
+    def __getattr__(self, name: str) -> Callable[..., int]:
+        """Look up a PCAN-Basic function by name, as ctypes would, and record the lookup."""
+        function = self._api.get(name)
+        if function is None:
+            raise AttributeError(f"the simulated PCAN-Basic has no function {name!r}")
+        self.looked_up.append(name)
+        return function
 
     def channel(self, handle: int) -> FakeChannelState:
         return self.channels.setdefault(handle, FakeChannelState(handle))
 
     # ---- PCAN-Basic functions ----
 
-    def CAN_Initialize(self, handle, baud, hw_type, io_port, interrupt) -> int:
+    def _can_initialize(self, handle, baud, hw_type, io_port, interrupt) -> int:
         ch = self.channel(_v(handle))
         self.calls.append("CAN_Initialize")
         if self.initialize_status != OK:
@@ -91,7 +111,7 @@ class FakePcanDll:
             self.bus.add_tap(ch, ch.receive)
         return OK
 
-    def CAN_Uninitialize(self, handle) -> int:
+    def _can_uninitialize(self, handle) -> int:
         ch = self.channel(_v(handle))
         self.calls.append("CAN_Uninitialize")
         if not ch.initialized:
@@ -105,7 +125,7 @@ class FakePcanDll:
             self.bus.remove_tap(ch)
         return OK
 
-    def CAN_GetValue(self, handle, parameter, buffer, length) -> int:
+    def _can_get_value(self, handle, parameter, buffer, length) -> int:
         param = _v(parameter)
         if param in self.fail_get:
             return self.fail_get[param]
@@ -131,7 +151,7 @@ class FakePcanDll:
         buffer.contents.value = value
         return OK
 
-    def CAN_SetValue(self, handle, parameter, buffer, length) -> int:
+    def _can_set_value(self, handle, parameter, buffer, length) -> int:
         param, value = _v(parameter), buffer.contents.value
         self.calls.append(f"CAN_SetValue 0x{param:02X}={value}")
         if param in self.fail_set:
@@ -153,7 +173,7 @@ class FakePcanDll:
             return OK
         return pc.PCAN_ERROR_ILLPARAMTYPE
 
-    def CAN_GetStatus(self, handle) -> int:
+    def _can_get_status(self, handle) -> int:
         ch = self.channel(_v(handle))
         if ch.unplugged:
             return pc.PCAN_ERROR_ILLHW
@@ -161,7 +181,7 @@ class FakePcanDll:
             return pc.PCAN_ERROR_INITIALIZE
         return ch.status
 
-    def CAN_Read(self, handle, message, stamp) -> int:
+    def _can_read(self, handle, message, stamp) -> int:
         ch = self.channel(_v(handle))
         if ch.unplugged:
             return pc.PCAN_ERROR_ILLHW
@@ -184,7 +204,7 @@ class FakePcanDll:
         ts.millis, ts.millis_overflow, ts.micros = millis, overflow, micros
         return status
 
-    def CAN_Write(self, handle, message) -> int:
+    def _can_write(self, handle, message) -> int:
         ch = self.channel(_v(handle))
         msg = message.contents
         can_id, data = msg.ID, bytes(msg.DATA[: msg.LEN])
@@ -208,7 +228,7 @@ class FakePcanDll:
             self.bus.transmit(can_id, data, ch)
         return OK
 
-    def CAN_GetErrorText(self, status, language, buffer) -> int:
+    def _can_get_error_text(self, status, language, buffer) -> int:
         if self.error_text_status != OK:
             return self.error_text_status
         buffer.contents.value = b"simulated PCAN error"

@@ -12,7 +12,6 @@ from lasto.safety.frames import CanFrame
 from lasto.safety.gate import Gate
 from lasto.safety.interlocks import Interlocks
 from lasto.safety.killswitch import KillSwitch, NrcMonitor
-from lasto.safety.pcan_active import load_transmit
 from lasto.safety.ratelimit import RateLimiter
 from lasto.safety.requests import Purpose, Request, interlock_probe, read_pid
 from lasto.safety.session import PolledSession, open_polled_session
@@ -31,14 +30,14 @@ def frame(can_id: int, *data: int) -> CanFrame:
     return CanFrame(can_id, bytes(data) + bytes(8 - len(data)), 0)
 
 
-class StubLink:
-    """Records frames the gate writes."""
+class StubWriter:
+    """Stands in for the write function, so gate tests see exactly what the gate lets through."""
 
     def __init__(self) -> None:
         self.frames: list[tuple[int, bytes]] = []
         self.fail: InterfaceError | None = None
 
-    def write(self, can_id: int, data: bytes) -> None:
+    def __call__(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
         if self.fail is not None:
             raise self.fail
         self.frames.append((can_id, bytes(data)))
@@ -59,9 +58,9 @@ class GateHarness:
         self.interlocks = Interlocks()
         self.limiter = RateLimiter()
         self.nrc = NrcMonitor(self.killswitch)
-        self.link = StubLink()
+        self.writer = StubWriter()
         self.gate = Gate(
-            self.link,
+            self.writer,
             auditor,
             clock,
             self.killswitch,
@@ -84,9 +83,7 @@ class GateHarness:
 
 def open_polled(sim: Sim, auditor: Auditor, *, profile: Iterable[Request] = (LOGGING_RPM_SPEED,), **kwargs: object) -> PolledSession:
     kwargs.setdefault("listen_seconds", 0.05)
-    return open_polled_session(
-        CHANNEL, profile=profile, auditor=auditor, clock=sim.clock, pcan=load_transmit(sim.dll), **kwargs
-    )
+    return open_polled_session(CHANNEL, profile=profile, auditor=auditor, clock=sim.clock, library=sim.dll, **kwargs)
 
 
 def park(session: PolledSession) -> None:

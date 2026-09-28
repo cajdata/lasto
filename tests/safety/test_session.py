@@ -6,8 +6,7 @@ from helpers import CHANNEL, HANDLE, LOGGING_RPM_SPEED, events, open_polled
 from lasto.safety import pcan_constants as pc
 from lasto.safety.audit import Auditor
 from lasto.safety.errors import KillSwitchTripped
-from lasto.safety.gate import ExchangeState
-from lasto.safety.pcan_dll import load_readonly
+from lasto.safety.exchange import ExchangeState
 from lasto.safety.session import LISTEN_WINDOW, open_passive_session
 from lasto.sim.tester import SimTester
 
@@ -19,7 +18,7 @@ class BrokenSink:
 
 def test_passive_session_records_everything_and_never_writes(sim, auditor, sink, clock):
     seen = []
-    session = open_passive_session(CHANNEL, auditor=auditor, clock=clock, pcan=load_readonly(sim.dll), subscribers=[seen.append])
+    session = open_passive_session(CHANNEL, auditor=auditor, clock=clock, library=sim.dll, subscribers=[seen.append])
     clock.advance(0.5)
     items = session.pump()
     assert len(items) > 50 and seen == items
@@ -34,7 +33,7 @@ def test_passive_session_records_everything_and_never_writes(sim, auditor, sink,
 
 def test_passive_session_closes_the_channel_if_the_audit_log_fails(sim, clock):
     with pytest.raises(OSError):
-        open_passive_session(CHANNEL, auditor=Auditor(BrokenSink(), clock), clock=clock, pcan=load_readonly(sim.dll))
+        open_passive_session(CHANNEL, auditor=Auditor(BrokenSink(), clock), clock=clock, library=sim.dll)
     assert not sim.dll.channel(HANDLE).initialized
 
 

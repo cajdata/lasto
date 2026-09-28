@@ -8,13 +8,13 @@ from lasto.safety import requests as rq
 from lasto.safety.ecus import ENGINE, Ecu, EcuKind
 from lasto.safety.errors import InterfaceError, KillSwitchTripped, SafetyViolation
 from lasto.safety.frames import CanFrame, ErrorFrame
+from lasto.safety.exchange import ExchangeState
 from lasto.safety.gate import (
     CONSECUTIVE_FRAME_TIMEOUT,
     LATE_RESPONSE_GRACE,
     MAX_RESPONSE_PENDING,
     P2_STAR_TIMEOUT,
     P2_TIMEOUT,
-    ExchangeState,
     Gate,
 )
 from lasto.safety.killswitch import CONSECUTIVE_TIMEOUT_LIMIT
@@ -148,7 +148,7 @@ def test_not_armed(clock, auditor, sink):
     h = GateHarness(clock, auditor, armed=False)
     refused(h.gate, LOGGING_RPM_SPEED, "gate_not_armed")
     assert events(sink, "rejected")[0]["reason"] == "gate_not_armed"
-    assert h.link.frames == []
+    assert h.writer.frames == []
 
 
 def test_only_typed_requests(h):
@@ -181,7 +181,7 @@ def test_kill_switch_blocks_everything(h, sink):
     with pytest.raises(KillSwitchTripped):
         h.gate.submit(LOGGING_RPM_SPEED)
     assert events(sink, "rejected")[0]["reason"] == "kill_switch"
-    assert h.link.frames == []
+    assert h.writer.frames == []
 
 
 def test_kill_during_a_rate_limit_wait_stops_the_frame(clock, auditor):
@@ -197,7 +197,7 @@ def test_kill_during_a_rate_limit_wait_stops_the_frame(clock, auditor):
     clock.sleep = sleep_then_kill
     with pytest.raises(KillSwitchTripped):
         h.gate.submit(LOGGING_RPM_SPEED)
-    assert len(h.link.frames) == 1
+    assert len(h.writer.frames) == 1
 
 
 def test_rate_limit_waits_briefly_and_refuses_long_waits(h, clock):
@@ -213,7 +213,7 @@ def test_rate_limit_waits_briefly_and_refuses_long_waits(h, clock):
 
 
 def test_write_failure_trips_the_kill_switch(h):
-    h.link.fail = InterfaceError("adapter unplugged")
+    h.writer.fail = InterfaceError("adapter unplugged")
     with pytest.raises(InterfaceError):
         h.gate.submit(LOGGING_RPM_SPEED)
     assert h.killswitch.cause == "interface_write_failed"
@@ -232,13 +232,16 @@ def test_write_failure_trips_the_kill_switch(h):
         (0x7E0, bytes.fromhex("0105000000000000"), "service_not_allowlisted"),
         (0x7DF, bytes.fromhex("0221010000000000"), "manufacturer_service_on_functional_id"),
         ("7E0", bytes.fromhex("02010C0000000000"), "can_id_not_allowlisted"),
+        (True, bytes.fromhex("02010C0000000000"), "can_id_not_allowlisted"),
+        (0x7E0, bytearray.fromhex("02010C0000000000"), "frame_length"),
+        (0x7E0, FC, "frame_kind_mismatch"),
     ],
 )
 def test_last_check_before_the_wire(h, can_id, data, reason):
     with pytest.raises(SafetyViolation) as caught:
         h.gate._transmit(can_id, data, purpose="test", kind="request")
     assert caught.value.reason == reason
-    assert h.link.frames == []
+    assert h.writer.frames == []
 
 
 def test_unknown_frame_kinds_are_refused(h):
@@ -263,7 +266,7 @@ def test_flow_control_only_answers_a_waiting_first_frame(h):
     assert fc(data=bytes.fromhex("3001000000000000")) == "flow_control_malformed"
     exchange.flow_control_sent = True
     assert fc() == "flow_control_unsolicited"  # at most one per first frame
-    assert h.link.frames == [(0x7E0, bytes.fromhex("03010C0D00000000"))]
+    assert h.writer.frames == [(0x7E0, bytes.fromhex("03010C0D00000000"))]
 
 
 def test_flow_control_is_refused_on_a_broadcast_id(clock, auditor, sink):
@@ -273,7 +276,7 @@ def test_flow_control_is_refused_on_a_broadcast_id(clock, auditor, sink):
     assert h.killswitch.cause == "flow_control_refused"
     [refusal] = events(sink, "rejected")
     assert (refusal["reason"], refusal["request"]) == ("can_id_carries_broadcast", "0x7E0 30 00 00 00 00 00 00 00")
-    assert len(h.link.frames) == 1  # only the request
+    assert len(h.writer.frames) == 1  # only the request
 
 
 def test_frames_that_are_not_diagnostic_are_ignored(h):
@@ -353,10 +356,10 @@ def test_response_pending_limit(h):
 def test_multi_frame_reassembly_and_sequence_errors(h, sink):
     exchange = h.gate.submit(LOGGING_RPM_SPEED)
     h.gate.on_frame(frame(0x7E8, 0x10, 0x0E, 0x41, 0x0C, 0x0B, 0xB8, 0x0D, 0x00))
-    assert h.link.frames[-1] == (0x7E0, FC)
+    assert h.writer.frames[-1] == (0x7E0, FC)
     assert exchange.deadline == pytest.approx(h.clock.monotonic() + CONSECUTIVE_FRAME_TIMEOUT)
     h.gate.on_frame(frame(0x7E8, 0x10, 0x0E, 1, 2, 3, 4, 5, 6))  # a second first frame is ignored
-    assert [f for f in h.link.frames if f[1] == FC] == [(0x7E0, FC)]
+    assert [f for f in h.writer.frames if f[1] == FC] == [(0x7E0, FC)]
     h.gate.on_frame(frame(0x7E8, 0x21, 0x05, 0x50, 0x0F, 0x20, 0x11, 0x33, 0x42))
     assert exchange.state is ExchangeState.PENDING  # 13 of 14 bytes so far
     h.gate.on_frame(frame(0x7E8, 0x23, 0, 0, 0, 0, 0, 0, 0))  # sequence 3, expected 2

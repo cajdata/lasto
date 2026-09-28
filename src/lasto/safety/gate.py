@@ -1,11 +1,14 @@
 """The transmit gate: the only path from a typed request to the CAN bus.
 
-Every frame lasto sends in polled mode goes through Gate._transmit. It
-re-checks the exact bytes against the policy immediately before writing,
-records them in the audit log first, and then calls the channel's write.
-Requests arrive as typed Request objects from lasto.safety.requests; nothing
-here accepts raw bytes or CAN IDs from callers. Every refusal is audited
-where it is raised (rule 11).
+Every frame lasto sends in polled mode goes through Gate._transmit. It makes
+the checks that need state (a flow control frame must answer the first frame
+that is waiting for it), re-checks the exact bytes against the policy, and
+hands them to the write function, the one object that holds CAN_Write. That
+function checks the bytes again, checks the kill switch, and records them in
+the audit log before they go out (lasto.safety.pcan_active). Requests arrive
+as typed Request objects from lasto.safety.requests; nothing here accepts raw
+bytes or CAN IDs from callers. Every refusal is audited where it is raised
+(rule 11).
 
 The gate also watches every received frame. A frame on a request ID that
 lasto didn't send (another tester, or broadcast traffic), a diagnostic
@@ -18,14 +21,13 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterable
-from dataclasses import dataclass, field
-from enum import Enum
 from typing import Protocol
 
 from lasto.safety import ecus, isotp, policy
 from lasto.safety.audit import Auditor, refuse
 from lasto.safety.clock import Clock
 from lasto.safety.errors import InterfaceError, SafetyError, SafetyViolation
+from lasto.safety.exchange import Exchange, ExchangeState
 from lasto.safety.frames import CanFrame, Received
 from lasto.safety.interlocks import Interlocks
 from lasto.safety.killswitch import KillSwitch, NrcMonitor
@@ -48,52 +50,16 @@ NRC_RESPONSE_PENDING = 0x78
 POSITIVE_RESPONSE_OFFSET = 0x40
 
 
-class Link(Protocol):
-    def write(self, can_id: int, data: bytes) -> None:
-        """Put one 8-byte standard frame on the bus, or raise InterfaceError."""
-
-
-class ExchangeState(Enum):
-    PENDING = "pending"
-    DONE = "done"
-    NEGATIVE = "negative"
-    TIMEOUT = "timeout"
-    ABORTED = "aborted"
-
-
-@dataclass
-class Exchange:
-    """One request and what came back for it."""
-
-    request: Request
-    can_id: int
-    sent_at: float
-    deadline: float
-    state: ExchangeState = ExchangeState.PENDING
-    responses: list[tuple[int, bytes]] = field(default_factory=list)
-    nrc: int | None = None
-    pending_extensions: int = 0
-    rx_id: int | None = None
-    rx_length: int = 0
-    rx_data: bytearray = field(default_factory=bytearray)
-    rx_sequence: int = 1
-    flow_control_sent: bool = False
-
-    @property
-    def done(self) -> bool:
-        return self.state is not ExchangeState.PENDING
+class WriteFunction(Protocol):
+    def __call__(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
+        """Check one 8-byte standard frame, audit it, and put it on the bus; or refuse, or raise InterfaceError."""
 
 
 def _describe(request: object) -> str:
     return request.describe() if isinstance(request, Request) else type(request).__name__
 
 
-def _hex_id(can_id: object) -> str:
-    return f"0x{can_id:03X}" if isinstance(can_id, int) else repr(can_id)
-
-
-def _frame_text(can_id: object, data: bytes) -> str:
-    return f"{_hex_id(can_id)} {bytes(data).hex(' ').upper()}"
+_hex_id = policy.hex_id
 
 
 def _target_key(request: Request) -> str:
@@ -107,7 +73,7 @@ def _deny(reason: str, detail: str, request: str) -> None:
 class Gate:
     def __init__(
         self,
-        link: Link,
+        writer: WriteFunction,
         auditor: Auditor,
         clock: Clock,
         killswitch: KillSwitch,
@@ -129,7 +95,7 @@ class Gate:
                 )
             keys.add(request.key)
         self._profile = frozenset(keys)
-        self._link = link
+        self._writer = writer
         self._auditor = auditor
         self._clock = clock
         self._killswitch = killswitch
@@ -137,7 +103,7 @@ class Gate:
         self._limiter = limiter
         self._nrc_monitor = nrc_monitor
         self._broadcast_ids = frozenset(broadcast_ids)
-        self._request_ids = frozenset({policy.FUNCTIONAL_REQUEST_ID, *(ecu.request_id for ecu in ecus.APPROVED_ECUS)})
+        self._request_ids = policy.request_ids()
         self._lock = threading.RLock()
         self._armed = False
         self._pending: Exchange | None = None
@@ -187,7 +153,7 @@ class Gate:
         data = isotp.encode_single_frame(
             request.payload, ext_address=None if target is None else target.ext_address, padding=policy.PADDING_BYTE
         )
-        self._check_request_frame(can_id, data)
+        self._check(can_id, data, "request", policy.frame_text(can_id, data))
         wait = self._limiter.delay(request.purpose, now)
         if wait > MAX_RATE_WAIT:
             _deny("rate_limited", f"next slot in {wait:.3f} s", text)
@@ -200,50 +166,32 @@ class Gate:
         self._pending = exchange
         return exchange
 
-    def _check_request_frame(self, can_id: int, data: bytes) -> None:
-        text = _frame_text(can_id, data)
-        if len(data) != isotp.FRAME_BYTES:
-            _deny("frame_length", f"{len(data)} bytes", text)
-        if can_id not in self._request_ids:
-            _deny("can_id_not_allowlisted", _hex_id(can_id), text)
-        if can_id in self._broadcast_ids:
-            _deny("can_id_carries_broadcast", _hex_id(can_id), text)
-        ecu = ecus.by_request_id(can_id)
-        try:
-            frame = isotp.parse(data, ext_address=None if ecu is None else ecu.ext_address)
-        except isotp.IsoTpError as exc:
-            _deny(exc.reason, exc.detail, text)
-        if frame.kind is not isotp.FrameKind.SINGLE:
-            _deny("not_single_frame", frame.kind.value, text)
-        service = frame.payload[0]
-        policy.check_service(service, functional=ecu is None, request=text)
-        policy.check_sensitive(service, sensitive=ecu is not None and ecu.kind in ecus.SENSITIVE_KINDS, request=text)
+    def _check(self, can_id: int, data: bytes, kind: str, text: str) -> None:
+        """The policy's stateless check on the exact bytes, and that they are the kind of frame intended."""
+        checked = policy.check_frame(can_id, data, broadcast_ids=self._broadcast_ids)
+        if checked != kind:
+            _deny("frame_kind_mismatch", f"a {checked} frame sent as {kind!r}", text)
 
-    def _check_flow_control_frame(self, can_id: int, data: bytes) -> None:
-        text = _frame_text(can_id, data)
+    def _check_flow_control_wanted(self, can_id: int, text: str) -> None:
+        """Flow control only answers the first frame waiting for it, once, on that ECU's request ID."""
         pending = self._pending
         if pending is None or pending.rx_id is None or pending.flow_control_sent:
             _deny("flow_control_unsolicited", "no first frame is waiting for flow control", text)
         ecu = ecus.by_response_id(pending.rx_id)  # type: ignore[union-attr,arg-type]
         if ecu is None or can_id != ecu.request_id:
             _deny("flow_control_wrong_id", _hex_id(can_id), text)
-        if can_id in self._broadcast_ids:
-            _deny("can_id_carries_broadcast", _hex_id(can_id), text)
-        if data != isotp.encode_flow_control(ext_address=ecu.ext_address, padding=policy.PADDING_BYTE):  # type: ignore[union-attr]
-            _deny("flow_control_malformed", bytes(data).hex(" "), text)
 
     def _transmit(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
-        """The last check before the wire, on the exact bytes. Every frame lasto sends passes here."""
-        if kind == "request":
-            self._check_request_frame(can_id, data)
-        elif kind == "flow_control":
-            self._check_flow_control_frame(can_id, data)
-        else:
-            _deny("unknown_frame_kind", repr(kind), _frame_text(can_id, data))
-        self._killswitch.check(request=_frame_text(can_id, data))
-        self._auditor.transmit(transport="pcan", can_id=can_id, data=data, purpose=purpose, kind=kind)
+        """The gate's last check before the wire. Every frame lasto sends passes here, then the write function."""
+        text = policy.frame_text(can_id, data)
+        if kind == "flow_control":
+            self._check_flow_control_wanted(can_id, text)
+        elif kind != "request":
+            _deny("unknown_frame_kind", repr(kind), text)
+        self._check(can_id, data, kind, text)
+        self._killswitch.check(request=text)
         try:
-            self._link.write(can_id, data)
+            self._writer(can_id, data, purpose=purpose, kind=kind)
         except InterfaceError as exc:
             self._trip("interface_write_failed", str(exc))
             raise

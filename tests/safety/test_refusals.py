@@ -14,13 +14,14 @@ from lasto.safety.ecus import ENGINE
 from lasto.safety.errors import KillSwitchTripped, PassiveModeUnconfirmed, SafetyViolation
 from lasto.safety.interlocks import Interlocks
 from lasto.safety.killswitch import KillSwitch
-from lasto.safety.pcan_active import load_transmit, open_active
+from lasto.safety.pcan_active import open_active
 from lasto.safety.pcan_dll import load_readonly
 from lasto.safety.pcan_passive import open_passive
 from lasto.safety.ratelimit import PURPOSE_RATES, RateLimiter
 from lasto.safety.requests import DtcKind, Purpose
 from lasto.safety.session import open_passive_session
 from lasto.safety.stn_port import StnAdapter, open_serial
+from lasto.sim.clock import FakeClock
 from lasto.sim.fake_pcan import FakePcanDll
 from lasto.sim.fake_stn import FakeStnPort
 
@@ -58,7 +59,7 @@ SITES = [
     ("rate above the ceiling", lambda: RateLimiter({**PURPOSE_RATES, Purpose.LOGGING: 50.0}), ValueError, "rate_above_ceiling"),
     ("channel name", lambda: pc.channel_handle("PCAN_USBBUS99"), ValueError, "bad_channel_name"),
     ("ReadOnlyPcan.set_value", lambda: load_readonly(FakePcanDll()).set_value(HANDLE, pc.PCAN_LISTEN_ONLY, 0), SafetyViolation, "pcan_setting_not_allowed"),
-    ("ActiveChannel.write", lambda: open_active(CHANNEL, pcan=load_transmit(FakePcanDll())).write(0x025, bytes(7)), SafetyViolation, "frame_shape"),
+    ("the write function", lambda: _writer()(0x025, bytes(7), purpose="test", kind="request"), SafetyViolation, "frame_length"),
     ("COM port name", lambda: open_serial("/dev/ttyUSB0"), ValueError, "bad_port_name"),
     ("STN command", lambda: stn_policy.check_command("0100"), SafetyViolation, "adapter_hex_request"),
 ]
@@ -68,6 +69,13 @@ def _tripped():
     killswitch = KillSwitch()
     killswitch.trip("hotkey")
     return killswitch
+
+
+def _writer():
+    _channel, writer = open_active(
+        CHANNEL, library=FakePcanDll(), killswitch=KillSwitch(), auditor=Auditor(MemoryAuditSink(), FakeClock())
+    )
+    return writer
 
 
 @pytest.mark.parametrize(("what", "action", "error", "reason"), SITES, ids=[s[0] for s in SITES])
@@ -97,7 +105,7 @@ def test_the_gates_last_check_audits_its_own_refusals(clock, auditor, sink, can_
     [refusal] = events(sink, "rejected")
     assert refusal["reason"] == reason
     assert refusal["request"].startswith(f"0x{can_id:03X}")
-    assert h.link.frames == []
+    assert h.writer.frames == []
 
 
 def test_bad_logging_profiles_are_audited(clock, auditor, sink):
@@ -129,7 +137,7 @@ def test_failed_session_opens_are_logged(clock, auditor, sink):
     dll = FakePcanDll()
     dll.readback_listen_only = pc.PCAN_PARAMETER_OFF
     with pytest.raises(PassiveModeUnconfirmed):
-        open_passive_session(CHANNEL, auditor=auditor, clock=clock, pcan=load_readonly(dll))
+        open_passive_session(CHANNEL, auditor=auditor, clock=clock, library=dll)
     [refused] = events(sink, "session_refused")
     assert (refused["mode"], refused["reason"]) == ("passive", "PassiveModeUnconfirmed")
     assert [r["reason"] for r in events(sink, "rejected")] == ["listen_only_not_confirmed"]
@@ -248,7 +256,7 @@ def test_polled_session_refusals_reach_its_audit_log(sim, auditor, sink):
 def test_sessions_that_share_an_auditor_stay_attached_until_both_close(sim, clock):
     sink = MemoryAuditSink()
     auditor = Auditor(sink, clock)
-    session = open_passive_session(CHANNEL, auditor=auditor, clock=clock, pcan=load_readonly(sim.dll))
+    session = open_passive_session(CHANNEL, auditor=auditor, clock=clock, library=sim.dll)
     stn = StnAdapter(FakeStnPort(), auditor)
     session.close()
     with pytest.raises(SafetyViolation):

@@ -1,6 +1,7 @@
 """Structural rules, checked by reading the source.
 
-- Only safety/pcan_active.py binds or calls CAN_Write (the simulator's fake DLL may define it).
+- Only safety/pcan_active.py binds or calls CAN_Write (the simulator's fake DLL may list it), and
+  only its Writer holds it. Only the gate calls the Writer.
 - The passive path imports nothing that can transmit and names no write function.
 - Only safety/stn_port.py opens a serial port.
 - Only the hardware bindings use ctypes.
@@ -96,9 +97,10 @@ def test_only_pcan_active_binds_can_write():
     for name, tree in sources().items():
         hits = mentions(tree, "CAN_Write")
         if name == "lasto.safety.pcan_active":
-            assert hits, "pcan_active should bind CAN_Write"
+            # One lookup by attribute; the error message names it too.
+            assert sorted(hits) == ["attribute", "string"], "pcan_active looks up CAN_Write once, by attribute"
         elif name == "lasto.sim.fake_pcan":
-            assert set(hits) == {"def"}, "the fake DLL may only define CAN_Write"
+            assert set(hits) == {"string"}, "the fake DLL may only list CAN_Write in its function table"
         else:
             assert hits == [], f"{name} names CAN_Write"
 
@@ -106,8 +108,8 @@ def test_only_pcan_active_binds_can_write():
 def test_only_pcan_active_touches_the_transmit_call():
     for name, tree in sources().items():
         if name != "lasto.safety.pcan_active":
-            assert mentions(tree, "write_standard") == [], name
-            assert mentions(tree, "TransmitPcan") == [] or name == "lasto.safety.session", name
+            assert mentions(tree, "Writer") == [], name
+            assert mentions(tree, "_can_write") == [] or name == "lasto.sim.fake_pcan", name
 
 
 def test_passive_path_imports_nothing_that_can_transmit():
@@ -161,14 +163,20 @@ def test_only_the_session_imports_the_transmit_binding_and_the_gate():
     assert all(name.startswith("lasto.safety.") for name in importers("lasto.safety.pcan_dll"))
 
 
-def test_channel_writes_happen_only_in_the_gate():
-    allowed = {"lasto.safety.gate", "lasto.safety.audit", "lasto.safety.stn_port"}
+def attribute_calls(tree: ast.Module, attr: str) -> list[ast.Call]:
+    return [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == attr]
+
+
+def test_frames_are_written_only_by_the_gate_through_the_writer():
     for name, tree in sources().items():
         if not name.startswith("lasto.safety"):
             continue
-        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "write"]
-        if name not in allowed:
-            assert calls == [], f"{name} calls .write()"
+        # audit writes its log file; stn_port writes to the adapter behind its own command allowlist.
+        assert attribute_calls(tree, "write") == [] or name in {"lasto.safety.audit", "lasto.safety.stn_port"}, name
+        assert attribute_calls(tree, "_writer") == [] or name == "lasto.safety.gate", name
+        assert attribute_calls(tree, "_can_write") == [] or name == "lasto.safety.pcan_active", name
+    assert len(attribute_calls(sources()["lasto.safety.gate"], "_writer")) == 1
+    assert len(attribute_calls(sources()["lasto.safety.pcan_active"], "_can_write")) == 1
 
 
 def test_only_stn_port_opens_a_serial_port():
@@ -206,7 +214,7 @@ def test_every_argument_parser_disables_abbreviation():
 
 
 SAFETY_INTERNALS = {
-    "_channel", "_gate", "_link", "_transmit", "_pcan", "_functions", "_port",
+    "_channel", "_gate", "_writer", "_can_write", "_transmit", "_pcan", "_functions", "_port",
     "_write_command", "_write_stop", "_command", "_killswitch", "_call",
 }  # fmt: skip
 

@@ -11,7 +11,6 @@ from helpers import CHANNEL, HANDLE, events
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety import session as session_module
-from lasto.safety.pcan_dll import load_readonly
 from lasto.safety.reader import STATUS_INTERVAL
 from lasto.safety.session import MAX_REOPENS_PER_SESSION, REOPEN_ATTEMPTS, open_passive_session
 from lasto.sim.pytest_plugin import HardwareFirewallError
@@ -20,7 +19,7 @@ OFF, ON = pc.PCAN_PARAMETER_OFF, pc.PCAN_PARAMETER_ON
 
 
 def passive(sim, auditor):
-    return open_passive_session(CHANNEL, auditor=auditor, clock=sim.clock, pcan=load_readonly(sim.dll))
+    return open_passive_session(CHANNEL, auditor=auditor, clock=sim.clock, library=sim.dll)
 
 
 def run(session, sim, seconds=0.3):

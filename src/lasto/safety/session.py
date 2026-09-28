@@ -6,25 +6,33 @@ or anything shows up on a request ID, the kill switch trips and the session
 refuses to start. While a session is open its auditor receives every
 refusal raised anywhere in the safety core; a session that refuses to open
 logs why.
+
+The gate and the transmit binding are imported inside open_polled_session,
+so this module never carries a name that can transmit. The write function
+open_active returns goes to the gate and nowhere else.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
 from lasto.safety.audit import REFUSALS, Auditor
 from lasto.safety.clock import Clock
 from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed
+from lasto.safety.exchange import Exchange, ExchangeState
 from lasto.safety.frames import Received
-from lasto.safety.gate import Exchange, ExchangeState, Gate
 from lasto.safety.interlocks import Interlocks
 from lasto.safety.killswitch import KillSwitch, NrcMonitor
-from lasto.safety.pcan_active import ActiveChannel, TransmitPcan, open_active
 from lasto.safety.pcan_dll import ReadOnlyPcan, load_readonly
 from lasto.safety.pcan_passive import PassiveChannel, open_passive
 from lasto.safety.ratelimit import RateLimiter
 from lasto.safety.reader import Reader, Subscriber
 from lasto.safety.requests import Request
+
+if TYPE_CHECKING:
+    from lasto.safety.gate import Gate
+    from lasto.safety.pcan_active import ActiveChannel
 
 LISTEN_WINDOW = 2.0
 PUMP_INTERVAL = 0.002
@@ -156,12 +164,13 @@ def open_passive_session(
     *,
     auditor: Auditor,
     clock: Clock,
-    pcan: ReadOnlyPcan | None = None,
+    library: object | None = None,
     subscribers: Iterable[Subscriber] = (),
 ) -> PassiveSession:
+    """Open a listen-only capture on the real DLL, or on a stand-in `library` such as the simulator's."""
     REFUSALS.attach(auditor)
     try:
-        pcan = load_readonly() if pcan is None else pcan
+        pcan = load_readonly(library)
         channel = open_passive(channel_name, pcan=pcan)
     except BaseException as exc:
         _refused(auditor, "passive", channel_name, exc)
@@ -234,18 +243,25 @@ def open_polled_session(
     profile: Iterable[Request],
     auditor: Auditor,
     clock: Clock,
-    pcan: TransmitPcan | None = None,
+    library: object | None = None,
     broadcast_ids: Iterable[int] = (),
     subscribers: Iterable[Subscriber] = (),
     listen_seconds: float = LISTEN_WINDOW,
 ) -> PolledSession:
+    """Open a normal-mode capture that may send typed requests, on the real DLL or a stand-in `library`."""
+    from lasto.safety.gate import Gate
+    from lasto.safety.pcan_active import open_active
+
     REFUSALS.attach(auditor)
     channel: ActiveChannel | None = None
     try:
-        channel = open_active(channel_name, pcan=pcan)
+        broadcast = frozenset(broadcast_ids)
         killswitch = KillSwitch(auditor)
+        channel, writer = open_active(
+            channel_name, killswitch=killswitch, auditor=auditor, library=library, broadcast_ids=broadcast
+        )
         gate = Gate(
-            channel,
+            writer,
             auditor,
             clock,
             killswitch,
@@ -253,7 +269,7 @@ def open_polled_session(
             RateLimiter(),
             NrcMonitor(killswitch),
             profile=profile,
-            broadcast_ids=broadcast_ids,
+            broadcast_ids=broadcast,
         )
         reader = Reader(channel, clock, killswitch=killswitch, subscribers=(gate.on_frame, *subscribers))
         session = PolledSession(channel, gate, reader, killswitch, auditor, clock)

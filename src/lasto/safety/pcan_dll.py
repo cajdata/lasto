@@ -1,18 +1,20 @@
 """Read-only ctypes binding for PEAK's PCANBasic.dll.
 
-The binding looks up only the functions in READONLY_FUNCTIONS. It never looks
-up CAN_Write (or the FD and XL variants), CAN_Reset (can hard-reset the
+The binding looks up only the functions in READONLY_FUNCTIONS, each by a
+name written out in bind_readonly, never a computed one. It never looks up
+CAN_Write (or the FD and XL variants), CAN_Reset (can hard-reset the
 controller), or CAN_FilterMessages (resets the controller), and it keeps no
 reference to the DLL after binding. Code holding a ReadOnlyPcan or a
-PcanChannel therefore has no path to a transmit function. The transmit
-binding is in pcan_active.py, which only a polled session uses.
+PcanChannel therefore has no path to a transmit function. The one CAN_Write
+lookup is in pcan_active.py, which only a polled session uses.
 """
 
 from __future__ import annotations
 
 import ctypes
 import os
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety.audit import refuse
@@ -50,14 +52,23 @@ def load_library() -> object:
         raise InterfaceError(f"could not load {path}: {exc}") from exc
 
 
-def bind(library: object, names: Iterable[str]) -> dict[str, Callable[..., int]]:
-    return {name: getattr(library, name) for name in names}
+def bind_readonly(library: Any) -> dict[str, Callable[..., int]]:
+    """Look up exactly the read-only functions, in the order of READONLY_FUNCTIONS."""
+    return {
+        "CAN_Initialize": library.CAN_Initialize,
+        "CAN_Uninitialize": library.CAN_Uninitialize,
+        "CAN_GetValue": library.CAN_GetValue,
+        "CAN_SetValue": library.CAN_SetValue,
+        "CAN_GetStatus": library.CAN_GetStatus,
+        "CAN_Read": library.CAN_Read,
+        "CAN_GetErrorText": library.CAN_GetErrorText,
+    }
 
 
 def load_readonly(library: object | None = None) -> ReadOnlyPcan:
     """Bind the read-only subset, from the real DLL or from a stand-in such as the simulator."""
     source = load_library() if library is None else library
-    return ReadOnlyPcan(bind(source, READONLY_FUNCTIONS))
+    return ReadOnlyPcan(bind_readonly(source))
 
 
 class ReadOnlyPcan:

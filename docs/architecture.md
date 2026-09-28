@@ -106,7 +106,14 @@ python-can 4.6.1's `PcanBus` sets listen-only before `CAN_Initialize`, but it ig
 
 ### 3.2 PCAN polled
 
-`pcan_active.py` is the only module that binds `CAN_Write`. The gate holds the write function and never returns it. Frames are always 8 bytes, padded with a byte confirmed from Creader captures.
+`pcan_active.py` is the only module that binds `CAN_Write`, and it looks it up once, by name in code. `open_active` returns two objects:
+
+- an `ActiveChannel`, which only reads (and switches to listen-only after a kill). The reader gets this one.
+- a `Writer`, the only object that holds `CAN_Write`. The session hands it to the gate and keeps no other reference.
+
+The `Writer` doesn't trust its caller. For every frame it re-runs the policy's full stateless check (`policy.check_frame`: ID allowlist, broadcast IDs, ISO-TP parse, service allowlist and never-list, sensitive ECUs, canonical flow control on an approved ECU's request ID), refuses a frame that isn't the kind the caller named, checks the kill switch, and writes the audit record, all before `CAN_Write`. So even a direct call can't send a denied service or use a non-allowlisted ID. The checks that need state stay in the gate: flow control only for a first frame that is waiting for it, the interlocks, and the rate limits.
+
+`session.py` imports the gate and `pcan_active` inside `open_polled_session`, so no public module carries a name that can transmit. Frames are always 8 bytes, padded with a byte confirmed from Creader captures.
 
 ### 3.3 The gate (rules 2, 3, 5, 6, 8, 9, 10, 11)
 
@@ -246,13 +253,16 @@ A K-line session needs an init sequence. Fast init and 5-baud init both end in S
 ## 7. How the tests prove the rules
 
 - **Unit tests** for every allowlist decision: IDs, services, the never-list, addressing modes, FC conditions, STN commands (including normalization tricks: case, spaces, backspace, hex-only lines, empty lines).
-- **Hypothesis** fuzzes CAN IDs, payloads, addressing, typed request sequences, and injected faults through the gate against `FakePcanDll`, asserting that every frame reaching `CAN_Write` satisfies the policy. It does the same for strings reaching the fake serial port.
+- **Hypothesis** fuzzes CAN IDs, payloads, addressing, typed request sequences, and injected faults through the gate against `FakePcanDll`, asserting that every frame reaching `CAN_Write` satisfies the policy. It fuzzes the `Writer` directly too, around the gate. It does the same for strings reaching the fake serial port.
 - **Structural tests** read the source:
-  - only `safety/pcan_active.py` names `CAN_Write`
+  - only `safety/pcan_active.py` names `CAN_Write`, and only the gate calls the `Writer`
   - only `safety/stn_port.py` opens or writes serial
   - nothing outside `lasto.safety` imports the DLL bindings or pyserial
+  - code outside the safety core uses only its public API. Names are resolved through every re-export and attribute chain back to the module that defines them (`tests/scan.py`).
+  - no code in `src/` uses a deliberate route around the core's guards (ctypes, gc, inspect, importlib, `sys.modules`, `vars`/`globals`/`setattr`/`delattr`, `getattr` with a private or computed name, attribute-guard dunders, or, outside the safety core, another object's private attributes), except an explicit exemption list in `tests/safety/test_structure_reach.py`. Each new exemption is its own commit, approved by the owner.
   - passive modules contain no write reference
   - every argparse parser has `allow_abbrev=False`
+- **Reachability tests** walk every attribute path from a live polled session: the raw `CAN_Write` is reachable only inside the `Writer`, and the reader's channel can't write.
 - **Hardware firewall** (`tests/conftest.py`, autouse): loading `PCANBasic.dll` or opening a real serial port raises.
 - **Coverage:** `python -m pytest` runs branch coverage on `lasto.safety` and fails below 100 %.
 - **Guardrail tests:** a table of commands and tool calls through `.claude/hooks/hardware_guard.py`.
@@ -267,8 +277,10 @@ src/lasto/
     policy.py                # service allowlist, never-list, STN command allowlist (frozen)
     ecus.py                  # approved CAN IDs and K-line addresses with kind and evidence
     requests.py  isotp.py  gate.py  ratelimit.py  killswitch.py  interlocks.py  audit.py  errors.py
-    pcan_dll.py              # ctypes: load_readonly() / load_transmit()
-    pcan_passive.py  pcan_active.py  stn_port.py  reader.py
+    pcan_dll.py              # ctypes: load_readonly(), the read-only binding
+    pcan_active.py           # open_active() -> (ActiveChannel, Writer); the one CAN_Write lookup
+    exchange.py              # Exchange and ExchangeState, the public result of a request
+    pcan_passive.py  stn_port.py  reader.py
   capture/  protocol/  storage/  decode/  mapping/  polling/  snapshot/  identify/  discover/
   analysis/  report/  export/  view/
   sim/                       # FakePcanDll, FakeStnPort, vehicle model, ECUs, Creader, violations
