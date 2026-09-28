@@ -13,6 +13,7 @@ import threading
 from ctypes import wintypes
 
 from lasto.safety._frozen import SealedType, freeze
+from lasto.safety.audit import refuse
 from lasto.safety.errors import InterfaceError
 from lasto.safety.killswitch import KILL_SWITCH
 
@@ -42,9 +43,16 @@ class HotkeyKillSwitch(metaclass=SealedType):
         self._thread = threading.Thread(target=self._run, name="lasto-kill-hotkey", daemon=True)
         self._thread.start()
         if not self._ready.wait(self._start_timeout):
-            raise InterfaceError("the kill-switch hotkey thread didn't start")
+            refuse(
+                InterfaceError("the kill-switch hotkey thread didn't start"),
+                transport="hotkey",
+                request="register Ctrl+Alt+K",
+                reason="hotkey_not_started",
+            )
         if self._error is not None:
-            raise InterfaceError(self._error)
+            refuse(
+                InterfaceError(self._error), transport="hotkey", request="register Ctrl+Alt+K", reason="hotkey_not_registered"
+            )
 
     def stop(self) -> None:
         thread = self._thread

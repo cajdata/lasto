@@ -31,7 +31,7 @@ from lasto.safety import policy
 from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import Auditor, refuse
 from lasto.safety.clock import Clock
-from lasto.safety.errors import InterfaceError, SafetyViolation
+from lasto.safety.errors import SafetyViolation
 from lasto.safety.killswitch import KILL_SWITCH
 from lasto.safety.pcan_dll import (
     PcanChannel,
@@ -40,6 +40,7 @@ from lasto.safety.pcan_dll import (
     check_available,
     check_driver,
     load_library,
+    refuse_interface,
 )
 from lasto.safety.ratelimit import CEILING_FRAMES, CEILING_WINDOW
 
@@ -119,7 +120,11 @@ class Writer(metaclass=SealedType):
             message.DATA[index] = byte
         status = int(self._can_write(ctypes.c_uint16(self._handle), ctypes.pointer(message))) & 0xFFFFFFFF
         if status != pc.PCAN_ERROR_OK:
-            raise InterfaceError(f"CAN_Write failed on {self._channel_name}: {self._error_text(status)}")
+            refuse_interface(
+                "can_write_failed",
+                f"CAN_Write failed on {self._channel_name}: {self._error_text(status)}",
+                policy.frame_text(can_id, data),
+            )
 
 
 def _clear_listen_only(set_value: Callable[..., int], handle: int) -> int:
@@ -151,15 +156,21 @@ def open_active(
     check_available(pcan, handle, channel_name)
     status = _clear_listen_only(functions["CAN_SetValue"], handle)
     if status != pc.PCAN_ERROR_OK:
-        raise InterfaceError(f"could not clear listen-only on {channel_name}: {pcan.error_text(status)}")
+        refuse_interface(
+            "listen_only_not_cleared",
+            f"could not clear listen-only on {channel_name}: {pcan.error_text(status)}",
+            channel_name,
+        )
     status = pcan.initialize(handle, pc.PCAN_BAUD_500K)
     if status != pc.PCAN_ERROR_OK:
-        raise InterfaceError(f"could not initialize {channel_name}: {pcan.error_text(status)}")
+        refuse_interface(
+            "initialize_failed", f"could not initialize {channel_name}: {pcan.error_text(status)}", channel_name
+        )
     channel = ActiveChannel(pcan, handle, channel_name, api_version)
     try:
         status, value = pcan.get_u32(handle, pc.PCAN_LISTEN_ONLY)
         if status != pc.PCAN_ERROR_OK or value != pc.PCAN_PARAMETER_OFF:
-            raise InterfaceError(f"{channel_name} did not come up in normal mode")
+            refuse_interface("not_in_normal_mode", f"{channel_name} did not come up in normal mode", channel_name)
         channel.enable_reporting()
         writer = Writer(
             source.CAN_Write,

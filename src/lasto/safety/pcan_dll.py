@@ -15,7 +15,7 @@ import ctypes
 import os
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
-from typing import Any
+from typing import Any, NoReturn
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety._frozen import SealedType, freeze
@@ -52,9 +52,14 @@ def hardware_firewall_installed() -> bool:
     return getattr(ctypes.CDLL.__init__, "lasto_hardware_firewall", False) is True
 
 
+def refuse_interface(reason: str, detail: str, request: str = "") -> NoReturn:
+    """Refuse (audited) to open or use a PCAN channel: the driver, the adapter, or the channel's state won't do."""
+    refuse(InterfaceError(detail), transport="pcan", request=request, reason=reason)
+
+
 def require_64_bit(pointer_bytes: int) -> None:
     if pointer_bytes != 8:
-        raise InterfaceError("lasto needs 64-bit Python to load the 64-bit PCANBasic.dll")
+        refuse_interface("python_not_64_bit", "lasto needs 64-bit Python to load the 64-bit PCANBasic.dll")
 
 
 def load_library() -> object:
@@ -64,7 +69,7 @@ def load_library() -> object:
     try:
         return ctypes.WinDLL(path)
     except OSError as exc:
-        raise InterfaceError(f"could not load {path}: {exc}") from exc
+        refuse_interface("dll_not_loaded", f"could not load {path}: {exc}")
 
 
 def bind_readonly(library: Any) -> dict[str, Callable[..., int]]:
@@ -195,9 +200,13 @@ def check_driver(pcan: ReadOnlyPcan) -> str:
     """Refuse PCAN-Basic versions older than 4.7.0, or 5.0.0. Returns the version text."""
     status, text = pcan.get_text(pc.PCAN_NONEBUS, pc.PCAN_API_VERSION)
     if status != pc.PCAN_ERROR_OK:
-        raise InterfaceError(f"could not read the PCAN-Basic version: {pcan.error_text(status)}")
+        refuse_interface(
+            "driver_version_unreadable", f"could not read the PCAN-Basic version: {pcan.error_text(status)}"
+        )
     if not pc.api_version_supported(pc.parse_api_version(text)):
-        raise InterfaceError(f"PCAN-Basic {text!r} isn't supported; install 4.7.0 or later, but not 5.0.0")
+        refuse_interface(
+            "driver_not_supported", f"PCAN-Basic {text!r} isn't supported; install 4.7.0 or later, but not 5.0.0"
+        )
     return text
 
 
@@ -205,11 +214,13 @@ def check_available(pcan: ReadOnlyPcan, handle: int, name: str) -> None:
     """Refuse a channel another program holds: its controller may already be running in normal mode."""
     status, condition = pcan.get_u32(handle, pc.PCAN_CHANNEL_CONDITION)
     if status != pc.PCAN_ERROR_OK:
-        raise InterfaceError(f"could not check {name}: {pcan.error_text(status)}")
+        refuse_interface("channel_condition_unreadable", f"could not check {name}: {pcan.error_text(status)}", name)
     if condition != pc.PCAN_CHANNEL_AVAILABLE:
-        raise InterfaceError(
+        refuse_interface(
+            "channel_not_available",
             f"{name} isn't available (condition {condition}); make sure the adapter is plugged in "
-            "and close PCAN-View or any other program using it"
+            "and close PCAN-View or any other program using it",
+            name,
         )
 
 
@@ -260,8 +271,10 @@ class PcanChannel(metaclass=SealedType):
         for parameter in (pc.PCAN_ALLOW_ERROR_FRAMES, pc.PCAN_ALLOW_STATUS_FRAMES):
             status = self._pcan.set_value(self._handle, parameter, pc.PCAN_PARAMETER_ON)
             if status != pc.PCAN_ERROR_OK:
-                raise InterfaceError(
-                    f"could not enable error and status reporting on {self._name}: {self._pcan.error_text(status)}"
+                refuse_interface(
+                    "reporting_not_enabled",
+                    f"could not enable error and status reporting on {self._name}: {self._pcan.error_text(status)}",
+                    self._name,
                 )
 
     def describe(self) -> dict[str, str]:

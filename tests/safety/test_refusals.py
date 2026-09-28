@@ -1,21 +1,22 @@
 """Rule 11: every refusal is audited where it is raised, exactly once."""
 
+import ctypes
 import dataclasses
 
 import pytest
 from helpers import CHANNEL, HANDLE, GateHarness, events, open_polled
 
-from lasto.safety import isotp
+from lasto.safety import isotp, pcan_dll
 from lasto.safety import pcan_constants as pc
 from lasto.safety import requests as rq
 from lasto.safety import stn_policy
 from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink, RefusalLog, refuse
 from lasto.safety.ecus import ENGINE
-from lasto.safety.errors import KillSwitchTripped, PassiveModeUnconfirmed, SafetyViolation
+from lasto.safety.errors import InterfaceError, KillSwitchTripped, PassiveModeUnconfirmed, SafetyViolation
 from lasto.safety.interlocks import Interlocks
 from lasto.safety.killswitch import KillSwitch
 from lasto.safety.pcan_active import open_active
-from lasto.safety.pcan_dll import load_readonly
+from lasto.safety.pcan_dll import PcanChannel, load_readonly
 from lasto.safety.pcan_passive import open_passive
 from lasto.safety.ratelimit import PURPOSE_RATES, RateLimiter
 from lasto.safety.requests import DtcKind, Purpose
@@ -132,6 +133,71 @@ def test_passive_open_refusals_are_audited(clock):
     with pytest.raises(PassiveModeUnconfirmed):
         open_passive(CHANNEL, pcan=load_readonly(dll))
     assert [r["reason"] for r in events(sink, "rejected")] == ["listen_only_not_set", "listen_only_not_confirmed"]
+
+
+def _faulty(**faults):
+    dll = FakePcanDll(api_version=faults.pop("api_version", "4.7.0.11"))
+    for name, value in faults.items():
+        if name in ("fail_get", "fail_set"):
+            getattr(dll, name).update(value)
+        elif name == "condition":
+            dll.channel(HANDLE).condition = value
+        else:
+            setattr(dll, name, value)
+    return dll
+
+
+def _reporting_on_a_bare_channel(dll):
+    pcan = load_readonly(dll)
+    pcan.initialize(HANDLE, pc.PCAN_BAUD_500K)
+    PcanChannel(pcan, HANDLE, CHANNEL, "4.7.0.11").enable_reporting()
+
+
+def _active(dll):
+    clock = FakeClock()
+    return open_active(CHANNEL, library=dll, auditor=Auditor(MemoryAuditSink(), clock), clock=clock)
+
+
+def _failed_write(dll):
+    _channel, writer = _active(dll)
+    dll.write_status = pc.PCAN_ERROR_XMTFULL
+    writer(0x7E0, bytes.fromhex("02010C0000000000"), purpose="test", kind="request")
+
+
+# Finding #7: every refusal to open or use a PCAN channel. (what, faults, action, audited reason)
+INTERFACE_REFUSALS = [
+    ("32-bit Python", {}, lambda dll: pcan_dll.require_64_bit(4), "python_not_64_bit"),
+    ("driver version unreadable", {"fail_get": {pc.PCAN_API_VERSION: pc.PCAN_ERROR_NODRIVER}}, lambda dll: pcan_dll.check_driver(load_readonly(dll)), "driver_version_unreadable"),
+    ("driver not supported", {"api_version": "5.0.0.1"}, lambda dll: pcan_dll.check_driver(load_readonly(dll)), "driver_not_supported"),
+    ("channel condition unreadable", {"fail_get": {pc.PCAN_CHANNEL_CONDITION: pc.PCAN_ERROR_ILLHW}}, lambda dll: pcan_dll.check_available(load_readonly(dll), HANDLE, CHANNEL), "channel_condition_unreadable"),
+    ("channel in use", {"condition": pc.PCAN_CHANNEL_PCANVIEW}, lambda dll: pcan_dll.check_available(load_readonly(dll), HANDLE, CHANNEL), "channel_not_available"),
+    ("error reporting refused", {"fail_set": {pc.PCAN_ALLOW_ERROR_FRAMES: pc.PCAN_ERROR_ILLPARAMVAL}}, _reporting_on_a_bare_channel, "reporting_not_enabled"),
+    ("passive initialize failed", {"initialize_status": pc.PCAN_ERROR_ILLHW}, lambda dll: open_passive(CHANNEL, pcan=load_readonly(dll)), "initialize_failed"),
+    ("polled listen-only not cleared", {"fail_set": {pc.PCAN_LISTEN_ONLY: pc.PCAN_ERROR_ILLPARAMVAL}}, _active, "listen_only_not_cleared"),
+    ("polled initialize failed", {"initialize_status": pc.PCAN_ERROR_ILLHW}, _active, "initialize_failed"),
+    ("polled channel not in normal mode", {"readback_listen_only": pc.PCAN_PARAMETER_ON}, _active, "not_in_normal_mode"),
+    ("a write the driver refused", {}, _failed_write, "can_write_failed"),
+]
+
+
+@pytest.mark.parametrize(("what", "faults", "action", "reason"), INTERFACE_REFUSALS, ids=[r[0] for r in INTERFACE_REFUSALS])
+def test_every_interface_refusal_is_audited_once(clock, what, faults, action, reason):
+    sink = attached(clock)
+    with pytest.raises(InterfaceError):
+        action(_faulty(**faults))
+    refusals = events(sink, "rejected")
+    assert [(r["reason"], r["transport"]) for r in refusals] == [(reason, "pcan")]
+
+
+def test_a_dll_that_will_not_load_is_audited(clock, monkeypatch):
+    def missing(path):
+        raise OSError("not found")
+
+    monkeypatch.setattr(ctypes, "WinDLL", missing)
+    sink = attached(clock)
+    with pytest.raises(InterfaceError, match="could not load"):
+        pcan_dll.load_library()
+    assert [r["reason"] for r in events(sink, "rejected")] == ["dll_not_loaded"]
 
 
 def test_failed_session_opens_are_logged(clock, auditor, sink):

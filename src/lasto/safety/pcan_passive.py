@@ -12,8 +12,15 @@ from __future__ import annotations
 from lasto.safety import pcan_constants as pc
 from lasto.safety._frozen import freeze
 from lasto.safety.audit import refuse
-from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed
-from lasto.safety.pcan_dll import PcanChannel, ReadOnlyPcan, check_available, check_driver, load_readonly
+from lasto.safety.errors import PassiveModeUnconfirmed
+from lasto.safety.pcan_dll import (
+    PcanChannel,
+    ReadOnlyPcan,
+    check_available,
+    check_driver,
+    load_readonly,
+    refuse_interface,
+)
 
 
 class PassiveChannel(PcanChannel):
@@ -47,7 +54,9 @@ def open_passive(channel_name: str, *, pcan: ReadOnlyPcan | None = None) -> Pass
         )
     status = pcan.initialize(handle, pc.PCAN_BAUD_500K)
     if status != pc.PCAN_ERROR_OK:
-        raise InterfaceError(f"could not initialize {channel_name}: {pcan.error_text(status)}")
+        refuse_interface(
+            "initialize_failed", f"could not initialize {channel_name}: {pcan.error_text(status)}", channel_name
+        )
     channel = PassiveChannel(pcan, handle, channel_name, api_version)
     try:
         if not channel.listen_only():

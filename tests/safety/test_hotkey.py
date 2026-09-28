@@ -4,7 +4,9 @@ import queue
 import threading
 
 import pytest
+from helpers import events
 
+from lasto.safety.audit import REFUSALS
 from lasto.safety.errors import InterfaceError
 from lasto.safety.hotkey import HOTKEY_ID, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, VK_K, WM_HOTKEY, WM_QUIT, HotkeyKillSwitch
 from lasto.safety.killswitch import KILL_SWITCH
@@ -67,15 +69,18 @@ def test_stop_before_start_is_harmless():
     HotkeyKillSwitch(user32=FakeUser32(), kernel32=FakeKernel32()).stop()
 
 
-def test_refuses_when_the_hotkey_is_taken():
+def test_refuses_when_the_hotkey_is_taken(auditor, sink):
+    REFUSALS.attach(auditor)
     user32 = FakeUser32(register_ok=False)
     listener = HotkeyKillSwitch(user32=user32, kernel32=FakeKernel32())
     with pytest.raises(InterfaceError, match="Ctrl\\+Alt\\+K"):
         listener.start()
     assert user32.unregistered == []
+    assert [(r["reason"], r["transport"]) for r in events(sink, "rejected")] == [("hotkey_not_registered", "hotkey")]
 
 
-def test_refuses_when_the_thread_does_not_start():
+def test_refuses_when_the_thread_does_not_start(auditor, sink):
+    REFUSALS.attach(auditor)
     hold = threading.Event()
     user32 = FakeUser32(hold_register=hold)
     listener = HotkeyKillSwitch(user32=user32, kernel32=FakeKernel32(), start_timeout=0.05)
@@ -83,6 +88,7 @@ def test_refuses_when_the_thread_does_not_start():
         listener.start()
     hold.set()
     listener.stop()
+    assert [(r["reason"], r["transport"]) for r in events(sink, "rejected")] == [("hotkey_not_started", "hotkey")]
 
 
 def test_defaults_to_the_real_windows_libraries():
