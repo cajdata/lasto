@@ -26,7 +26,7 @@ Status: **Phase 0 approved 2026-09-26. Phase 1 approved 2026-09-28,** with an in
 - **CLI:** `log` lists sessions and the audit log. `verify` confirms solver candidates into verified definitions.
 - **Sessions:** in armed mode, a passive session ends automatically after 60 s of bus silence following key-off, and a new passive session starts automatically when traffic resumes. A polled session is never started automatically.
 - **Data:** `%LOCALAPPDATA%\lasto`. The disk budget is set after the Phase 2 storage estimate.
-- **Tooling:** uv (you install it), Python 3.13. Until uv is installed, development uses a plain `.venv` with the pinned dev group from `pyproject.toml`.
+- **Tooling:** uv, Python 3.13. Since Phase 1's approval (2026-09-28), uv manages `.venv` from a hashed `uv.lock` (§10).
 - **Git:** commit locally; push after you approve each phase.
 
 **Phase 1 review (2026-09-27):**
@@ -299,7 +299,7 @@ What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr
   - every argparse parser has `allow_abbrev=False`
 - **Reachability tests** walk every attribute path from a live polled session: the raw `CAN_Write` is reachable only inside the `Writer`, and the reader's channel can't write.
 - **Hardware firewall** (`lasto.sim.pytest_plugin`, loaded by the test command): loading `PCANBasic.dll` or opening a real serial port raises, through pyserial or by name (its own audit hook, separate from the safety core's).
-- **Coverage:** `python -m pytest` runs branch coverage on `lasto.safety` and fails below 100 %.
+- **Coverage:** `uv run pytest` runs branch coverage on `lasto.safety` and fails below 100 %.
 - **Guardrail tests:** a table of commands and tool calls through `.claude/hooks/hardware_guard.py`.
 
 ## 8. File layout
@@ -357,7 +357,7 @@ Each dependency arrives in the phase that first needs it, pinned exactly with ha
 - python-can for bus access (§3.1).
 - can-isotp: requests are always single-frame and the receive side is small, so a minimal ISO-TP inside the safety core is easier to prove than wrapping a library that transmits on its own.
 
-**Tooling proposal:** uv 0.12.19 manages Python 3.12 and a hashed `uv.lock`. python.org's last Windows installer for 3.12 is 3.12.10; uv installs current 3.12.x builds.
+**Tooling:** uv 0.12.19 manages `.venv` from `uv.lock`, which pins every dependency, transitive ones included, with sha256 hashes. `.python-version` pins Python 3.13. `uv sync --locked` builds the environment, and `uv run pytest` runs the tests.
 
 Offline install on the truck laptop:
 1. `uv export` a hashed requirements file.
@@ -365,7 +365,7 @@ Offline install on the truck laptop:
 3. Copy it with uv and a Python archive to the laptop.
 4. Install with `--offline --no-index --require-hashes`.
 
-*(open)*
+*(open: the offline install)*
 
 ## 11. Phase 1 scope (built)
 
@@ -414,4 +414,3 @@ The bench tests are the only time either adapter transmits on purpose, and only 
 | 7 | **K-line polling:** decide on 0x81 StartCommunication and running without 0x3E keep-alives. |
 | accepted (Low) | **A dataclass's `__setstate__` isn't guarded at runtime:** a frozen, slotted dataclass's `__setstate__` (which `copy` uses) rewrites an existing instance in place, as a second `__init__` did before P1. Guarding it would need the `__setstate__` attribute in `_frozen`, a new exemption. Accepted under the threat model: the scanner bans `__setstate__` in `src/`, so reaching it takes deliberate code, and since P1 the policy and the gate read an ECU's route, so a rewritten entry can't move a frame. |
 | accepted (Low) | **The interlocks read an entry's own kind:** rule 10's discovery exclusion, and the check that a probe goes only to the engine, read `target.kind` rather than the route, because their tests use unapproved SRS and immobilizer entries, which have no route. Accepted under the threat model: the gate refuses an unapproved entry before the interlocks run, rewriting an approved one takes deliberate code the scanner bans, and the policy's frame check still allows only DTC reads to a sensitive ECU, from its route. |
-| after approval | Switch to uv with a hashed lock file (all dependencies, including transitive ones, pinned). |
