@@ -1,6 +1,9 @@
 """pytest plugin: the hardware firewall and the simulator violation check.
 
-Loaded by tests/conftest.py. The firewall is installed when this module is
+Loaded only by this repo's own pytest configuration (`-p lasto.sim.pytest_plugin`
+in pyproject.toml's addopts). It is not a pytest11 entry point, so installing
+lasto never changes anyone else's test runs; tests/test_packaging.py holds
+that. The firewall is installed when this module is
 imported, before any test module: loading PCANBasic.dll through ctypes, or
 opening a serial port through pyserial, raises HardwareFirewallError. Any
 test that leaves a simulator violation behind fails, and so does the run.
