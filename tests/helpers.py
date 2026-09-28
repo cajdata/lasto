@@ -22,6 +22,16 @@ HANDLE = 0x51
 LOGGING_RPM_SPEED = read_pid([0x0C, 0x0D], purpose=Purpose.LOGGING, ecu=ecus.ENGINE)
 
 
+class LooksLikeTheEngineId(int):
+    """An ID crafted to compare equal to 0x7E0 while ctypes would write its real value."""
+
+    def __eq__(self, other: object) -> bool:
+        return other == 0x7E0 or int.__eq__(self, other)
+
+    def __hash__(self) -> int:
+        return hash(0x7E0)
+
+
 def events(sink: MemoryAuditSink, name: str) -> list[dict[str, object]]:
     return [record for record in sink.records if record["event"] == name]
 

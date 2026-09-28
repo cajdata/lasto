@@ -61,7 +61,9 @@ _BY_RESPONSE_ID = MappingProxyType({ecu.response_id: ecu for ecu in APPROVED_ECU
 
 
 def is_approved(ecu: object) -> bool:
-    return ecu in APPROVED_ECUS
+    """Only the table's own entries, by identity: a copy, or a look-alike whose fields merely compare equal
+    (an int subclass as its ID, say), is not approved. The gate then takes every ID from the entry itself."""
+    return any(ecu is approved for approved in APPROVED_ECUS)
 
 
 def by_request_id(can_id: int) -> Ecu | None:

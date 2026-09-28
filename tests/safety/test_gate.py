@@ -1,7 +1,7 @@
 """The transmit gate: rules 2, 3, 5-11 end to end, plus response handling and flow control."""
 
 import pytest
-from helpers import LOGGING_RPM_SPEED, GateHarness, events, frame, open_polled, park
+from helpers import LOGGING_RPM_SPEED, GateHarness, LooksLikeTheEngineId, events, frame, open_polled, park
 
 from lasto.safety import ecus
 from lasto.safety import requests as rq
@@ -164,6 +164,16 @@ def test_one_request_at_a_time(h):
 def test_unapproved_ecu_is_refused(h):
     h.park()
     refused(h.gate, rq.read_pid([0x0C], purpose=Purpose.SNAPSHOT, ecu=TRANSMISSION), "ecu_not_approved")
+
+
+@pytest.mark.parametrize("request_id", [0x7E0, "look-alike"])
+def test_only_the_approved_entry_itself_reaches_the_bus(h, request_id):
+    """Finding #4: a copy of the engine entry, or one whose ID only compares equal to 0x7E0, is refused."""
+    rid = LooksLikeTheEngineId(0x7E1) if request_id == "look-alike" else request_id
+    impostor = Ecu(ENGINE.name, ENGINE.kind, rid, ENGINE.response_id, ENGINE.ext_address, ENGINE.evidence)
+    h.park()
+    refused(h.gate, rq.read_local_id(impostor, 0x01, purpose=Purpose.SNAPSHOT), "ecu_not_approved")
+    assert h.writer.frames == []
 
 
 def test_interlocks_apply(h):

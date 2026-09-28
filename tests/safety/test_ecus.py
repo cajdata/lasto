@@ -2,6 +2,8 @@
 
 import dataclasses
 
+from helpers import LooksLikeTheEngineId
+
 from lasto.safety import ecus, policy
 from lasto.safety.ecus import ENGINE, Ecu, EcuKind
 
@@ -32,10 +34,18 @@ def test_lookups():
 
 def test_forged_entries_are_not_approved():
     assert ecus.is_approved(ENGINE)
-    assert ecus.is_approved(dataclasses.replace(ENGINE))  # equal data is the same approval
     forged = Ecu("transmission", EcuKind.TRANSMISSION, 0x7E1, 0x7E9, None, "made up")
     assert not ecus.is_approved(forged)
     assert not ecus.is_approved(0x7E0)
+
+
+def test_approval_is_by_identity_not_equality():
+    """Finding #4: only the table's own entries are approved, not copies or look-alikes."""
+    copy = dataclasses.replace(ENGINE)
+    look_alike = dataclasses.replace(ENGINE, request_id=LooksLikeTheEngineId(0x7E1))
+    assert copy == ENGINE and look_alike == ENGINE  # equal by value...
+    assert not ecus.is_approved(copy)  # ...but not the approved entry
+    assert not ecus.is_approved(look_alike)
 
 
 def test_sensitive_kinds():
