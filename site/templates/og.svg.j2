@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="{{ width }}" height="{{ height }}" viewBox="0 0 {{ width }} {{ height }}">
+<defs>
+<pattern id="h" patternUnits="userSpaceOnUse" width="{{ 4 * s }}" height="{{ 4 * s }}" patternTransform="rotate(45)"><path d="M0 0V{{ 4 * s }}" stroke="#B3261E" stroke-width="{{ 1.6 * s }}"/></pattern>
+</defs>
+<rect width="{{ width }}" height="{{ height }}" fill="#FFFFFF"/>
+{# Running head: mark, wordmark, domain, rule #}
+<g transform="translate({{ 72 * s }} {{ 40 * s }}) scale({{ 1.4 * s }})"><path d="{{ mark_path }}" fill="none" stroke="#141414" stroke-width="2.5"/>{% for x, y in mark_dots %}<circle cx="{{ x }}" cy="{{ y }}" r="2.75" fill="#141414"/>{% endfor %}</g>
+<text x="{{ 122 * s }}" y="{{ 74 * s }}" font-family="Lasto Label" font-size="{{ 38 * s }}" fill="#141414">lasto</text>
+<text x="{{ width - 72 * s }}" y="{{ 72 * s }}" font-family="Lasto Mono" font-size="{{ 22 * s }}" fill="#141414" text-anchor="end">lasto.dev</text>
+<rect x="{{ 72 * s }}" y="{{ 100 * s }}" width="{{ width - 144 * s }}" height="{{ 3 * s }}" fill="#141414"/>
+{# Stamp #}
+<rect x="{{ 72.75 * s }}" y="{{ 142 * s }}" width="{{ (stamp|length * 11.4 + 26) * s }}" height="{{ 36 * s }}" fill="none" stroke="#141414" stroke-width="{{ 1.5 * s }}"/>
+<text x="{{ 86 * s }}" y="{{ 167 * s }}" font-family="Lasto Label" font-size="{{ 19 * s }}" letter-spacing="{{ 1.4 * s }}" fill="#141414">{{ stamp|upper }}</text>
+{# Title and summary #}
+{% set ty = 250 * s %}
+{% for line in title_lines %}
+<text x="{{ 70 * s }}" y="{{ ty + loop.index0 * title_size * 1.1 }}" font-family="Lasto Head" font-size="{{ title_size }}" fill="#141414">{{ line }}</text>
+{% endfor %}
+{% set ly = ty + (title_lines|length - 1) * title_size * 1.1 + 54 * s %}
+{% for line in lede_lines %}
+<text x="{{ 72 * s }}" y="{{ ly + loop.index0 * lede_size * 1.38 }}" font-family="Lasto Text" font-size="{{ lede_size }}" fill="#4A4E53">{{ line }}</text>
+{% endfor %}
+{# Service map, polled mode #}
+{% set c = 17 * s %}{% set mx = width - 72 * s - 16 * c %}{% set my = 170 * s %}
+<text x="{{ mx }}" y="{{ my - 14 * s }}" font-family="Lasto Label" font-size="{{ 16 * s }}" letter-spacing="{{ 1 * s }}" fill="#141414">{{ polled_label }}</text>
+<text x="{{ mx + 16 * c }}" y="{{ my - 14 * s }}" font-family="Lasto Mono" font-size="{{ 17 * s }}" fill="#141414" text-anchor="end">{{ allowed|length }} of 256</text>
+<text x="{{ mx }}" y="{{ my + 16 * c + 32 * s }}" font-family="Lasto Label" font-size="{{ 16 * s }}" letter-spacing="{{ 1 * s }}" fill="#141414">PASSIVE MODE</text>
+<text x="{{ mx + 16 * c }}" y="{{ my + 16 * c + 32 * s }}" font-family="Lasto Mono" font-size="{{ 17 * s }}" fill="#141414" text-anchor="end">0 of 256</text>
+{% for r in range(16) %}{% for col in range(16) %}{% set b = r * 16 + col %}
+{% if b in allowed %}<rect x="{{ mx + col * c + 1.5 * s }}" y="{{ my + r * c + 1.5 * s }}" width="{{ c - 3 * s }}" height="{{ c - 3 * s }}" fill="#141414"/>
+{% elif b in never %}<rect x="{{ mx + col * c + 2 * s }}" y="{{ my + r * c + 2 * s }}" width="{{ c - 4 * s }}" height="{{ c - 4 * s }}" fill="url(#h)" stroke="#B3261E" stroke-width="{{ 1 * s }}"/>
+{% else %}<rect x="{{ mx + col * c + 2 * s }}" y="{{ my + r * c + 2 * s }}" width="{{ c - 4 * s }}" height="{{ c - 4 * s }}" fill="#EDEFF0"/>
+{% endif %}{% endfor %}{% endfor %}
+<rect x="{{ mx }}" y="{{ my }}" width="{{ 16 * c }}" height="{{ 16 * c }}" fill="none" stroke="#141414" stroke-width="{{ 1.5 * s }}"/>
+{# Status line #}
+<rect x="{{ 72 * s }}" y="{{ height - 96 * s }}" width="{{ width - 144 * s }}" height="{{ 1.5 * s }}" fill="#141414"/>
+<text x="{{ 72 * s }}" y="{{ height - 54 * s }}" font-family="Lasto Text" font-size="{{ 23 * s }}" fill="#141414">{{ status }}</text>
+</svg>
