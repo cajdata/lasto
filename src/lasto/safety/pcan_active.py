@@ -8,21 +8,28 @@ and to nothing else.
 
 The Writer doesn't trust its caller. For every frame it runs the policy's
 full stateless check on the exact bytes, confirms the frame is the kind the
-caller says it is, checks the kill switch, and writes the audit record before
-the frame goes out. So even a direct call can only send what the policy
-allows. The gate adds the checks that need state: flow control only for a
-first frame that is waiting for it, the interlocks, and the rate limits.
+caller says it is, checks the kill switch, holds request frames to the hard
+ceiling (rule 6: at most 20 in any second, by its own clock, across every
+caller), and writes the audit record before the frame goes out. So even a
+direct call can only send what the policy allows, no faster than the
+ceiling. The gate adds the checks that need state: flow control only for a
+first frame that is waiting for it, the interlocks, and the per-purpose rates
+and back-off. Flow control frames don't count toward the ceiling; the gate
+sends at most one per first frame.
 """
 
 from __future__ import annotations
 
 import ctypes
+import threading
+from collections import deque
 from collections.abc import Callable, Collection
 from typing import Any
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety import policy
 from lasto.safety.audit import Auditor, refuse
+from lasto.safety.clock import Clock
 from lasto.safety.errors import InterfaceError, SafetyViolation
 from lasto.safety.killswitch import KillSwitch
 from lasto.safety.pcan_dll import (
@@ -33,6 +40,7 @@ from lasto.safety.pcan_dll import (
     check_driver,
     load_library,
 )
+from lasto.safety.ratelimit import CEILING_FRAMES, CEILING_WINDOW
 
 
 class ActiveChannel(PcanChannel):
@@ -47,7 +55,10 @@ class ActiveChannel(PcanChannel):
 class Writer:
     """The one function that puts a frame on the bus. Called as writer(can_id, data, purpose=..., kind=...)."""
 
-    __slots__ = ("_auditor", "_broadcast_ids", "_can_write", "_channel_name", "_error_text", "_handle", "_killswitch")
+    __slots__ = (
+        "_auditor", "_broadcast_ids", "_can_write", "_channel_name", "_clock", "_error_text", "_handle",
+        "_killswitch", "_lock", "_recent_requests",
+    )  # fmt: skip
 
     def __init__(
         self,
@@ -57,6 +68,7 @@ class Writer:
         error_text: Callable[[int], str],
         killswitch: KillSwitch,
         auditor: Auditor,
+        clock: Clock,
         broadcast_ids: frozenset[int],
     ) -> None:
         self._can_write = can_write
@@ -65,9 +77,17 @@ class Writer:
         self._error_text = error_text
         self._killswitch = killswitch
         self._auditor = auditor
+        self._clock = clock
         self._broadcast_ids = broadcast_ids
+        self._lock = threading.Lock()
+        # When the most recent request frames were written: the ceiling's sliding window.
+        self._recent_requests: deque[float] = deque(maxlen=CEILING_FRAMES)
 
     def __call__(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
+        with self._lock:  # one frame at a time, so concurrent callers can't slip past the ceiling together
+            self._write(can_id, data, purpose=purpose, kind=kind)
+
+    def _write(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
         text = policy.frame_text(can_id, data)
         checked = policy.check_frame(can_id, data, broadcast_ids=self._broadcast_ids)
         if kind != checked:
@@ -77,7 +97,19 @@ class Writer:
                 request=text,
             )
         self._killswitch.check(request=text)
+        now = self._clock.monotonic()
+        recent = self._recent_requests
+        if kind == "request" and len(recent) == CEILING_FRAMES and now - recent[0] < CEILING_WINDOW:
+            refuse(
+                SafetyViolation(
+                    "request_ceiling", f"{CEILING_FRAMES} request frames in the last {CEILING_WINDOW:g} s already"
+                ),
+                transport="pcan",
+                request=text,
+            )
         self._auditor.transmit(transport="pcan", can_id=can_id, data=data, purpose=purpose, kind=kind)
+        if kind == "request":
+            recent.append(now)  # counted once recorded, whether or not CAN_Write then succeeds
         message = pc.TPCANMsg()
         message.ID = can_id
         message.MSGTYPE = pc.PCAN_MESSAGE_STANDARD
@@ -106,6 +138,7 @@ def open_active(
     *,
     killswitch: KillSwitch,
     auditor: Auditor,
+    clock: Clock,
     library: object | None = None,
     broadcast_ids: Collection[int] = frozenset(),
 ) -> tuple[ActiveChannel, Writer]:
@@ -129,7 +162,14 @@ def open_active(
             raise InterfaceError(f"{channel_name} did not come up in normal mode")
         channel.enable_reporting()
         writer = Writer(
-            source.CAN_Write, handle, channel_name, pcan.error_text, killswitch, auditor, frozenset(broadcast_ids)
+            source.CAN_Write,
+            handle,
+            channel_name,
+            pcan.error_text,
+            killswitch,
+            auditor,
+            clock,
+            frozenset(broadcast_ids),
         )
     except BaseException:
         channel.close()

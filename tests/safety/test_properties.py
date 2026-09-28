@@ -106,7 +106,7 @@ def test_fuzzed_frames_straight_into_the_write_function(can_id, data, kind):
     auditor = Auditor(sink, clock)
     REFUSALS.attach(auditor)
     dll = FakePcanDll()
-    _channel, writer = open_active(CHANNEL, library=dll, killswitch=KillSwitch(), auditor=auditor)
+    _channel, writer = open_active(CHANNEL, library=dll, killswitch=KillSwitch(), auditor=auditor, clock=clock)
     refused = False
     with VIOLATIONS.expect() as oracle:
         try:
@@ -118,7 +118,40 @@ def test_fuzzed_frames_straight_into_the_write_function(can_id, data, kind):
     assert refused == (dll.writes == [])
     assert len(refusals(sink)) == (1 if refused else 0)
     assert len([r for r in sink.records if r["event"] == "transmit"]) == len(dll.writes)  # audited before writing
-    # The write function keeps no state, so whether a first frame is waiting for flow control is the gate's check.
+    # The write function doesn't track first frames, so whether one is waiting for flow control is the gate's check.
+    assert all(item.startswith("flow control no ECU asked for") for item in oracle)
+
+
+@given(steps=st.lists(st.tuples(st.floats(0, 0.15), st.sampled_from(["request", "flow_control"])), max_size=90))
+def test_no_second_ever_holds_more_than_20_requests_from_the_write_function(steps):
+    """The write function's own ceiling, from the spec: 20 requests per second. It refuses only when full."""
+    REFUSALS.reset()
+    clock = FakeClock()
+    sink = MemoryAuditSink()
+    auditor = Auditor(sink, clock)
+    REFUSALS.attach(auditor)
+    dll = FakePcanDll()
+    _channel, writer = open_active(CHANNEL, library=dll, killswitch=KillSwitch(), auditor=auditor, clock=clock)
+    sent: list[float] = []
+    flow_controls = 0
+    with VIOLATIONS.expect() as oracle:  # unsolicited flow control on purpose (see above)
+        for gap, kind in steps:
+            clock.advance(gap)
+            now = clock.monotonic()
+            in_last_second = sum(1 for t in sent if now - t < 1.0)
+            try:
+                writer(0x7E0, bytes.fromhex("02010C0000000000") if kind == "request" else FC, purpose="fuzz", kind=kind)
+            except SafetyViolation:
+                assert (kind, in_last_second) == ("request", 20)  # refused only at the ceiling
+                continue
+            if kind == "request":
+                assert in_last_second < 20
+                sent.append(now)
+            else:
+                flow_controls += 1
+    assert len(dll.writes) == len(sent) + flow_controls
+    for i, start in enumerate(sent):
+        assert sum(1 for t in sent[i:] if t - start < 1.0) <= 20
     assert all(item.startswith("flow control no ECU asked for") for item in oracle)
 
 

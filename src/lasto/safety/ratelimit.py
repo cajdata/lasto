@@ -3,6 +3,13 @@
 Every purpose has its own rate, none of which may exceed the ceiling, and all
 requests together are also held to the ceiling. A busy-repeat negative
 response (NRC 0x21) adds an exponential back-off.
+
+The write function enforces the ceiling again on its own (at most
+CEILING_FRAMES request frames in any CEILING_WINDOW), measured with its own
+clock readings. So the gate's pacing stays strictly under it: the shared
+spacing is counted from the end of each write and carries PACING_MARGIN, or
+logging flat out would meet the write function's limit exactly and be refused
+now and then by rounding or scheduling jitter.
 """
 
 from __future__ import annotations
@@ -11,6 +18,13 @@ from lasto.safety.audit import refuse
 from lasto.safety.requests import Purpose
 
 HARD_CEILING_PER_SECOND = 20.0
+
+# The write function's backstop: request frames allowed in any window of this many seconds.
+CEILING_WINDOW = 1.0
+CEILING_FRAMES = int(HARD_CEILING_PER_SECOND * CEILING_WINDOW)
+
+# Added to the gate's shared spacing, so its fastest pace (19.6 per second) never meets the backstop.
+PACING_MARGIN = 0.001
 
 PURPOSE_RATES = {
     Purpose.LOGGING: 20.0,
@@ -47,7 +61,8 @@ class RateLimiter:
         return max(0.0, self._next_any - now, self._next[purpose] - now, self._backoff_until - now)
 
     def commit(self, purpose: Purpose, now: float) -> None:
-        self._next_any = now + 1.0 / HARD_CEILING_PER_SECOND
+        """Record a request whose write finished at `now`."""
+        self._next_any = now + 1.0 / HARD_CEILING_PER_SECOND + PACING_MARGIN
         self._next[purpose] = now + self._interval[purpose]
 
     def backoff(self, now: float) -> None:

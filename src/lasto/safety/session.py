@@ -258,7 +258,7 @@ def open_polled_session(
         broadcast = frozenset(broadcast_ids)
         killswitch = KillSwitch(auditor)
         channel, writer = open_active(
-            channel_name, killswitch=killswitch, auditor=auditor, library=library, broadcast_ids=broadcast
+            channel_name, killswitch=killswitch, auditor=auditor, clock=clock, library=library, broadcast_ids=broadcast
         )
         gate = Gate(
             writer,

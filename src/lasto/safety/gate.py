@@ -161,7 +161,7 @@ class Gate:
             self._clock.sleep(wait)
             now = self._clock.monotonic()
         self._transmit(can_id, data, purpose=request.purpose.value, kind="request")
-        self._limiter.commit(request.purpose, now)
+        self._limiter.commit(request.purpose, self._clock.monotonic())  # spacing counts from the end of the write
         exchange = Exchange(request, can_id, sent_at=now, deadline=now + P2_TIMEOUT)
         self._pending = exchange
         return exchange

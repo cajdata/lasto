@@ -204,12 +204,33 @@ def test_rate_limit_waits_briefly_and_refuses_long_waits(h, clock):
     h.gate.submit(LOGGING_RPM_SPEED)
     h.gate.abort()
     before = clock.monotonic()
-    h.gate.submit(LOGGING_RPM_SPEED)  # waits out the 50 ms spacing
-    assert clock.monotonic() - before == pytest.approx(0.05)
+    h.gate.submit(LOGGING_RPM_SPEED)  # waits out the 50 ms spacing (plus the pacing margin)
+    assert clock.monotonic() - before == pytest.approx(0.05, abs=0.002)
     h.gate.abort()
     for _ in range(6):
         h.limiter.backoff(clock.monotonic())
     refused(h.gate, LOGGING_RPM_SPEED, "rate_limited")
+
+
+def test_the_shared_spacing_counts_from_the_end_of_the_write(h, clock):
+    h.writer.duration = 0.03  # a slow write
+    h.gate.submit(LOGGING_RPM_SPEED)
+    first_done = clock.monotonic()
+    h.gate.abort()
+    h.gate.submit(LOGGING_RPM_SPEED)
+    assert h.writer.times[1] - first_done >= 1 / 20
+
+
+def test_logging_flat_out_stays_under_the_write_functions_own_ceiling(sim, auditor, sink):
+    session = open_polled(sim, auditor)
+    for _ in range(70):
+        assert session.request(LOGGING_RPM_SPEED).state is ExchangeState.DONE
+    assert events(sink, "rejected") == []
+    sent = [record["mono"] for record in events(sink, "transmit")]
+    assert len(sent) == 70
+    assert sent[-1] - sent[0] < 70 / 19  # flat out: close to the ceiling, not far below it
+    for i, start in enumerate(sent):
+        assert sum(1 for t in sent[i:] if t - start < 1.0) <= 20
 
 
 def test_write_failure_trips_the_kill_switch(h):

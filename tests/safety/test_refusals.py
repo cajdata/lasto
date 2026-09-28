@@ -72,8 +72,9 @@ def _tripped():
 
 
 def _writer():
+    clock = FakeClock()
     _channel, writer = open_active(
-        CHANNEL, library=FakePcanDll(), killswitch=KillSwitch(), auditor=Auditor(MemoryAuditSink(), FakeClock())
+        CHANNEL, library=FakePcanDll(), killswitch=KillSwitch(), auditor=Auditor(MemoryAuditSink(), clock), clock=clock
     )
     return writer
 

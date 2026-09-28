@@ -18,6 +18,7 @@ REQUEST = bytes.fromhex("02010C0000000000")
 
 def opened(library, auditor, **options):
     options.setdefault("killswitch", KillSwitch())
+    options.setdefault("clock", FakeClock())
     return open_active(CHANNEL, library=library, auditor=auditor, **options)
 
 
@@ -33,7 +34,7 @@ def test_the_read_only_binding_follows_its_list():
 
 def test_default_loader_is_blocked_in_tests(auditor):
     with pytest.raises(HardwareFirewallError):
-        open_active(CHANNEL, killswitch=KillSwitch(), auditor=auditor)
+        open_active(CHANNEL, killswitch=KillSwitch(), auditor=auditor, clock=FakeClock())
 
 
 def test_opens_in_normal_mode_and_writes_through_the_writer(sim, auditor, sink):

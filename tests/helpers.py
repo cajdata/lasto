@@ -6,7 +6,6 @@ from collections.abc import Iterable
 
 from lasto.safety import ecus
 from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
-from lasto.safety.clock import Clock
 from lasto.safety.errors import InterfaceError
 from lasto.safety.frames import CanFrame
 from lasto.safety.gate import Gate
@@ -15,6 +14,7 @@ from lasto.safety.killswitch import KillSwitch, NrcMonitor
 from lasto.safety.ratelimit import RateLimiter
 from lasto.safety.requests import Purpose, Request, interlock_probe, read_pid
 from lasto.safety.session import PolledSession, open_polled_session
+from lasto.sim.clock import FakeClock
 from lasto.sim.vehicle import Sim
 
 CHANNEL = "PCAN_USBBUS1"
@@ -31,22 +31,27 @@ def frame(can_id: int, *data: int) -> CanFrame:
 
 
 class StubWriter:
-    """Stands in for the write function, so gate tests see exactly what the gate lets through."""
+    """Stands in for the write function, so gate tests see exactly what the gate lets through, and when."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: FakeClock) -> None:
+        self.clock = clock
         self.frames: list[tuple[int, bytes]] = []
+        self.times: list[float] = []
         self.fail: InterfaceError | None = None
+        self.duration = 0.0  # how long each write takes
 
     def __call__(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
         if self.fail is not None:
             raise self.fail
         self.frames.append((can_id, bytes(data)))
+        self.times.append(self.clock.monotonic())
+        self.clock.advance(self.duration)
 
 
 class GateHarness:
     def __init__(
         self,
-        clock: Clock,
+        clock: FakeClock,
         auditor: Auditor,
         *,
         profile: Iterable[Request] = (LOGGING_RPM_SPEED,),
@@ -58,7 +63,7 @@ class GateHarness:
         self.interlocks = Interlocks()
         self.limiter = RateLimiter()
         self.nrc = NrcMonitor(self.killswitch)
-        self.writer = StubWriter()
+        self.writer = StubWriter(clock)
         self.gate = Gate(
             self.writer,
             auditor,

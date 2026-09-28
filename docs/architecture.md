@@ -111,7 +111,7 @@ python-can 4.6.1's `PcanBus` sets listen-only before `CAN_Initialize`, but it ig
 - an `ActiveChannel`, which only reads (and switches to listen-only after a kill). The reader gets this one.
 - a `Writer`, the only object that holds `CAN_Write`. The session hands it to the gate and keeps no other reference.
 
-The `Writer` doesn't trust its caller. For every frame it re-runs the policy's full stateless check (`policy.check_frame`: ID allowlist, broadcast IDs, ISO-TP parse, service allowlist and never-list, sensitive ECUs, canonical flow control on an approved ECU's request ID), refuses a frame that isn't the kind the caller named, checks the kill switch, and writes the audit record, all before `CAN_Write`. So even a direct call can't send a denied service or use a non-allowlisted ID. The checks that need state stay in the gate: flow control only for a first frame that is waiting for it, the interlocks, and the rate limits.
+The `Writer` doesn't trust its caller. For every frame it re-runs the policy's full stateless check (`policy.check_frame`: ID allowlist, broadcast IDs, ISO-TP parse, service allowlist and never-list, sensitive ECUs, canonical flow control on an approved ECU's request ID), refuses a frame that isn't the kind the caller named, checks the kill switch, holds request frames to the hard ceiling (§3.3, rule 6), and writes the audit record, all before `CAN_Write`. So even a direct call can't send a denied service, use a non-allowlisted ID, or exceed 20 requests per second. The checks that need state stay in the gate: flow control only for a first frame that is waiting for it, the interlocks, and the per-purpose rates and back-off.
 
 `session.py` imports the gate and `pcan_active` inside `open_polled_session`, so no public module carries a name that can transmit. Frames are always 8 bytes, padded with a byte confirmed from Creader captures.
 
@@ -130,6 +130,8 @@ For every request, in order, stopping at the first failure:
    - The never-list is checked first and can't be overridden. Then default deny against the allowlist.
    - Manufacturer services (0x1A, 0x21, 0x22, 0x13, 0x17, 0x18, 0x19) go only to physical IDs, never to 0x7DF, so one request can't reach every ECU at once.
 6. **Rate limit:** a token bucket per purpose (logging 20/s, discovery 5/s), under a hard ceiling constant. One outstanding request per ECU; wait for the response or the P2/P2* timeout.
+   - The `Writer` enforces the ceiling again on its own: at most 20 request frames in any 1.0 s window, by its own clock readings, with a lock so concurrent callers can't slip past together. Flow control frames don't count (the gate sends at most one per first frame).
+   - So the gate never meets that backstop, it counts the shared spacing from the end of each write and adds a 1 ms margin, making its fastest pace 19.6 requests per second. Pacing at exactly 50 ms would put 21 frames inside one second through float rounding alone.
 7. **Audit, write-ahead:** log the frame and purpose. If the audit write fails, don't transmit.
 8. **Write**, then log the result.
 

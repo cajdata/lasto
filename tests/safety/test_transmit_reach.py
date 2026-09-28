@@ -7,7 +7,9 @@ reachable inside the armored write function the gate holds, and that
 function must check everything on its own.
 """
 
+import contextlib
 import importlib
+import threading
 import types
 from collections import deque
 
@@ -15,6 +17,7 @@ import pytest
 from helpers import events, open_polled
 
 from lasto.safety.errors import KillSwitchTripped, SafetyViolation
+from lasto.sim.violations import VIOLATIONS
 
 PUBLIC_MODULES = [
     "lasto.safety.session",
@@ -151,3 +154,58 @@ def test_the_write_function_checks_the_kill_switch_and_audits_first(sim, auditor
     with pytest.raises(KillSwitchTripped):
         writer(0x7E0, REQUEST, purpose="test", kind="request")
     assert len(sim.dll.writes) == 1
+
+
+# Rule 6, from the spec: a hard ceiling of 20 requests per second.
+CEILING = 20
+FC = bytes.fromhex("3000000000000000")
+
+
+def test_even_a_leaked_writer_holds_requests_to_the_hard_ceiling(sim, auditor, sink):
+    session = open_polled(sim, auditor)
+    writer = the_writer(session)
+    for _ in range(CEILING):
+        writer(0x7E0, REQUEST, purpose="test", kind="request")
+    with pytest.raises(SafetyViolation):
+        writer(0x7E0, REQUEST, purpose="test", kind="request")
+    assert len(sim.dll.writes) == CEILING
+    assert [r["reason"] for r in events(sink, "rejected")] == ["request_ceiling"]
+    assert len(events(sink, "transmit")) == CEILING  # the refused frame was never recorded as sent
+    sim.clock.advance(0.999)
+    with pytest.raises(SafetyViolation):
+        writer(0x7E0, REQUEST, purpose="test", kind="request")
+    sim.clock.advance(0.001)  # the first request is now a full second old
+    writer(0x7E0, REQUEST, purpose="test", kind="request")
+    assert len(sim.dll.writes) == CEILING + 1
+
+
+def test_flow_control_is_exempt_from_the_ceiling_and_uses_none_of_it(sim, auditor):
+    session = open_polled(sim, auditor)
+    writer = the_writer(session)
+    with VIOLATIONS.expect() as oracle:  # unsolicited on purpose: whether a first frame waits is the gate's check
+        for _ in range(5):
+            writer(0x7E0, FC, purpose="test", kind="flow_control")
+        for _ in range(CEILING):
+            writer(0x7E0, REQUEST, purpose="test", kind="request")
+        writer(0x7E0, FC, purpose="test", kind="flow_control")
+    assert [data for _, _, data in sim.dll.writes].count(REQUEST) == CEILING
+    assert [data for _, _, data in sim.dll.writes].count(FC) == 6
+    assert len(oracle) == 6 and all(item.startswith("flow control no ECU asked for") for item in oracle)
+
+
+def test_concurrent_callers_cannot_slip_past_the_ceiling(sim, auditor):
+    session = open_polled(sim, auditor)
+    writer = the_writer(session)
+    start = threading.Barrier(40)
+
+    def call():
+        start.wait()
+        with contextlib.suppress(SafetyViolation):
+            writer(0x7E0, REQUEST, purpose="test", kind="request")
+
+    threads = [threading.Thread(target=call) for _ in range(40)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(sim.dll.writes) == CEILING

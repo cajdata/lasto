@@ -2,7 +2,15 @@
 
 import pytest
 
-from lasto.safety.ratelimit import BACKOFF_MAX, HARD_CEILING_PER_SECOND, PURPOSE_RATES, RateLimiter
+from lasto.safety.ratelimit import (
+    BACKOFF_MAX,
+    CEILING_FRAMES,
+    CEILING_WINDOW,
+    HARD_CEILING_PER_SECOND,
+    PACING_MARGIN,
+    PURPOSE_RATES,
+    RateLimiter,
+)
 from lasto.safety.requests import Purpose
 
 
@@ -30,9 +38,17 @@ def test_spacing_per_purpose():
 def test_ceiling_across_purposes():
     limiter = RateLimiter()
     limiter.commit(Purpose.DISCOVERY, 10.0)
-    # Logging has its own budget but still waits for the shared 20/s ceiling.
-    assert limiter.delay(Purpose.LOGGING, 10.0) == pytest.approx(0.05)
-    assert limiter.delay(Purpose.LOGGING, 10.05) == pytest.approx(0.0)
+    # Logging has its own budget but still waits for the shared 20/s ceiling, plus the pacing margin.
+    assert limiter.delay(Purpose.LOGGING, 10.0) == pytest.approx(0.05 + PACING_MARGIN)
+    assert limiter.delay(Purpose.LOGGING, 10.05) == pytest.approx(PACING_MARGIN)
+    assert limiter.delay(Purpose.LOGGING, 10.05 + PACING_MARGIN) == pytest.approx(0.0)
+
+
+def test_the_gates_pace_stays_under_the_write_functions_ceiling():
+    assert (CEILING_FRAMES, CEILING_WINDOW) == (20, 1.0)
+    assert 0 < PACING_MARGIN <= 0.002  # a little under the ceiling, not a lot
+    fastest = 1.0 / (1.0 / HARD_CEILING_PER_SECOND + PACING_MARGIN)
+    assert CEILING_FRAMES / CEILING_WINDOW > fastest > 19.5
 
 
 def test_backoff_doubles_up_to_the_maximum():
