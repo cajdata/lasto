@@ -18,6 +18,8 @@ uv pip install --python .venv-site/Scripts/python.exe --require-hashes --only-bi
 
 The tests use their own config, so the app's pytest settings (the simulator plugin and the 100 percent coverage gate on `lasto.safety`) never apply to the site, and never get loosened for it.
 
+The tests also run actionlint on every workflow in `.github/workflows`, so a workflow GitHub would reject fails here first. `tests/test_workflows.py` downloads the official actionlint release once into `site/.cache` and checks its sha256 before every run, so the first run needs network access. To update actionlint, change `ACTIONLINT_VERSION` and copy the two checksum lines from the new release's checksums file.
+
 ## Where things are
 
 | Path | What it is |

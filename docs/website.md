@@ -1,6 +1,21 @@
 # lasto.dev website plan
 
-Status: **W0 and W1 approved 2026-09-27. Phase 1 approved 2026-09-28, and `main` merged into `website` (section 0b).** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`. How to build and edit the site is in `site/README.md`; the going-live steps are in section 10.
+Status: **W0 and W1 approved 2026-09-27. Phase 1 approved 2026-09-28, and `main` merged into `website` (section 0b). The site workflow fixed the same day (section 0c).** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`. How to build and edit the site is in `site/README.md`; the going-live steps are in section 10.
+
+## 0c. The site workflow fixed (2026-09-28)
+
+- **Why nothing deployed:** GitHub rejected `site.yml` at line 47 before running anything, on every push since W1. The `run:` value was a plain YAML scalar, and the `: ` inside `--only-binary=:all: -r` is YAML syntax. It's a folded block scalar now. The same parse error failed Dependabot's github-actions update, which reads workflow files on `main`, so it recovers once the fix merges.
+- **actionlint in the site tests:** `site/tests/test_workflows.py` runs actionlint 1.7.12 on every workflow. It's the official release binary, downloaded into `site/.cache` and checked against the release's sha256 on every run, because no PyPI package ships the official build as a wheel. shellcheck comes from `shellcheck-py`, hash-pinned, and is passed to actionlint by path. Three deliberately broken workflows prove the checks work, and nothing skips. Updating actionlint is by hand: the version and two checksum lines from the release.
+- **Dependabot:** `.github/dependabot.yml` validates against SchemaStore's schema, and GitHub's own pip run on `main` succeeded. A test checks that each entry points at files that exist.
+- **Other workflow fixes, from an audit:**
+  - The paths filters list everything the build and its tests read: `pyproject.toml`, `.python-version`, and `.github/**` were added, and `SECURITY.md`, which the build never read, was dropped.
+  - Concurrency is one run per ref, and Python comes from `.python-version`.
+  - The Pages artifact is uploaded only when deploying, and stays the last build step. Moving it ahead of lychee was tried and reverted: a re-run after a failed link check would upload a second artifact, and deploy-pages refuses to choose. Pinning lychee by sha256 is a follow-up.
+  - The deploy's concurrency group has a specific name.
+  - The smoke test accepts the Pages URL with or without a trailing slash, and fetches `/safety/core/`.
+  - All five action pins match their tags and are the latest releases.
+- **Pushes to `website` don't run the workflow,** because push runs are main-only. A pull request, or a manual dispatch on `website`, runs it before a merge.
+- **Local preview:** `.claude/launch.json` starts `site/build.py serve` for the desktop app's preview. It's kept per machine and gitignored.
 
 ## 0b. Phase 1 approved, main merged (2026-09-28)
 
@@ -84,7 +99,7 @@ site/
 
 **Checks on every build:** one H1 and heading order; unique titles and descriptions; canonical URLs; internal links and anchors (mirrors too); the page budget; no third-party requests; font coverage; copy lint (em dashes, en dashes, the banned hype words); the honesty rule (no page for an unfinished phase); JSON-LD shape; sitemap matches the page set; security.txt `Expires` in range.
 
-**Deploy:** `.github/workflows/site.yml`, every action pinned by commit SHA, running on `ubuntu-24.04` (`ubuntu-latest` moves to 26.04 in October). It builds with `--strict`, checks internal links offline with lychee, uploads with `include-hidden-files: true` (otherwise `/.well-known/` is silently dropped), and deploys from `main` only. Pull requests build but never deploy. A monthly scheduled run refreshes security.txt `Expires` and the changelog. Release events re-dispatch the workflow on `main`, because the Pages environment rejects tag refs. `concurrency` sits on the deploy job, so a PR build can't cancel a pending deploy. The push trigger includes `src/lasto/**`, because the Safety page reads its numbers from the source (section 8).
+**Deploy:** `.github/workflows/site.yml`, every action pinned by commit SHA, running on `ubuntu-24.04` (`ubuntu-latest` moves to 26.04 in October). It runs the site tests, which include actionlint on every workflow, builds with `--strict`, checks internal links offline with lychee, uploads with `include-hidden-files: true` (otherwise `/.well-known/` is silently dropped), and deploys from `main` only. The upload stays the last build step: a build that failed after uploading would leave a `github-pages` artifact behind, and a re-run would add a second one that deploy-pages refuses. The lychee action downloads lychee without checking a hash; pinning it by sha256 is a follow-up. Pull requests build but never deploy. A monthly scheduled run refreshes security.txt `Expires`. Concurrency is one run per ref, and a newer run on `main` never cancels one that's deploying. The paths filters list everything the build and its tests read, including `src/lasto/**`, because the Safety page reads its numbers from the source (section 8). Not built yet: a changelog refreshed by the monthly run, and release events that re-dispatch the workflow on `main` (the Pages environment rejects tag refs). Both arrive with the changelog in W2.
 
 **W3 checks without Node in the repo:** Lighthouse 13.5.0 through a one-off `npx` step in CI, the Nu HTML validator from a pinned Docker image, lychee for external links, PageSpeed Insights against the deployed site as the score of record, and the Schema.org validator and Rich Results Test by hand. Expect Google to call SoftwareApplication "not eligible" for rich results, since it wants ratings or reviews and we won't invent any. The markup is still valid.
 
@@ -331,7 +346,7 @@ The first push to `main` that touches `site/` starts the deploy workflow, so Pag
 
 1. When you approve Phase 1, I set it to done and public in `site/data/roadmap.toml` on this branch, so the first deploy doesn't say it's still waiting on sign-off.
 2. Push Phase 1 to `main`, then merge the `website` branch into `main`. It sits on top of the Phase 1 commits, so it fast-forwards.
-3. The `site` workflow builds, checks, and deploys. Its last step confirms Pages reports `https://lasto.dev/` and fetches the main pages, the mirrors, llms.txt, the sitemap, robots.txt, and security.txt from it. If the certificate or Enforce HTTPS isn't ready yet, that step fails; rerun the workflow once it is.
+3. The `site` workflow builds, checks, and deploys. Its last step confirms Pages reports `https://lasto.dev/` and fetches the main pages, the mirrors, llms.txt, the sitemap, robots.txt, and security.txt from it. If the certificate or Enforce HTTPS isn't ready yet, that step fails; once it is, use "Re-run all jobs", or dispatch the workflow on `main`. Re-running only the failed deploy job stops working after a day, when the uploaded artifact expires.
 
 ### Step 5: repo settings
 

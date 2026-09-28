@@ -220,3 +220,6 @@ lasto-website-prompt.md
 
 # The site's own environment, installed with hashes checked (site/README.md)
 .venv-site/
+
+# The local site preview's launch config, kept per machine
+.claude/launch.json

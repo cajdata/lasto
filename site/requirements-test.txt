@@ -1,6 +1,7 @@
 # Generated from PyPI digests for the pinned versions below. Every file of each release is listed,
 # so the same file installs on Windows and ubuntu. Install with: pip install --require-hashes -r site/requirements-test.txt
-# Site build tests. colorama is a Windows-only dependency of pytest.
+# Site build tests. colorama is a Windows-only dependency of pytest. shellcheck-py is the shellcheck
+# that test_workflows.py hands to actionlint, so every machine checks run: scripts with the same one.
 pytest==9.1.1 \
     --hash=sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313 \
     --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
@@ -19,3 +20,9 @@ pygments==2.21.0 \
 colorama==0.4.6 \
     --hash=sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44 \
     --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
+shellcheck-py==0.11.0.1 \
+    --hash=sha256:1b274df81de5b000ff78db433e7328b87e52e3c38481c60f8e488c3095beef05 \
+    --hash=sha256:5c620c88901e8f1d3be5934b31ea99e3310065e1245253741eafd0a275c8c9cc \
+    --hash=sha256:6b88d0a244c82ed07e06a53e444da841f69330ca59ae15d4a66c391655dae7a0 \
+    --hash=sha256:784156289ecb17e91c692cd783ab5152333309588cabb10032a047331c63e759 \
+    --hash=sha256:b6a3fee28efda2e16e38d6e6d59faf7224300256456639727370d404730849e8
