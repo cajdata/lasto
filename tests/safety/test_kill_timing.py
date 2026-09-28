@@ -14,6 +14,7 @@ from helpers import HANDLE, LOGGING_RPM_SPEED, GateHarness, events, open_polled
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety import requests as rq
+from lasto.safety.audit import Auditor, MemoryAuditSink
 from lasto.safety.errors import KillSwitchTripped, SafetyViolation
 from lasto.safety.gate import WAIT_SLICE
 from lasto.safety.requests import DtcKind, Purpose
@@ -135,6 +136,33 @@ def test_after_a_kill_capture_keeps_checking_listen_only(sim, auditor, sink):
     session.pump()
     assert not sim.dll.channel(HANDLE).initialized
     assert [e["reason"] for e in events(sink, "polled_channel_closed")] == ["listen_only_lost"]
+
+
+class RefusesKillRecords(MemoryAuditSink):
+    """An audit log that fails on exactly the record the kill listener writes."""
+
+    def write(self, record):
+        if record["event"] == "kill_listen_only":
+            raise OSError("disk full")
+        super().write(record)
+
+
+def test_a_failed_switch_to_listen_only_closes_the_channel_even_if_the_audit_log_fails(sim):
+    """Finding N5: the channel is closed first, then the kill is audited."""
+    session = open_polled(sim, Auditor(RefusesKillRecords(), sim.clock))
+    sim.dll.fail_set[pc.PCAN_LISTEN_ONLY] = pc.PCAN_ERROR_ILLOPERATION
+    with pytest.raises(OSError):
+        session.killswitch.trip("hotkey")
+    assert not sim.dll.channel(HANDLE).initialized
+
+
+def test_listen_only_is_watched_after_a_kill_even_if_the_audit_log_fails(sim):
+    session = open_polled(sim, Auditor(RefusesKillRecords(), sim.clock))
+    with pytest.raises(OSError):
+        session.killswitch.trip("hotkey")
+    sim.dll.driver_resumes(HANDLE, listen_only=pc.PCAN_PARAMETER_OFF)
+    session.pump()
+    assert not sim.dll.channel(HANDLE).initialized
 
 
 def test_capture_after_a_kill_stops_on_a_quiet_loss_of_listen_only_too(sim, auditor, sink):

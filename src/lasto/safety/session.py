@@ -256,14 +256,17 @@ class PolledSession(metaclass=SealedType):
         REFUSALS.detach(self._auditor)
 
     def _on_kill(self, cause: str) -> None:
+        """Act first (watch listen-only, or close the channel), then audit, so a failing audit log can't stop it (N5)."""
         with self._gate.lock:
             self._gate.abort()
             confirmed = self._channel.enter_listen_only()
-            self._auditor.event("kill_listen_only", cause=cause, listen_only_confirmed=confirmed)
-            if confirmed:
-                self._reader.verify_listen_only()
-            else:
-                self._close_channel("listen_only_not_confirmed_after_kill")
+            try:
+                if confirmed:
+                    self._reader.verify_listen_only()
+                else:
+                    self._close_channel("listen_only_not_confirmed_after_kill")
+            finally:
+                self._auditor.event("kill_listen_only", cause=cause, listen_only_confirmed=confirmed)
 
     def _close_channel(self, reason: str) -> None:
         """Uninitialize the channel and stop capture: it can't be trusted to stay off the bus."""
