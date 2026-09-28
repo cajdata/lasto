@@ -144,6 +144,17 @@ def test_profile_must_hold_logging_requests(clock, auditor):
         GateHarness(clock, auditor, profile=["010C"])
 
 
+def test_a_closed_gate_refuses_first_and_closes_its_write_function(clock, auditor, sink):
+    """Finding N3."""
+    h = GateHarness(clock, auditor)
+    exchange = h.gate.submit(LOGGING_RPM_SPEED)
+    h.gate.close()
+    assert exchange.state is ExchangeState.ABORTED and h.writer.closed
+    h.killswitch.trip("hotkey")  # a closed gate says so before anything else
+    refused(h.gate, LOGGING_RPM_SPEED, "session_closed")
+    assert len(h.writer.frames) == 1
+
+
 def test_not_armed(clock, auditor, sink):
     h = GateHarness(clock, auditor, armed=False)
     refused(h.gate, LOGGING_RPM_SPEED, "gate_not_armed")

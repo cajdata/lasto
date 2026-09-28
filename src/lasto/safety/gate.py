@@ -58,6 +58,9 @@ class WriteFunction(Protocol, metaclass=SealedProtocolType):
     def __call__(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
         """Check one 8-byte standard frame, audit it, and put it on the bus; or refuse, or raise InterfaceError."""
 
+    def close(self) -> None:
+        """Refuse every frame from now on."""
+
 
 def _describe(request: object) -> str:
     return request.describe() if isinstance(request, Request) else type(request).__name__
@@ -76,8 +79,8 @@ def _deny(reason: str, detail: str, request: str) -> None:
 
 class Gate(metaclass=SealedType):
     __slots__ = (
-        "_armed", "_auditor", "_broadcast_ids", "_clock", "_drain", "_interlocks", "_last", "_last_finished",
-        "_limiter", "_lock", "_nrc_monitor", "_pending", "_profile", "_request_ids", "_writer",
+        "_armed", "_auditor", "_broadcast_ids", "_clock", "_closed", "_drain", "_interlocks", "_last",
+        "_last_finished", "_limiter", "_lock", "_nrc_monitor", "_pending", "_profile", "_request_ids", "_writer",
     )  # fmt: skip
 
     def __init__(
@@ -116,6 +119,7 @@ class Gate(metaclass=SealedType):
         self._request_ids = policy.request_ids()
         self._lock = threading.RLock()
         self._armed = False
+        self._closed = False
         self._pending: Exchange | None = None
         self._last: Exchange | None = None
         self._last_finished = float("-inf")
@@ -139,6 +143,14 @@ class Gate(metaclass=SealedType):
             if self._pending is not None:
                 self._finish(self._pending, ExchangeState.ABORTED, self._clock.monotonic())
 
+    def close(self) -> None:
+        """For good: refuse every request from now on, and close the write function (finding N3)."""
+        with self._lock:
+            self._closed = True
+            self._armed = False
+            self.abort()
+            self._writer.close()
+
     # ---- sending ----
 
     def submit(self, request: Request) -> Exchange:
@@ -147,6 +159,8 @@ class Gate(metaclass=SealedType):
 
     def _submit(self, request: Request) -> Exchange:
         text = _describe(request)
+        if self._closed:
+            _deny("session_closed", "this polled session is closed", text)
         KILL_SWITCH.check(request=text)
         if not self._armed:
             _deny("gate_not_armed", "the polled session hasn't finished its listen window", text)

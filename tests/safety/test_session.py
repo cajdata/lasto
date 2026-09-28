@@ -1,7 +1,7 @@
 """Opening passive and polled sessions."""
 
 import pytest
-from helpers import CHANNEL, HANDLE, LOGGING_RPM_SPEED, events, open_polled
+from helpers import CHANNEL, HANDLE, LOGGING_RPM_SPEED, events, open_polled, the_writer
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety.audit import Auditor
@@ -143,6 +143,34 @@ def test_on_real_hardware_the_system_clock_passes_that_check(auditor, opener):
 def test_the_simulator_may_use_its_own_clock(sim, auditor):
     session = open_polled(sim, auditor)  # library= given: the simulated clock is the right one
     assert not session.killswitch.tripped
+
+
+# ---- finding N3: a closed polled session sends nothing ----
+
+
+def test_a_closed_session_sends_nothing_even_through_a_reopened_channel(sim, auditor, sink):
+    old = open_polled(sim, auditor)
+    old.close()
+    new = open_polled(sim, auditor)  # the same channel, opened again
+    written = len(sim.dll.writes)
+    with pytest.raises(SafetyViolation) as refused:
+        old.request(LOGGING_RPM_SPEED)
+    assert refused.value.reason == "session_closed"
+    assert len(sim.dll.writes) == written
+    sim.clock.advance(0.2)
+    assert old.pump() == []  # nor does it read the new session's traffic
+    assert new.pump()
+
+
+def test_a_closed_sessions_write_function_refuses(sim, auditor, sink):
+    old = open_polled(sim, auditor)
+    writer = the_writer(old)
+    old.close()
+    open_polled(sim, auditor)
+    with pytest.raises(SafetyViolation) as refused:
+        writer(0x7E0, bytes.fromhex("02010C0000000000"), purpose="test", kind="request")
+    assert refused.value.reason == "writer_closed"
+    assert sim.dll.writes == []
 
 
 def test_kill_switches_the_channel_to_listen_only(sim, auditor, sink):

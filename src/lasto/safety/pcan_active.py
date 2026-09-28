@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ctypes
 import threading
+import weakref
 from collections import deque
 from collections.abc import Callable, Collection
 from typing import Any
@@ -31,7 +32,7 @@ from lasto.safety import pcan_constants as pc
 from lasto.safety import policy
 from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import Auditor, refuse
-from lasto.safety.clock import Clock, require_system_clock
+from lasto.safety.clock import Clock, SystemClock, require_system_clock
 from lasto.safety.errors import SafetyViolation
 from lasto.safety.killswitch import KILL_SWITCH
 from lasto.safety.pcan_dll import (
@@ -57,12 +58,59 @@ class ActiveChannel(PcanChannel):
         return status == pc.PCAN_ERROR_OK and self.listen_only()
 
 
+class RequestCeiling(metaclass=SealedType):
+    """Rule 6's hard ceiling across every write function in the process (finding N3).
+
+    Request frames are counted per clock. On real hardware every session runs
+    on SystemClock, so the whole process shares one window; in the simulator,
+    sessions that share a simulated clock share a window. Its lock also puts
+    one frame on the wire at a time, process-wide, so concurrent callers
+    can't slip past together.
+    """
+
+    __slots__ = ("_lock", "_windows")
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        # When the most recent request frames were written, per clock (the class stands for every SystemClock).
+        self._windows: weakref.WeakKeyDictionary[object, deque[float]] = weakref.WeakKeyDictionary()
+
+    @property
+    def lock(self) -> threading.RLock:
+        return self._lock
+
+    def _window(self, clock: Clock) -> deque[float]:
+        key = SystemClock if type(clock) is SystemClock else clock
+        window = self._windows.get(key)
+        if window is None:
+            window = self._windows[key] = deque(maxlen=CEILING_FRAMES)
+        return window
+
+    def admit(self, clock: Clock, now: float, request: str) -> None:
+        """Refuse (audited) a request frame if the last CEILING_FRAMES went out within CEILING_WINDOW."""
+        window = self._window(clock)
+        if len(window) == CEILING_FRAMES and now - window[0] < CEILING_WINDOW:
+            refuse(
+                SafetyViolation(
+                    "request_ceiling", f"{CEILING_FRAMES} request frames in the last {CEILING_WINDOW:g} s already"
+                ),
+                transport="pcan",
+                request=request,
+            )
+
+    def record(self, clock: Clock, now: float) -> None:
+        self._window(clock).append(now)
+
+
+# The one ceiling for the process.
+REQUEST_CEILING = RequestCeiling()
+
+
 class Writer(metaclass=SealedType):
     """The one function that puts a frame on the bus. Called as writer(can_id, data, purpose=..., kind=...)."""
 
     __slots__ = (
-        "_auditor", "_broadcast_ids", "_can_write", "_channel_name", "_clock", "_error_text", "_handle", "_lock",
-        "_recent_requests",
+        "_auditor", "_broadcast_ids", "_can_write", "_channel_name", "_clock", "_closed", "_error_text", "_handle",
     )  # fmt: skip
 
     def __init__(
@@ -82,16 +130,21 @@ class Writer(metaclass=SealedType):
         self._auditor = auditor
         self._clock = clock
         self._broadcast_ids = broadcast_ids
-        self._lock = threading.Lock()
-        # When the most recent request frames were written: the ceiling's sliding window.
-        self._recent_requests: deque[float] = deque(maxlen=CEILING_FRAMES)
+        self._closed = False
+
+    def close(self) -> None:
+        """For good: the session closed, so refuse every frame from now on (finding N3)."""
+        with REQUEST_CEILING.lock:
+            self._closed = True
 
     def __call__(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
-        with self._lock:  # one frame at a time, so concurrent callers can't slip past the ceiling together
+        with REQUEST_CEILING.lock:  # one frame at a time, process-wide
             self._write(can_id, data, purpose=purpose, kind=kind)
 
     def _write(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
         text = policy.frame_text(can_id, data)
+        if self._closed:
+            refuse(SafetyViolation("writer_closed", "its polled session is closed"), transport="pcan", request=text)
         checked = policy.check_frame(can_id, data, broadcast_ids=self._broadcast_ids)
         if kind != checked:
             refuse(
@@ -101,18 +154,11 @@ class Writer(metaclass=SealedType):
             )
         KILL_SWITCH.check(request=text)
         now = self._clock.monotonic()
-        recent = self._recent_requests
-        if kind == "request" and len(recent) == CEILING_FRAMES and now - recent[0] < CEILING_WINDOW:
-            refuse(
-                SafetyViolation(
-                    "request_ceiling", f"{CEILING_FRAMES} request frames in the last {CEILING_WINDOW:g} s already"
-                ),
-                transport="pcan",
-                request=text,
-            )
+        if kind == "request":
+            REQUEST_CEILING.admit(self._clock, now, text)
         self._auditor.transmit(transport="pcan", can_id=can_id, data=data, purpose=purpose, kind=kind)
         if kind == "request":
-            recent.append(now)  # counted once recorded, whether or not CAN_Write then succeeds
+            REQUEST_CEILING.record(self._clock, now)  # counted once recorded, whether or not CAN_Write then succeeds
         message = pc.TPCANMsg()
         message.ID = can_id
         message.MSGTYPE = pc.PCAN_MESSAGE_STANDARD

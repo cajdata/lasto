@@ -245,6 +245,9 @@ class PolledSession(metaclass=SealedType):
         return exchange
 
     def close(self) -> None:
+        """For good: the gate and its write function refuse from now on, and nothing more is read (finding N3)."""
+        self._gate.close()
+        self._channel_closed = True
         KILL_SWITCH.remove_listener(self._on_kill)
         uninitialized = self._channel.close()
         self._auditor.event(

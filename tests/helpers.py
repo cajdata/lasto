@@ -53,6 +53,10 @@ class StubWriter:
         self.times: list[float] = []
         self.fail: InterfaceError | None = None
         self.duration = 0.0  # how long each write takes
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
     def __call__(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
         if self.fail is not None:

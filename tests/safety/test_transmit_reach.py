@@ -13,9 +13,13 @@ import threading
 import types
 
 import pytest
-from helpers import events, open_polled, paths_to, the_writer
+from helpers import LOGGING_RPM_SPEED, events, open_polled, paths_to, the_writer
 
+from lasto.safety.clock import SystemClock
 from lasto.safety.errors import KillSwitchTripped, SafetyViolation
+from lasto.safety.pcan_active import RequestCeiling
+from lasto.safety.session import open_polled_session
+from lasto.sim.clock import FakeClock
 from lasto.sim.violations import VIOLATIONS
 
 PUBLIC_MODULES = [
@@ -141,6 +145,34 @@ def test_flow_control_is_exempt_from_the_ceiling_and_uses_none_of_it(sim, audito
     assert [data for _, _, data in sim.dll.writes].count(REQUEST) == CEILING
     assert [data for _, _, data in sim.dll.writes].count(FC) == 6
     assert len(oracle) == 6 and all(item.startswith("flow control no ECU asked for") for item in oracle)
+
+
+def test_the_ceiling_counts_every_write_function_in_the_process(sim, auditor, sink):
+    """Finding N3: two polled sessions (two channels onto the same bus) share the 20 per second."""
+    first = open_polled(sim, auditor)
+    second = open_polled_session(
+        "PCAN_USBBUS2", profile=[LOGGING_RPM_SPEED], auditor=auditor, clock=sim.clock, library=sim.dll, listen_seconds=0.05
+    )
+    writers = [the_writer(first), the_writer(second)]
+    for index in range(CEILING):
+        writers[index % 2](0x7E0, REQUEST, purpose="test", kind="request")
+    for writer in writers:
+        with pytest.raises(SafetyViolation) as refused:
+            writer(0x7E0, REQUEST, purpose="test", kind="request")
+        assert refused.value.reason == "request_ceiling"
+    assert len(sim.dll.writes) == CEILING
+
+
+def test_on_real_hardware_the_process_shares_one_window(auditor):
+    """Every SystemClock instance counts against the same window; a simulated clock is a separate world."""
+    ceiling = RequestCeiling()
+    first, second = SystemClock(), SystemClock()
+    now = first.monotonic()
+    for index in range(CEILING):
+        ceiling.record(first if index % 2 else second, now)
+    with pytest.raises(SafetyViolation):
+        ceiling.admit(SystemClock(), now, "a third session's request")
+    ceiling.admit(FakeClock(), now, "a simulated session's request")  # not refused
 
 
 def test_concurrent_callers_cannot_slip_past_the_ceiling(sim, auditor):
