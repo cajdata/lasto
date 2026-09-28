@@ -82,6 +82,8 @@ From factory manuals for the J120 platform (Land Cruiser Prado RM1151E, from Aug
 
 ## 3. Safety core
 
+**Threat model.** The safety core defends against accidental or convenient bypasses by code in this repository, including code a future Claude Code session writes. It does not claim to stop code in the same process that deliberately sets out to subvert it; Python can't prevent that. The structural scanner (§7) exists to make any such route stand out and fail the suite. Reviews rate severity against this model.
+
 ### 3.1 PCAN passive (rule 1)
 
 python-can 4.6.1's `PcanBus` sets listen-only before `CAN_Initialize`, but it ignores the `SetValue` result, and its `state` property returns a cached value instead of asking the driver. So if the pre-init set fails, the channel silently comes up active. The safety core binds the DLL itself with ctypes:

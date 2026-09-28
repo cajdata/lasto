@@ -42,6 +42,10 @@ Tests must prove the rules:
 - A simulator (mock CAN bus with realistic broadcast traffic, mock ECUs with ISO-TP, and a mock STN adapter) that fails the test run if it ever receives a denied service, a frame on a non-diagnostic ID, or any frame at all during passive mode.
 - 100 percent branch coverage on the safety core, enforced by the test command.
 
+## Threat model
+
+The safety core defends against accidental or convenient bypasses by code in this repository, including code a future Claude Code session writes. It does not claim to stop code in the same process that deliberately sets out to subvert it; Python can't prevent that. The structural scanner exists to make any such route stand out and fail the suite. Reviews rate severity against this model.
+
 ## Phases
 
 0. **Plan:** ask me questions, propose the architecture and file layout, set up the repo and the guardrails above. Stop for approval.
