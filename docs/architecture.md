@@ -38,7 +38,7 @@ Status: **Phase 0 approved 2026-09-26.** Decisions are in §0 and override anyth
   - logging requests must always be in the profile
   - flow control frames aren't rate limited
   - NRC 0x78 extends the current wait
-- **Carried forward:** see §13.
+- **Carried forward:** see §13, including the verification review's low findings L1 to L5.
 
 ## 1. Shape of the system
 
@@ -393,7 +393,7 @@ The bench tests are the only time either adapter transmits on purpose, and only 
 | Phase | Item |
 |---|---|
 | 2 | **Save and report on a kill:** the kill switch already stops and logs; flushing capture storage and writing the report arrive with Phase 2 storage. |
-| 2 | **Audit log storage:** the durable audit log (SQLite, alongside the JSON Lines sink) is wired into real sessions. |
+| 2 | **Audit log storage:** the durable audit log (SQLite, alongside the JSON Lines sink) is wired into real sessions. **Refuse a sink that isn't durable (review finding L5):** with the real DLL, any `AuditSink` is accepted today, including one that discards records, so rule 11 depends on the caller. As with the clock (N2), a session on real hardware refuses any sink but the durable ones, before the DLL is loaded. |
 | 2 | **Held audit records on disk:** refusals and kills recorded while no audit log is open are held in memory, handed to the next log that opens, and reported on stderr at exit. Once Phase 2 sets the data location, they also go to a durable fallback file there, so a crash can't lose them. |
 | 2 | **Broadcast IDs:** the gate's set of IDs seen carrying broadcast traffic is produced from capture statistics. |
 | 2 | **Storage:** estimate per driving hour, then set the disk budget and retention. |
@@ -402,7 +402,11 @@ The bench tests are the only time either adapter transmits on purpose, and only 
 | 3 | **Creader captures confirm:** 0x7E0 and any new request IDs, the padding byte, and the trimmed manufacturer service list. |
 | 3 | **MX+ checks:** stopping a monitor with a backspace, and silent monitoring on the real adapter. |
 | 3 | **Bootloader window (review finding E, deferred here):** the rule in §3.7 isn't enforced in code yet. `reset()` sends `ATZ` as soon as a connection opens, and again when retried after a prompt timeout. Settle, and verify on the real MX+ with the other MX+ checks: whether to wait for the banner and `>` after opening, reconnecting, or waking before sending anything; never re-send `ATZ` after a prompt timeout without first reading what the adapter sent; and how a Bluetooth reconnect or wake is detected. Nothing in Phase 1 or 2 opens the adapter on real hardware. |
+| 3 | **Audit an adapter that won't open (review finding L4):** `open_adapter` attaches the caller's audit log only after the port opens. So a bad port name is held rather than written to that log, and an error opening the port isn't audited at all. Attach first, and audit an open failure, as PCAN open failures are (fix #7). |
 | 4 | **BLOCKER before the first polled live test:** wire the Ctrl+Alt+K hotkey into polled sessions, and refuse to start polling if it can't be registered. Verify it on the truck laptop's real Windows. **The hotkey thread ending counts as a kill trigger (review finding N9):** the message loop can end on its own (`GetMessageW` returns -1, `trip()` raises, any exception), and a session must never keep polling with a dead hotkey. So any exit other than `stop()` trips the kill switch (cause `hotkey_thread_ended`) and is audited, and the polled session also checks the thread is alive before each request. |
+| 4 | **BLOCKER before the first polled live test: a kill listener that raises (review finding L2):** if `enter_listen_only()` raises, the polled session's kill listener (`_on_kill`) skips both closing the channel and its audit record. Treat an exception there as "listen-only not confirmed": close the channel, and audit. |
+| 4 | **A kill needs a cause (review finding L1):** `trip(None)` doesn't latch. The listeners run and the kill is audited, but `tripped` stays False. Refuse a cause that isn't a non-empty string. |
+| 4 | **Closing a polled session twice (review finding L3):** a second `PolledSession.close()` detaches the audit log again, so when sessions share an audit log, another open session's refusals are held instead of written to it. And after close, `session.reader.poll_once()` can still read a reopened channel; only `pump()` stops reading. Make a second close do nothing, and stop the reader on close. |
 | 4 | **Logging profiles (review finding N10, owner's decision, cap confirmed):** a logging profile may contain only verified definitions from the definitions library, never raw identifiers (no `read_local_id`/`read_did` built by hand). Identifier sweeps stay discovery-only and parked-only. The gate refuses (audited), when the session opens, any profile that breaks these rules: <ul><li>**Manufacturer entries (services 0x21 and 0x22):** at most **16**, each a verified definition. At the gate's fastest pace (19.6 requests per second) that still refreshes every value more than once a second, and 16 identifiers are nowhere near a sweep of a 256-entry local-ID space.</li><li>**Standard Mode 01 PIDs:** fully defined by the OBD-II standard and already allowlisted, so they count as verified and aren't capped. A profile may include only PIDs the ECU reports as supported (its Mode 01 supported-PID bitmaps: PIDs 0x00, 0x20, 0x40 and so on, read while parked before the drive).</li></ul> |
 | 7 | **K-line polling:** decide on 0x81 StartCommunication and running without 0x3E keep-alives. |
 | after approval | Switch to uv with a hashed lock file (all dependencies, including transitive ones, pinned). |
