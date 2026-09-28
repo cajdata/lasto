@@ -137,7 +137,7 @@ def in_safety(target: Target) -> bool:
 # Modules that reach into objects, rewrite code, or rebuild objects from bytes (builtins: rebinding
 # `type` or `isinstance` there would defeat checks in the safety core without touching it).
 BANNED_MODULES = {
-    "ctypes", "gc", "inspect", "importlib", "builtins",
+    "ctypes", "_ctypes", "gc", "inspect", "importlib", "builtins",
     "pickle", "marshal", "copyreg", "shelve", "runpy", "code", "codeop",
 }  # fmt: skip
 BANNED_CALLS = {"__import__", "globals", "vars", "setattr", "delattr", "eval", "exec", "compile"}
@@ -154,6 +154,8 @@ BANNED_ATTRIBUTES = {
     "tb_frame", "f_globals", "f_builtins", "f_locals", "f_back", "gi_frame", "cr_frame", "ag_frame",
     "settrace", "setprofile", "meta_path", "path_hooks", "path_importer_cache",
     "mro",  # the same walk to every base class as __mro__
+    # getattr and method calls by a name held in a string, and any dotted name resolved to its object.
+    "attrgetter", "methodcaller", "resolve_name",
 }  # fmt: skip
 
 
@@ -199,6 +201,7 @@ def deliberate_routes(module: str, tree: ast.AST) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     outside_safety = not (module == "lasto.safety" or module.startswith("lasto.safety."))
     names = bindings(tree)
+    called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
     for node in ast.walk(tree):
         line = f"{module}:{getattr(node, 'lineno', '?')}"
         changed = _changed_import(node, names)
@@ -215,6 +218,11 @@ def deliberate_routes(module: str, tree: ast.AST) -> list[tuple[str, str]]:
                 found.append((root, line))
             if node.module == "sys" and any(alias.name == "modules" for alias in node.names):
                 found.append(("sys.modules", line))
+            # from operator import attrgetter, from sys import settrace: the banned attribute by another name.
+            found += [(alias.name, line) for alias in node.names if alias.name in BANNED_ATTRIBUTES]
+        elif isinstance(node, ast.Name) and node.id in BANNED_CALLS | NAME_ARGUMENT_CALLS and id(node) not in called:
+            # s = setattr, [vars, getattr], f(eval): a banned builtin taken as a value, so its call doesn't show.
+            found.append((f"{node.id} as a value", line))
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id in BANNED_CALLS:
                 found.append((node.func.id, line))

@@ -5,8 +5,10 @@
   `from lasto.safety.session import open_active` counts as using
   lasto.safety.pcan_active.open_active.
 - No code anywhere in src/ uses a deliberate route around the core's guards
-  (ctypes, gc, inspect, importlib, builtins, pickle and friends, sys.modules,
-  vars/globals/setattr/delattr, getattr with a private or computed name,
+  (ctypes and _ctypes, gc, inspect, importlib, builtins, pickle and friends,
+  sys.modules, vars/globals/setattr/delattr and the like, or any of them taken
+  as a value (s = setattr), getattr with a private or computed name,
+  operator.attrgetter and methodcaller, pkgutil.resolve_name,
   attribute-guard dunders, mro(), function defaults, frames, trace and import
   hooks, an explicit __init__ call other than super().__init__() (finding P1),
   an assignment, deletion, or in-place change inside an imported module, such
@@ -178,6 +180,25 @@ def test_the_scanner_follows_reexports_and_attribute_chains(snippet, flagged):
         "from os import environ\nenviron.update(SystemRoot='D:\\\\elsewhere')",
         "import sys\nsys.path.insert(0, 'elsewhere')",
         "import sys as s\ns.path.append('elsewhere')",
+        # A banned builtin taken as a value instead of called, so the call no longer shows.
+        "s = setattr\ns(policy, 'NEVER_SERVICES', frozenset())",
+        "g = getattr\ng(session.reader, '_channel')",
+        "check = hasattr",
+        "hooks = [delattr, vars]",
+        "run = eval",
+        "load = __import__",
+        "apply(globals)",
+        # operator's getters and callers reach attributes by a name held in a string.
+        "import operator\noperator.attrgetter('_channel')(session.reader)",
+        "from operator import attrgetter",
+        "import operator as op\nop.methodcaller('__setattr__', 'x', 1)(target)",
+        "from operator import methodcaller",
+        # ctypes' own C module, and resolving any dotted name to its object.
+        "import _ctypes",
+        "from _ctypes import CFuncPtr",
+        "import pkgutil\npkgutil.resolve_name('lasto.safety.pcan_active:open_active')",
+        "from pkgutil import resolve_name",
+        "from sys import settrace",  # any banned attribute, imported by name
     ],
 )
 def test_every_deliberate_route_is_caught(snippet):
@@ -197,7 +218,8 @@ def test_ordinary_code_is_not_flagged():
         "import sys\nsys.argv\nsys.exit(1)\nimport json\njson.dumps(record)\nimport types\ntypes.MappingProxyType({})\n"
         "class Child(Parent):\n    def __init__(self):\n        super().__init__()\n"
         "self.clock = clock\nrecord['event'] = name\nimport os\nroot = os.environ.get('SystemRoot')\nimport time\nnow = time.monotonic()\n"
-        "items = []\nitems.append(1)\nrecord.update(fields)\nself._listeners.clear()\nsettings = os.environ.copy()\nsettings.update(extra)"
+        "items = []\nitems.append(1)\nrecord.update(fields)\nself._listeners.clear()\nsettings = os.environ.copy()\nsettings.update(extra)\n"
+        "ordered = sorted(names, key=len)\nimport operator\nfirst = operator.itemgetter(0)\nimport pkgutil\nmodules = pkgutil.iter_modules()"
     )
     assert deliberate_routes("lasto.probe", ast.parse(snippet)) == []
 
