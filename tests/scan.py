@@ -153,29 +153,40 @@ BANNED_DUNDERS = {
 BANNED_ATTRIBUTES = {
     "tb_frame", "f_globals", "f_builtins", "f_locals", "f_back", "gi_frame", "cr_frame", "ag_frame",
     "settrace", "setprofile", "meta_path", "path_hooks", "path_importer_cache",
+    "mro",  # the same walk to every base class as __mro__
 }  # fmt: skip
 
 
-def _changed_import(node: ast.AST, names: dict[str, tuple[str, ...]]) -> str | None:
-    """For an assignment or deletion aimed inside something an import bound (time.monotonic = f,
-    os.environ[key] = value, ctypes.CDLL.__init__ = f), the target as written; otherwise None.
-
-    Changing what a module holds changes it for every user in the process, the safety core included
-    (finding P3). sys.modules is a banned route of its own, so it isn't reported twice.
-    """
-    if not isinstance(node, ast.Attribute | ast.Subscript) or not isinstance(node.ctx, ast.Store | ast.Del):
-        return None
+def _inside_an_import(node: ast.AST, names: dict[str, tuple[str, ...]]) -> bool:
+    """Whether the expression is something an import bound, or reached through one (os.environ, environ,
+    ctypes.CDLL.__init__), other than sys.modules, which is a banned route of its own."""
     chain: list[str] = []
-    base: ast.AST = node
-    while isinstance(base, ast.Attribute | ast.Subscript):
-        if isinstance(base, ast.Attribute):
-            chain.append(base.attr)
-        base = base.value
-    if not isinstance(base, ast.Name) or base.id not in names:
-        return None
-    if chain[-1:] == ["modules"] and names[base.id] == ("module", "sys"):
-        return None
-    return ast.unparse(node)
+    while isinstance(node, ast.Attribute | ast.Subscript):
+        if isinstance(node, ast.Attribute):
+            chain.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name) or node.id not in names:
+        return False
+    return not (chain[-1:] == ["modules"] and names[node.id] == ("module", "sys"))
+
+
+def _changed_import(node: ast.AST, names: dict[str, tuple[str, ...]]) -> str | None:
+    """For a change to something an import bound, what the code changes; otherwise None.
+
+    Changing what a module holds changes it for every user in the process, the safety core included:
+    an assignment or deletion (time.monotonic = f, os.environ[key] = value, finding P3), or an in-place
+    change (os.environ.update(...), sys.path.insert(...)).
+    """
+    if isinstance(node, ast.Attribute | ast.Subscript) and isinstance(node.ctx, ast.Store | ast.Del):
+        return ast.unparse(node) if _inside_an_import(node, names) else None
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in IN_PLACE_METHODS
+        and _inside_an_import(node.func.value, names)
+    ):
+        return f"{ast.unparse(node.func)}(...)"
+    return None
 
 
 def _is_bare_super(node: ast.AST) -> bool:
@@ -217,8 +228,8 @@ def deliberate_routes(module: str, tree: ast.AST) -> list[tuple[str, str]]:
                 found.append(("__init__", line))
         elif isinstance(node, ast.Attribute):
             chain = attribute_chain(node)
-            if chain and len(chain) >= 2 and chain[1] == "modules" and names.get(chain[0]) == ("module", "sys"):
-                found.append(("sys.modules", line))
+            if chain and len(chain) == 2 and chain[1] == "modules" and names.get(chain[0]) == ("module", "sys"):
+                found.append(("sys.modules", line))  # once, at sys.modules itself, not again for sys.modules.pop
             if node.attr in BANNED_DUNDERS or node.attr in BANNED_ATTRIBUTES:
                 found.append((node.attr, line))
             elif (
@@ -246,6 +257,8 @@ SETTERS = {
     "setattr", "delattr", "setitem", "delitem", "patch", "object",
     "__setattr__", "__delattr__", "__setitem__", "__delitem__",
 }  # fmt: skip
+# Methods that change what an imported module holds in place (os.environ.update, sys.path.insert).
+IN_PLACE_METHODS = MUTATING_METHODS | {"__setitem__", "__delitem__"}
 
 
 def resolve_expr(node: ast.AST, names: dict[str, tuple[str, ...]]) -> Target | None:

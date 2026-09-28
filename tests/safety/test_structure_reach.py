@@ -7,10 +7,11 @@
 - No code anywhere in src/ uses a deliberate route around the core's guards
   (ctypes, gc, inspect, importlib, builtins, pickle and friends, sys.modules,
   vars/globals/setattr/delattr, getattr with a private or computed name,
-  attribute-guard dunders, function defaults, frames, trace and import hooks,
-  an explicit __init__ call other than super().__init__() (finding P1),
-  an assignment or deletion inside an imported module, such as
-  time.monotonic = f or os.environ[key] = value (finding P3),
+  attribute-guard dunders, mro(), function defaults, frames, trace and import
+  hooks, an explicit __init__ call other than super().__init__() (finding P1),
+  an assignment, deletion, or in-place change inside an imported module, such
+  as time.monotonic = f, os.environ[key] = value, or os.environ.update(...)
+  (finding P3),
   or, outside the safety core, another object's private attributes), except
   the exemptions listed below. Adding an exemption is its own commit,
   approved by the owner.
@@ -164,16 +165,30 @@ def test_the_scanner_follows_reexports_and_attribute_chains(snippet, flagged):
         "import weakref\nweakref.WeakKeyDictionary.get = lambda *args: None",
         "from datetime import datetime\ndatetime.now = frozen",
         "import os\nos.environ['SystemRoot'] = 'D:\\\\elsewhere'",
+        # mro() walks to every base class, the same as __mro__.
+        "from lasto.safety.gate import Gate\nGate.mro()",
+        "type(request).mro()",
+        "type.mro(Gate)",
+        # Changing what an imported module holds in place, rather than by assignment.
+        "import os\nos.environ.update({'SystemRoot': 'D:\\\\elsewhere'})",
+        "import os\nos.environ.pop('SystemRoot')",
+        "import os\nos.environ.setdefault('SystemRoot', 'D:\\\\elsewhere')",
+        "import os\nos.environ.clear()",
+        "import os\nos.environ.__setitem__('SystemRoot', 'D:\\\\elsewhere')",
+        "from os import environ\nenviron.update(SystemRoot='D:\\\\elsewhere')",
+        "import sys\nsys.path.insert(0, 'elsewhere')",
+        "import sys as s\ns.path.append('elsewhere')",
     ],
 )
 def test_every_deliberate_route_is_caught(snippet):
     assert deliberate_routes("lasto.probe", ast.parse(snippet))
 
 
-def test_sys_modules_is_reported_once_as_its_own_route():
-    assert [route for route, _ in deliberate_routes("lasto.probe", ast.parse("import sys\nsys.modules['serial'] = stub"))] == [
-        "sys.modules"
-    ]
+@pytest.mark.parametrize(
+    "snippet", ["import sys\nsys.modules['serial'] = stub", "import sys\nsys.modules.pop('serial')"]
+)
+def test_sys_modules_is_reported_once_as_its_own_route(snippet):
+    assert [route for route, _ in deliberate_routes("lasto.probe", ast.parse(snippet))] == ["sys.modules"]
 
 
 def test_ordinary_code_is_not_flagged():
@@ -181,7 +196,8 @@ def test_ordinary_code_is_not_flagged():
         "getattr(args, 'live', False)\nhasattr(value, 'value')\nself._private = 1\ncls._table\ntype(x).__name__\n"
         "import sys\nsys.argv\nsys.exit(1)\nimport json\njson.dumps(record)\nimport types\ntypes.MappingProxyType({})\n"
         "class Child(Parent):\n    def __init__(self):\n        super().__init__()\n"
-        "self.clock = clock\nrecord['event'] = name\nimport os\nroot = os.environ.get('SystemRoot')\nimport time\nnow = time.monotonic()"
+        "self.clock = clock\nrecord['event'] = name\nimport os\nroot = os.environ.get('SystemRoot')\nimport time\nnow = time.monotonic()\n"
+        "items = []\nitems.append(1)\nrecord.update(fields)\nself._listeners.clear()\nsettings = os.environ.copy()\nsettings.update(extra)"
     )
     assert deliberate_routes("lasto.probe", ast.parse(snippet)) == []
 
