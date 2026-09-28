@@ -156,6 +156,28 @@ BANNED_ATTRIBUTES = {
 }  # fmt: skip
 
 
+def _changed_import(node: ast.AST, names: dict[str, tuple[str, ...]]) -> str | None:
+    """For an assignment or deletion aimed inside something an import bound (time.monotonic = f,
+    os.environ[key] = value, ctypes.CDLL.__init__ = f), the target as written; otherwise None.
+
+    Changing what a module holds changes it for every user in the process, the safety core included
+    (finding P3). sys.modules is a banned route of its own, so it isn't reported twice.
+    """
+    if not isinstance(node, ast.Attribute | ast.Subscript) or not isinstance(node.ctx, ast.Store | ast.Del):
+        return None
+    chain: list[str] = []
+    base: ast.AST = node
+    while isinstance(base, ast.Attribute | ast.Subscript):
+        if isinstance(base, ast.Attribute):
+            chain.append(base.attr)
+        base = base.value
+    if not isinstance(base, ast.Name) or base.id not in names:
+        return None
+    if chain[-1:] == ["modules"] and names[base.id] == ("module", "sys"):
+        return None
+    return ast.unparse(node)
+
+
 def _is_bare_super(node: ast.AST) -> bool:
     """`super()` with no arguments: a class initializing its own new instance through its parent."""
     return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "super" and not (node.args or node.keywords)
@@ -168,6 +190,9 @@ def deliberate_routes(module: str, tree: ast.AST) -> list[tuple[str, str]]:
     names = bindings(tree)
     for node in ast.walk(tree):
         line = f"{module}:{getattr(node, 'lineno', '?')}"
+        changed = _changed_import(node, names)
+        if changed is not None:
+            found.append((f"change {changed}", line))
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root = alias.name.split(".")[0]

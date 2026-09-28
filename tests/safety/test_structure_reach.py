@@ -9,6 +9,8 @@
   vars/globals/setattr/delattr, getattr with a private or computed name,
   attribute-guard dunders, function defaults, frames, trace and import hooks,
   an explicit __init__ call other than super().__init__() (finding P1),
+  an assignment or deletion inside an imported module, such as
+  time.monotonic = f or os.environ[key] = value (finding P3),
   or, outside the safety core, another object's private attributes), except
   the exemptions listed below. Adding an exemption is its own commit,
   approved by the owner.
@@ -57,6 +59,7 @@ EXEMPTIONS = {
     ("ctypes", "lasto.safety.hotkey"): "user32/kernel32 calls for the Ctrl+Alt+K kill-switch hotkey",
     ("ctypes", "lasto.sim.pytest_plugin"): "the test hardware firewall wraps ctypes.CDLL.__init__",
     ("sys.modules", "lasto.sim.pytest_plugin"): "the test hardware firewall replaces pyserial with a stub",
+    ("change ctypes.CDLL.__init__", "lasto.sim.pytest_plugin"): "the test hardware firewall wraps ctypes.CDLL.__init__",
     # The freezing helper (finding #2): what it takes to make the rest of the core unchangeable.
     ("sys.modules", "lasto.safety._frozen"): "find the module being frozen, and each submodule its package may bind",
     ("vars", "lasto.safety._frozen"): "read a module's names, to seal the classes it defines and see what is bound",
@@ -151,17 +154,34 @@ def test_the_scanner_follows_reexports_and_attribute_chains(snippet, flagged):
         "session.reader.__init__(channel, clock)",
         "type(request).__init__(request, target, payload, purpose)",
         "super(Gate, gate).__init__()",
+        # Finding P3: changing what an imported module holds steers every user of it, the safety core included.
+        "import time\ntime.monotonic = lambda: 0.0",
+        "import time as clock_source\nclock_source.sleep = lambda seconds: None",
+        "import time\ndel time.sleep",
+        "import time\ntime.monotonic += 1.0",
+        "import time\nfor time.monotonic in clocks:\n    pass",
+        "import threading\nthreading.RLock = FakeLock",
+        "import weakref\nweakref.WeakKeyDictionary.get = lambda *args: None",
+        "from datetime import datetime\ndatetime.now = frozen",
+        "import os\nos.environ['SystemRoot'] = 'D:\\\\elsewhere'",
     ],
 )
 def test_every_deliberate_route_is_caught(snippet):
     assert deliberate_routes("lasto.probe", ast.parse(snippet))
 
 
+def test_sys_modules_is_reported_once_as_its_own_route():
+    assert [route for route, _ in deliberate_routes("lasto.probe", ast.parse("import sys\nsys.modules['serial'] = stub"))] == [
+        "sys.modules"
+    ]
+
+
 def test_ordinary_code_is_not_flagged():
     snippet = (
         "getattr(args, 'live', False)\nhasattr(value, 'value')\nself._private = 1\ncls._table\ntype(x).__name__\n"
         "import sys\nsys.argv\nsys.exit(1)\nimport json\njson.dumps(record)\nimport types\ntypes.MappingProxyType({})\n"
-        "class Child(Parent):\n    def __init__(self):\n        super().__init__()"
+        "class Child(Parent):\n    def __init__(self):\n        super().__init__()\n"
+        "self.clock = clock\nrecord['event'] = name\nimport os\nroot = os.environ.get('SystemRoot')\nimport time\nnow = time.monotonic()"
     )
     assert deliberate_routes("lasto.probe", ast.parse(snippet)) == []
 
