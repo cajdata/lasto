@@ -105,6 +105,24 @@ class KillSwitch(metaclass=SealedType):
 KILL_SWITCH = KillSwitch()
 
 
+class KillSwitchHandle(metaclass=SealedType):
+    """What code outside the safety core gets (PolledSession.killswitch): trip it, and see whether it has
+    tripped and why. Adding or removing listeners, and the check that refuses, stay inside (finding N7)."""
+
+    __slots__ = ()
+
+    @property
+    def tripped(self) -> bool:
+        return KILL_SWITCH.tripped
+
+    @property
+    def cause(self) -> str | None:
+        return KILL_SWITCH.cause
+
+    def trip(self, cause: str) -> bool:
+        return KILL_SWITCH.trip(cause)
+
+
 def _check_reset_allowed(*, firewall_installed: bool) -> None:
     if not firewall_installed:
         refuse(

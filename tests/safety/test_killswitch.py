@@ -155,7 +155,20 @@ def test_every_polled_session_shares_one_kill_switch(sim, auditor):
     first = open_polled(sim, auditor)
     first.close()
     second = open_polled(build_sim(), auditor)
-    assert second.killswitch is first.killswitch
+    first.killswitch.trip("hotkey")  # through a closed session's handle, even
+    assert second.killswitch.tripped and second.killswitch.cause == "hotkey"
+    assert _process_kill_switch().cause == "hotkey"
+
+
+def test_a_session_hands_out_only_trip_tripped_and_cause(sim, auditor):
+    """Finding N7: listeners and the internal check stay inside the safety core."""
+    handle = open_polled(sim, auditor).killswitch
+    public = {name for name in dir(handle) if not name.startswith("_")}
+    assert public - {"sealed_class"} == {"trip", "tripped", "cause"}  # sealed_class: the frozen mark, read-only
+    assert handle.sealed_class is type(handle)
+    assert (handle.tripped, handle.cause) == (False, None)
+    assert handle.trip("hotkey") is True and handle.trip("error_frame") is False
+    assert (handle.tripped, handle.cause) == (True, "hotkey")
 
 
 def test_after_a_kill_no_polled_session_opens_until_the_process_restarts(sim, auditor, sink):

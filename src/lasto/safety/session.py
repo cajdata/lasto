@@ -24,7 +24,7 @@ from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed, SafetyVi
 from lasto.safety.exchange import Exchange, ExchangeState
 from lasto.safety.frames import Received
 from lasto.safety.interlocks import Interlocks
-from lasto.safety.killswitch import KILL_SWITCH, KillSwitch, NrcMonitor
+from lasto.safety.killswitch import KILL_SWITCH, KillSwitchHandle, NrcMonitor
 from lasto.safety.pcan_dll import ReadOnlyPcan, load_readonly
 from lasto.safety.pcan_passive import PassiveChannel, open_passive
 from lasto.safety.ratelimit import RateLimiter
@@ -217,9 +217,9 @@ class PolledSession(metaclass=SealedType):
         self._channel_closed = False
 
     @property
-    def killswitch(self) -> KillSwitch:
-        """The process kill switch, shared by every session. Anyone may trip it; nothing resets it."""
-        return KILL_SWITCH
+    def killswitch(self) -> KillSwitchHandle:
+        """The process kill switch, shared by every session: trip it, or see whether and why it tripped."""
+        return KillSwitchHandle()
 
     @property
     def reader(self) -> Reader:
