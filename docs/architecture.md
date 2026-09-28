@@ -219,6 +219,7 @@ From the OBDLink Family Reference and Programming Manual (Rev F, Aug 2025) and t
   - header and flow-control shaping, except the gate's own `ATSH` to an approved address
 
 - **The port never leaves the adapter:** `open_adapter(port, auditor=...)` opens the COM port inside `StnAdapter` and returns only the adapter, so nothing outside the safety core holds a raw, writable port. A reachability test walks every attribute path from the adapter to the port.
+- **Nothing else opens the port by name:** on Windows the built-in `open("COM5")` or `os.open(r"\\.\COM5")` reaches the adapter without pyserial. The first import of the safety core installs a process-wide audit hook (`safety/serial_guard.py`) that refuses (audited) opening a serial device path with `open()`, `os.open()`, or `_winapi.CreateFile`: a COM or AUX name anywhere in the path, or GLOBALROOT. pyserial opens its port with `CreateFileW` through ctypes, which raises no such event, so the adapter link is unaffected (review finding P2).
 - **Routines:** reset (`ATZ`/`ATWS`) and monitor (`STM`/`STMA`) commands are accepted only inside the routines that enforce their rules. Monitoring is stopped with a backspace: it stops a running monitor, and on an idle adapter it edits an empty line. Confirm this on the real MX+ in Phase 3.
 
 **Rule 4 conflict: silent mode can't be read back.** Neither `STCMM` nor `ATCSM` has a query form. Proposed verification, all required before every monitor start:
@@ -286,7 +287,7 @@ What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr
 - **Hypothesis** fuzzes CAN IDs, payloads, addressing, typed request sequences, and injected faults through the gate against `FakePcanDll`, asserting that every frame reaching `CAN_Write` satisfies the policy. It fuzzes the `Writer` directly too, around the gate. It does the same for strings reaching the fake serial port.
 - **Structural tests** read the source:
   - only `safety/pcan_active.py` names `CAN_Write`, and only the gate calls the `Writer`
-  - only `safety/stn_port.py` opens or writes serial
+  - only `safety/stn_port.py` opens or writes serial, and no literal in `src/` names a serial device path
   - nothing outside `lasto.safety` imports the DLL bindings or pyserial
   - code outside the safety core uses only its public API. Names are resolved through every re-export and attribute chain back to the module that defines them (`tests/scan.py`).
   - no code in `src/` uses a deliberate route around the core's guards (ctypes, gc, inspect, importlib, builtins, pickle and other code-rebuilding modules, `sys.modules`, `vars`/`globals`/`setattr`/`delattr`, `getattr` with a private or computed name, attribute-guard dunders, function defaults, frames and tracebacks, trace and import hooks, an explicit `__init__` call other than `super().__init__()`, or, outside the safety core, another object's private attributes), except an explicit exemption list in `tests/safety/test_structure_reach.py`. Each new exemption is its own commit, approved by the owner.
@@ -295,7 +296,7 @@ What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr
   - passive modules contain no write reference
   - every argparse parser has `allow_abbrev=False`
 - **Reachability tests** walk every attribute path from a live polled session: the raw `CAN_Write` is reachable only inside the `Writer`, and the reader's channel can't write.
-- **Hardware firewall** (`tests/conftest.py`, autouse): loading `PCANBasic.dll` or opening a real serial port raises.
+- **Hardware firewall** (`lasto.sim.pytest_plugin`, loaded by the test command): loading `PCANBasic.dll` or opening a real serial port raises, through pyserial or by name (its own audit hook, separate from the safety core's).
 - **Coverage:** `python -m pytest` runs branch coverage on `lasto.safety` and fails below 100 %.
 - **Guardrail tests:** a table of commands and tool calls through `.claude/hooks/hardware_guard.py`.
 
@@ -314,6 +315,7 @@ src/lasto/
     exchange.py              # Exchange and ExchangeState, the public result of a request
     _frozen.py               # freeze(): sealed classes, frozen modules (§3.9)
     pcan_passive.py  stn_port.py  reader.py
+    serial_guard.py          # audit hook: nothing else in the process opens a serial port by name
   capture/  protocol/  storage/  decode/  mapping/  polling/  snapshot/  identify/  discover/
   analysis/  report/  export/  view/
   sim/                       # FakePcanDll, FakeStnPort, vehicle model, ECUs, Creader, violations

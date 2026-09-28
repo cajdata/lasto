@@ -5,7 +5,8 @@ in pyproject.toml's addopts). It is not a pytest11 entry point, so installing
 lasto never changes anyone else's test runs; tests/test_packaging.py holds
 that. The firewall is installed when this module is
 imported, before any test module: loading PCANBasic.dll through ctypes, or
-opening a serial port through pyserial, raises HardwareFirewallError. Any
+opening a serial port through pyserial or by name (open("COM5")), raises
+HardwareFirewallError. Any
 test that leaves a simulator violation behind fails, and so does the run.
 
 The process kill switch latches for the life of the process, and a test run
@@ -17,6 +18,8 @@ Nothing in src/ may import this module.
 from __future__ import annotations
 
 import ctypes
+import os
+import re
 import sys
 import types
 from collections.abc import Iterator
@@ -47,12 +50,28 @@ def _refuse_serial(*args: object, **kwargs: object) -> None:
     raise HardwareFirewallError("tests may not open a serial port")
 
 
+# A serial port named anywhere in a path (COM5, COM5.txt, \\.\COM5, AUX), or GLOBALROOT, which reaches any device.
+# Written separately from the safety core's check (lasto.safety.serial_guard), like the simulator's oracle.
+_SERIAL_PATH = re.compile(
+    r"(?i)(?:^|[\\/])(?:com[0-9¹²³]+|aux)(?:[.:][^\\/]*)?\s*(?:[\\/]|$)|(?:^|[\\/])globalroot(?:[\\/]|$)"
+)
+
+
+def _refuse_serial_paths(event: str, args: tuple[object, ...]) -> None:
+    """Audit hook: tests may not open a serial port by name, with open(), os.open(), or _winapi.CreateFile."""
+    if event in ("open", "_winapi.CreateFile") and isinstance(args[0], str | bytes | os.PathLike):
+        path = os.fsdecode(os.fspath(args[0]))
+        if _SERIAL_PATH.search(path):
+            raise HardwareFirewallError(f"tests may not open a serial port: {path!r}")
+
+
 def install_firewall() -> None:
     ctypes.CDLL.__init__ = _guarded_cdll_init  # type: ignore[method-assign]
     fake_serial = types.ModuleType("serial")
     fake_serial.Serial = _refuse_serial  # type: ignore[attr-defined]
     fake_serial.serial_for_url = _refuse_serial  # type: ignore[attr-defined]
     sys.modules["serial"] = fake_serial
+    sys.addaudithook(_refuse_serial_paths)  # finding P2: the built-in open() reaches a port without pyserial
 
 
 install_firewall()

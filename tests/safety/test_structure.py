@@ -3,7 +3,7 @@
 - Only safety/pcan_active.py binds or calls CAN_Write (the simulator's fake DLL may list it), and
   only its Writer holds it. Only the gate calls the Writer.
 - The passive path imports nothing that can transmit and names no write function.
-- Only safety/stn_port.py opens a serial port.
+- Only safety/stn_port.py opens a serial port, and no literal in src/ names a serial device path.
 - Only the hardware bindings use ctypes.
 - Only the session module imports the transmit binding and the gate.
 - Every argument parser disables option abbreviation, so nothing shorter than --live can enable it.
@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
 import sys
 from functools import cache
 from pathlib import Path
+
+import pytest
 
 import lasto
 
@@ -186,6 +189,59 @@ def test_only_stn_port_opens_a_serial_port():
     for name, tree in sources().items():
         uses_serial = any(i == "serial" or i.startswith("serial.") for i in imports(tree))
         assert uses_serial == (name == "lasto.safety.stn_port"), name
+
+
+def names_a_serial_device(value: str | bytes) -> bool:
+    """A literal naming a serial port (COM5, AUX), or a Windows device path that could reach one (\\\\.\\ and the like)."""
+    text = value.decode("latin-1") if isinstance(value, bytes) else value
+    path = text.replace("/", "\\")
+    if path.startswith(("\\\\.\\", "\\\\?\\", "\\??\\")):
+        return True
+    return any(
+        re.fullmatch(r"(?i)com[0-9¹²³]+|aux|globalroot", part.split(".")[0].split(":")[0].rstrip())
+        for part in path.split("\\")
+    )
+
+
+@pytest.mark.parametrize(
+    ("literal", "flagged"),
+    [
+        ("COM5", True),
+        (b"COM3", True),
+        ("com12:", True),
+        ("AUX", True),
+        (r"C:\temp\COM1.txt", True),
+        (r"\\.\COM5", True),
+        ("//./COM5", True),
+        (r"\\?\GLOBALROOT\Device\Serial0", True),
+        (r"\??\COM5", True),
+        ("OBDLink COM port such as COM5 (only with --live)", False),
+        ("--port must look like COM5, not ", False),
+        (r"COM[1-9][0-9]{0,2}", False),
+        ("company.txt", False),
+        ("PCAN_USBBUS1", False),
+    ],
+)
+def test_the_serial_device_check(literal, flagged):
+    assert names_a_serial_device(literal) is flagged
+
+
+def test_no_code_names_a_serial_device_path():
+    """Finding P2: open("COM5") or os.open(r"\\\\.\\COM5") would reach the adapter without the STN link. stn_port
+    takes its port name from the caller and checks it, so no literal anywhere in src/ names one (docstrings aside).
+    The safety core's audit hook (lasto.safety.serial_guard) refuses such an open at runtime, whatever the path."""
+    found = []
+    for name, tree in sources().items():
+        skip = docstrings(tree)
+        found += [
+            f"{name}: {node.value!r}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str | bytes)
+            and id(node) not in skip
+            and names_a_serial_device(node.value)
+        ]
+    assert found == []
 
 
 def test_ctypes_only_in_the_hardware_bindings():
