@@ -7,7 +7,7 @@ import os
 import pytest
 from hypothesis import HealthCheck, settings
 
-from lasto.safety.audit import Auditor, MemoryAuditSink
+from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
 from lasto.sim.clock import FakeClock
 from lasto.sim.vehicle import Sim, build_sim
 
@@ -16,6 +16,14 @@ settings.register_profile("lasto", deadline=None, max_examples=150, suppress_hea
 # HYPOTHESIS_PROFILE=thorough python -m pytest tests/safety/test_properties.py  (slower, many more examples)
 settings.register_profile("thorough", deadline=None, max_examples=3000, suppress_health_check=_suppress)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "lasto"))
+
+
+@pytest.fixture(autouse=True)
+def _fresh_refusal_log():
+    """Each test starts with nothing attached to the process-wide refusal log and nothing held."""
+    REFUSALS.reset()
+    yield
+    REFUSALS.reset()
 
 
 @pytest.fixture

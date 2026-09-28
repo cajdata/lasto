@@ -7,16 +7,18 @@ vehicle bus: request lines are denied, and CAN monitoring starts only after
 the silent-mode checks in docs/architecture.md §3.7 pass. K-line monitoring
 uses a preset with no bus initialization and keep-alives switched off.
 Reset and monitor commands are accepted only inside the routines that
-enforce those rules.
+enforce those rules. Every refusal is audited (rule 11).
 """
 
 from __future__ import annotations
 
 import re
-from typing import Protocol
+from collections.abc import Callable
+from typing import NoReturn, Protocol
 
 from lasto.safety import stn_policy
-from lasto.safety.audit import Auditor
+from lasto.safety._frozen import SealedProtocolType, SealedType, freeze
+from lasto.safety.audit import REFUSALS, Auditor, refuse
 from lasto.safety.errors import AdapterError, SafetyViolation
 
 PROMPT = b">"
@@ -30,7 +32,7 @@ _PORT_NAME = re.compile(r"COM[1-9][0-9]{0,2}")
 _VOLTAGE = re.compile(r"\d{1,2}\.\d{1,3}")
 
 
-class SerialPort(Protocol):
+class SerialPort(Protocol, metaclass=SealedProtocolType):
     timeout: float | None
 
     def write(self, data: bytes) -> int | None:
@@ -43,10 +45,9 @@ class SerialPort(Protocol):
         """Close the port."""
 
 
-def open_serial(port_name: str, *, factory: object = None) -> SerialPort:
-    """Open a COM port for the adapter. Only live hardware sessions call this without a factory."""
+def _open_serial(port_name: str, *, factory: Callable[..., SerialPort] | None) -> SerialPort:
     if not isinstance(port_name, str) or _PORT_NAME.fullmatch(port_name) is None:
-        raise ValueError(f"not a COM port name: {port_name!r}")
+        refuse(ValueError(f"not a COM port name: {port_name!r}"), transport="stn", reason="bad_port_name")
     if factory is None:
         import serial  # pyserial; only imported when real hardware is opened
 
@@ -54,17 +55,34 @@ def open_serial(port_name: str, *, factory: object = None) -> SerialPort:
     return factory(port=port_name, baudrate=115200, timeout=COMMAND_TIMEOUT, write_timeout=COMMAND_TIMEOUT)
 
 
+def open_adapter(port_name: str, *, auditor: Auditor, factory: Callable[..., SerialPort] | None = None) -> StnAdapter:
+    """Open the OBDLink on a COM port (or a stand-in `factory`, such as the simulator's).
+
+    The port itself is never handed out: it lives inside the adapter, so every
+    line reaching it goes through the allowlist and the audit log (finding N1).
+    """
+    return StnAdapter(_open_serial(port_name, factory=factory), auditor)
+
+
 def _lines(text: str) -> list[str]:
     return [line.strip() for line in text.replace("\n", "\r").split("\r") if line.strip()]
 
 
-class StnAdapter:
+def _reject(reason: str, detail: str, request: str = "") -> NoReturn:
+    """Refuse (audited) an answer or state the adapter link can't accept."""
+    refuse(AdapterError(detail), transport="stn", request=request, reason=reason)
+
+
+class StnAdapter(metaclass=SealedType):
+    __slots__ = ("_auditor", "_configured", "_monitoring", "_port", "_rx")
+
     def __init__(self, port: SerialPort, auditor: Auditor) -> None:
         self._port = port
         self._auditor = auditor
         self._configured = False
         self._monitoring = False
         self._rx = bytearray()
+        REFUSALS.attach(auditor)
 
     @property
     def monitoring(self) -> bool:
@@ -73,17 +91,17 @@ class StnAdapter:
     # ---- the only writes to the serial port ----
 
     def _write_command(self, command: str, *, reset: bool = False, monitor: bool = False) -> str:
-        try:
-            canonical = stn_policy.check_command(command)
-            if stn_policy.is_reset(canonical) and not reset:
-                raise SafetyViolation("adapter_reset_outside_reset_routine", canonical)
-            if stn_policy.is_monitor(canonical) and not monitor:
-                raise SafetyViolation("adapter_monitor_outside_monitor_routine", canonical)
-            if self._monitoring:
-                raise SafetyViolation("adapter_is_monitoring", "stop monitoring before sending commands")
-        except SafetyViolation as exc:
-            self._auditor.rejected(transport="stn", reason=exc.reason, detail=str(exc), request=repr(command))
-            raise
+        canonical = stn_policy.check_command(command)
+        if stn_policy.is_reset(canonical) and not reset:
+            refuse(SafetyViolation("adapter_reset_outside_reset_routine", canonical), transport="stn", request=canonical)
+        if stn_policy.is_monitor(canonical) and not monitor:
+            refuse(SafetyViolation("adapter_monitor_outside_monitor_routine", canonical), transport="stn", request=canonical)
+        if self._monitoring:
+            refuse(
+                SafetyViolation("adapter_is_monitoring", "stop monitoring before sending commands"),
+                transport="stn",
+                request=canonical,
+            )
         self._auditor.adapter_command(command=canonical)
         self._port.write(canonical.encode("ascii") + b"\r")
         return canonical
@@ -97,7 +115,7 @@ class StnAdapter:
     def _read_prompt(self) -> str:
         data = self._port.read_until(PROMPT)
         if not data.endswith(PROMPT):
-            raise AdapterError(f"no prompt from the adapter (got {data!r})")
+            _reject("adapter_no_prompt", f"no prompt from the adapter (got {data!r})")
         return data[:-1].replace(b"\x00", b"").decode("ascii", "replace")
 
     def _response(self, canonical: str) -> list[str]:
@@ -113,11 +131,11 @@ class StnAdapter:
     def _expect(self, command: str, expected: str) -> None:
         response = self._command(command)
         if response != expected:
-            raise AdapterError(f"{command} answered {response!r}, expected {expected!r}")
+            _reject("adapter_unexpected_answer", f"{command} answered {response!r}, expected {expected!r}", command)
 
-    def _require_configured(self) -> None:
+    def _require_configured(self, operation: str) -> None:
         if not self._configured:
-            raise AdapterError("reset the adapter first")
+            _reject("adapter_not_reset", "reset the adapter first", operation)
 
     # ---- operations ----
 
@@ -136,27 +154,28 @@ class StnAdapter:
         return banner
 
     def identify(self) -> dict[str, str]:
-        self._require_configured()
+        self._require_configured("identify")
         return {"firmware": self._command("STI"), "device": self._command("STDI"), "serial": self._command("STSN")}
 
     def read_voltage(self) -> float:
         """Battery voltage at OBD pin 16, measured by the adapter."""
-        self._require_configured()
+        self._require_configured("read the voltage")
         text = self._command("STVR")
         if _VOLTAGE.fullmatch(text) is None:
-            raise AdapterError(f"unexpected voltage reading {text!r}")
+            _reject("adapter_bad_voltage", f"unexpected voltage reading {text!r}", "STVR")
         return float(text)
 
     def programmable_parameters(self) -> dict[int, tuple[int, bool]]:
-        self._require_configured()
+        self._require_configured("read the programmable parameters")
         return stn_policy.parse_pp_summary(self._command("ATPPS"))
 
     def start_can_monitor(self, protocol: str = "31") -> None:
-        """Silent CAN monitoring. Runs every check in docs/architecture.md §3.7 first."""
+        """Silent CAN monitoring. Runs every check in docs/architecture.md §3.7 first; each failure is audited."""
+        what = f"start CAN monitor on protocol {protocol!r}"
         if protocol not in stn_policy.CAN_MONITOR_PROTOCOLS:
-            raise ValueError(f"CAN monitoring uses protocol 31 or 33, not {protocol!r}")
+            refuse(ValueError(f"CAN monitoring uses protocol 31 or 33, not {protocol!r}"), transport="stn", request=what, reason="bad_monitor_protocol")
         if not stn_policy.silent_by_default(self.programmable_parameters()):
-            raise AdapterError("PP 21 makes the adapter ACK CAN frames by default; refusing to monitor")
+            _reject("adapter_acks_by_default", "PP 21 makes the adapter ACK CAN frames by default", what)
         self._expect(f"STP{protocol}", "OK")
         self._expect("STPR", protocol)
         self._expect("STCMM0", "OK")
@@ -164,10 +183,11 @@ class StnAdapter:
         self._monitoring = True
 
     def start_kline_monitor(self, protocol: str = "23") -> None:
-        """Passive K-line monitoring: a preset with no bus initialization, keep-alives off."""
-        self._require_configured()
+        """Passive K-line monitoring: a preset with no bus initialization, keep-alives off. Each failure is audited."""
+        what = f"start K-line monitor on protocol {protocol!r}"
+        self._require_configured(what)
         if protocol not in stn_policy.KLINE_MONITOR_PROTOCOLS:
-            raise ValueError(f"K-line monitoring uses protocol 21 or 23, not {protocol!r}")
+            refuse(ValueError(f"K-line monitoring uses protocol 21 or 23, not {protocol!r}"), transport="stn", request=what, reason="bad_monitor_protocol")
         self._expect("ATSW00", "OK")
         self._expect(f"STP{protocol}", "OK")
         self._expect("STPR", protocol)
@@ -181,7 +201,7 @@ class StnAdapter:
         comes back, monitoring is marked stopped, and None is returned.
         """
         if not self._monitoring:
-            raise AdapterError("the adapter isn't monitoring")
+            _reject("adapter_not_monitoring", "the adapter isn't monitoring", "read a monitor line")
         self._rx.extend(self._port.read_until(b"\r"))
         if self._rx.endswith(b"\r"):
             line = bytes(self._rx[:-1]).replace(b"\x00", b"").decode("ascii", "replace").strip()
@@ -204,3 +224,7 @@ class StnAdapter:
 
     def close(self) -> None:
         self._port.close()
+        REFUSALS.detach(self._auditor)
+
+
+freeze(__name__)

@@ -1,20 +1,25 @@
 """Read-only ctypes binding for PEAK's PCANBasic.dll.
 
-The binding looks up only the functions in READONLY_FUNCTIONS. It never looks
-up CAN_Write (or the FD and XL variants), CAN_Reset (can hard-reset the
+The binding looks up only the functions in READONLY_FUNCTIONS, each by a
+name written out in bind_readonly, never a computed one. It never looks up
+CAN_Write (or the FD and XL variants), CAN_Reset (can hard-reset the
 controller), or CAN_FilterMessages (resets the controller), and it keeps no
 reference to the DLL after binding. Code holding a ReadOnlyPcan or a
-PcanChannel therefore has no path to a transmit function. The transmit
-binding is in pcan_active.py, which only a polled session uses.
+PcanChannel therefore has no path to a transmit function. The one CAN_Write
+lookup is in pcan_active.py, which only a polled session uses.
 """
 
 from __future__ import annotations
 
 import ctypes
 import os
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
+from types import MappingProxyType
+from typing import Any, NoReturn
 
 from lasto.safety import pcan_constants as pc
+from lasto.safety._frozen import SealedType, freeze
+from lasto.safety.audit import REFUSALS, refuse
 from lasto.safety.errors import InterfaceError, SafetyViolation
 from lasto.safety.frames import CanFrame, ErrorFrame, ReadError, Received, StatusMessage
 
@@ -33,34 +38,86 @@ MAX_DRAIN = 4096
 
 POINTER_BYTES = ctypes.sizeof(ctypes.c_void_p)
 
+# The longest system folder path GetSystemDirectoryW may report here (MAX_PATH), in characters.
+MAX_PATH = 260
+
+
+def system_directory(get_system_directory: Callable[..., int]) -> str:
+    """The Windows system folder, as GetSystemDirectoryW reports it; "" if it can't (never a truncated path)."""
+    buffer = ctypes.create_unicode_buffer(MAX_PATH)
+    length = int(get_system_directory(buffer, ctypes.c_uint(MAX_PATH)))
+    return buffer.value if 0 < length < MAX_PATH else ""
+
+
+# Asked of Windows once, at import, not read from the SystemRoot environment variable, which anything in the
+# process can change: the environment can't redirect which PCANBasic.dll loads.
+SYSTEM_DIRECTORY = system_directory(ctypes.WinDLL("kernel32").GetSystemDirectoryW)
+
 
 def dll_path() -> str:
-    return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "PCANBasic.dll")
+    return os.path.join(SYSTEM_DIRECTORY, "PCANBasic.dll")
+
+
+def hardware_firewall_installed() -> bool:
+    """True only in a test run: the test plugin (lasto.sim.pytest_plugin) has made loading the PCAN DLL fail.
+
+    The plugin marks its wrapper of ctypes.CDLL.__init__. Nothing outside the safety core and that
+    plugin may use ctypes, so nothing else can put the mark there.
+    """
+    return getattr(ctypes.CDLL.__init__, "lasto_hardware_firewall", False) is True
+
+
+def refuse_interface(reason: str, detail: str, request: str = "") -> NoReturn:
+    """Refuse (audited) to open or use a PCAN channel: the driver, the adapter, or the channel's state won't do."""
+    refuse(InterfaceError(detail), transport="pcan", request=request, reason=reason)
+
+
+def require_64_bit(pointer_bytes: int) -> None:
+    if pointer_bytes != 8:
+        refuse_interface("python_not_64_bit", "lasto needs 64-bit Python to load the 64-bit PCANBasic.dll")
+
+
+def require_system_directory(directory: str) -> None:
+    if not directory:
+        refuse_interface(
+            "system_directory_unknown", "Windows didn't report its system folder, so PCANBasic.dll can't be found"
+        )
 
 
 def load_library() -> object:
-    """Load the real 64-bit PCANBasic.dll by absolute path. Only live hardware sessions get here."""
-    if POINTER_BYTES != 8:
-        raise InterfaceError("lasto needs 64-bit Python to load the 64-bit PCANBasic.dll")
+    """Load the real 64-bit PCANBasic.dll by absolute path, from the system folder. Only live hardware sessions get here."""
+    require_64_bit(POINTER_BYTES)
+    require_system_directory(SYSTEM_DIRECTORY)
     path = dll_path()
     try:
         return ctypes.WinDLL(path)
     except OSError as exc:
-        raise InterfaceError(f"could not load {path}: {exc}") from exc
+        refuse_interface("dll_not_loaded", f"could not load {path}: {exc}")
 
 
-def bind(library: object, names: Iterable[str]) -> dict[str, Callable[..., int]]:
-    return {name: getattr(library, name) for name in names}
+def bind_readonly(library: Any) -> dict[str, Callable[..., int]]:
+    """Look up exactly the read-only functions, in the order of READONLY_FUNCTIONS."""
+    return {
+        "CAN_Initialize": library.CAN_Initialize,
+        "CAN_Uninitialize": library.CAN_Uninitialize,
+        "CAN_GetValue": library.CAN_GetValue,
+        "CAN_SetValue": library.CAN_SetValue,
+        "CAN_GetStatus": library.CAN_GetStatus,
+        "CAN_Read": library.CAN_Read,
+        "CAN_GetErrorText": library.CAN_GetErrorText,
+    }
 
 
 def load_readonly(library: object | None = None) -> ReadOnlyPcan:
     """Bind the read-only subset, from the real DLL or from a stand-in such as the simulator."""
     source = load_library() if library is None else library
-    return ReadOnlyPcan(bind(source, READONLY_FUNCTIONS))
+    return ReadOnlyPcan(bind_readonly(source))
 
 
-class ReadOnlyPcan:
+class ReadOnlyPcan(metaclass=SealedType):
     """PCAN-Basic calls that can't transmit. CAN_SetValue only accepts an explicit list of settings."""
+
+    __slots__ = ("_functions",)
 
     SETVALUE_ALLOWED: frozenset[tuple[int, int]] = frozenset(
         {
@@ -71,7 +128,7 @@ class ReadOnlyPcan:
     )
 
     def __init__(self, functions: Mapping[str, Callable[..., int]]) -> None:
-        self._functions = dict(functions)
+        self._functions = MappingProxyType(dict(functions))
 
     def _call(self, name: str, *args: object) -> int:
         return int(self._functions[name](*args)) & 0xFFFFFFFF
@@ -116,7 +173,11 @@ class ReadOnlyPcan:
 
     def set_value(self, handle: int, parameter: int, value: int) -> int:
         if (parameter, value) not in self.SETVALUE_ALLOWED:
-            raise SafetyViolation("pcan_setting_not_allowed", f"parameter 0x{parameter:02X} = {value}")
+            refuse(
+                SafetyViolation("pcan_setting_not_allowed", f"parameter 0x{parameter:02X} = {value}"),
+                transport="pcan",
+                request=f"CAN_SetValue 0x{parameter:02X}={value}",
+            )
         buffer = ctypes.c_uint32(value)
         return self._call(
             "CAN_SetValue",
@@ -162,9 +223,13 @@ def check_driver(pcan: ReadOnlyPcan) -> str:
     """Refuse PCAN-Basic versions older than 4.7.0, or 5.0.0. Returns the version text."""
     status, text = pcan.get_text(pc.PCAN_NONEBUS, pc.PCAN_API_VERSION)
     if status != pc.PCAN_ERROR_OK:
-        raise InterfaceError(f"could not read the PCAN-Basic version: {pcan.error_text(status)}")
+        refuse_interface(
+            "driver_version_unreadable", f"could not read the PCAN-Basic version: {pcan.error_text(status)}"
+        )
     if not pc.api_version_supported(pc.parse_api_version(text)):
-        raise InterfaceError(f"PCAN-Basic {text!r} isn't supported; install 4.7.0 or later, but not 5.0.0")
+        refuse_interface(
+            "driver_not_supported", f"PCAN-Basic {text!r} isn't supported; install 4.7.0 or later, but not 5.0.0"
+        )
     return text
 
 
@@ -172,16 +237,20 @@ def check_available(pcan: ReadOnlyPcan, handle: int, name: str) -> None:
     """Refuse a channel another program holds: its controller may already be running in normal mode."""
     status, condition = pcan.get_u32(handle, pc.PCAN_CHANNEL_CONDITION)
     if status != pc.PCAN_ERROR_OK:
-        raise InterfaceError(f"could not check {name}: {pcan.error_text(status)}")
+        refuse_interface("channel_condition_unreadable", f"could not check {name}: {pcan.error_text(status)}", name)
     if condition != pc.PCAN_CHANNEL_AVAILABLE:
-        raise InterfaceError(
+        refuse_interface(
+            "channel_not_available",
             f"{name} isn't available (condition {condition}); make sure the adapter is plugged in "
-            "and close PCAN-View or any other program using it"
+            "and close PCAN-View or any other program using it",
+            name,
         )
 
 
-class PcanChannel:
+class PcanChannel(metaclass=SealedType):
     """An initialized PCAN channel. Read operations only."""
+
+    __slots__ = ("_api_version", "_handle", "_name", "_open", "_pcan")
 
     def __init__(self, pcan: ReadOnlyPcan, handle: int, name: str, api_version: str) -> None:
         self._pcan = pcan
@@ -225,8 +294,10 @@ class PcanChannel:
         for parameter in (pc.PCAN_ALLOW_ERROR_FRAMES, pc.PCAN_ALLOW_STATUS_FRAMES):
             status = self._pcan.set_value(self._handle, parameter, pc.PCAN_PARAMETER_ON)
             if status != pc.PCAN_ERROR_OK:
-                raise InterfaceError(
-                    f"could not enable error and status reporting on {self._name}: {self._pcan.error_text(status)}"
+                refuse_interface(
+                    "reporting_not_enabled",
+                    f"could not enable error and status reporting on {self._name}: {self._pcan.error_text(status)}",
+                    self._name,
                 )
 
     def describe(self) -> dict[str, str]:
@@ -236,7 +307,25 @@ class PcanChannel:
             info[key] = text if status == pc.PCAN_ERROR_OK else "unknown"
         return info
 
-    def close(self) -> None:
-        if self._open:
-            self._open = False
-            self._pcan.uninitialize(self._handle)
+    def close(self) -> bool:
+        """Uninitialize the channel. True once it is closed (or the driver says it already was).
+
+        False if the driver refused: the channel may still be initialized, and on the bus. That is
+        audited (every open audit log, or the next), and a later close() tries again.
+        """
+        if not self._open:
+            return True
+        status = self._pcan.uninitialize(self._handle)
+        if status not in (pc.PCAN_ERROR_OK, pc.PCAN_ERROR_INITIALIZE):
+            REFUSALS.event(
+                "channel_close_failed",
+                channel=self._name,
+                status=self._pcan.error_text(status),
+                detail="CAN_Uninitialize was refused; the channel may still be initialized and on the bus",
+            )
+            return False
+        self._open = False
+        return True
+
+
+freeze(__name__)

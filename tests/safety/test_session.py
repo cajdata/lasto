@@ -1,14 +1,16 @@
 """Opening passive and polled sessions."""
 
 import pytest
-from helpers import CHANNEL, HANDLE, LOGGING_RPM_SPEED, events, open_polled
+from helpers import CHANNEL, HANDLE, LOGGING_RPM_SPEED, events, open_polled, the_writer
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety.audit import Auditor
-from lasto.safety.errors import KillSwitchTripped
-from lasto.safety.gate import ExchangeState
-from lasto.safety.pcan_dll import load_readonly
-from lasto.safety.session import LISTEN_WINDOW, open_passive_session
+from lasto.safety.clock import SystemClock
+from lasto.safety.errors import KillSwitchTripped, SafetyViolation
+from lasto.safety.exchange import ExchangeState
+from lasto.safety.session import LISTEN_WINDOW, open_passive_session, open_polled_session
+from lasto.sim.clock import FakeClock
+from lasto.sim.pytest_plugin import HardwareFirewallError
 from lasto.sim.tester import SimTester
 
 
@@ -19,7 +21,7 @@ class BrokenSink:
 
 def test_passive_session_records_everything_and_never_writes(sim, auditor, sink, clock):
     seen = []
-    session = open_passive_session(CHANNEL, auditor=auditor, clock=clock, pcan=load_readonly(sim.dll), subscribers=[seen.append])
+    session = open_passive_session(CHANNEL, auditor=auditor, clock=clock, library=sim.dll, subscribers=[seen.append])
     clock.advance(0.5)
     items = session.pump()
     assert len(items) > 50 and seen == items
@@ -34,7 +36,7 @@ def test_passive_session_records_everything_and_never_writes(sim, auditor, sink,
 
 def test_passive_session_closes_the_channel_if_the_audit_log_fails(sim, clock):
     with pytest.raises(OSError):
-        open_passive_session(CHANNEL, auditor=Auditor(BrokenSink(), clock), clock=clock, pcan=load_readonly(sim.dll))
+        open_passive_session(CHANNEL, auditor=Auditor(BrokenSink(), clock), clock=clock, library=sim.dll)
     assert not sim.dll.channel(HANDLE).initialized
 
 
@@ -64,6 +66,111 @@ def test_polled_session_closes_the_channel_if_the_audit_log_fails(sim, clock):
     with pytest.raises(OSError):
         open_polled(sim, Auditor(BrokenSink(), clock))
     assert not sim.dll.channel(HANDLE).initialized
+
+
+@pytest.mark.parametrize("mode", ["passive", "polled"])
+def test_closing_a_session_records_whether_the_channel_really_closed(sim, auditor, sink, mode):
+    """Finding #5."""
+    if mode == "passive":
+        session = open_passive_session(CHANNEL, auditor=auditor, clock=sim.clock, library=sim.dll)
+    else:
+        session = open_polled(sim, auditor)
+    sim.dll.uninitialize_status = pc.PCAN_ERROR_ILLOPERATION
+    session.close()
+    [closed] = events(sink, "session_closed")
+    assert closed["channel_uninitialized"] is False
+    assert len(events(sink, "channel_close_failed")) == 1
+
+
+def test_a_polled_channel_closed_after_a_kill_records_whether_it_really_closed(sim, auditor, sink):
+    session = open_polled(sim, auditor)
+    sim.dll.fail_set[pc.PCAN_LISTEN_ONLY] = pc.PCAN_ERROR_ILLOPERATION
+    sim.dll.uninitialize_status = pc.PCAN_ERROR_ILLOPERATION
+    session.killswitch.trip("hotkey")
+    [closed] = events(sink, "polled_channel_closed")
+    assert closed["uninitialized"] is False
+    assert len(events(sink, "channel_close_failed")) == 1
+
+
+@pytest.mark.parametrize("listen_seconds", [0, LISTEN_WINDOW - 0.01, -1.0, float("nan"), "2"])
+def test_on_real_hardware_the_listen_window_has_a_minimum(auditor, sink, listen_seconds):
+    """Finding D: with the real DLL, a polled session can't skip or shorten its listen for other testers."""
+    with pytest.raises(SafetyViolation):  # refused before the DLL is even loaded
+        open_polled_session(
+            CHANNEL, profile=[LOGGING_RPM_SPEED], auditor=auditor, clock=SystemClock(), listen_seconds=listen_seconds
+        )
+    assert [r["reason"] for r in events(sink, "rejected")] == ["listen_window_too_short"]
+    assert events(sink, "session_refused")[0]["reason"] == "listen_window_too_short"
+
+
+def test_on_real_hardware_the_full_listen_window_passes_that_check(auditor):
+    with pytest.raises(HardwareFirewallError):  # it gets as far as loading the DLL, which tests can't
+        open_polled_session(
+            CHANNEL, profile=[LOGGING_RPM_SPEED], auditor=auditor, clock=SystemClock(), listen_seconds=LISTEN_WINDOW
+        )
+
+
+class SlowerSystemClock(SystemClock):
+    """Looks like the system clock, but a subclass could report any time it likes."""
+
+    __slots__ = ()
+
+
+def _polled(clock, auditor):
+    open_polled_session(CHANNEL, profile=[LOGGING_RPM_SPEED], auditor=auditor, clock=clock)
+
+
+def _passive(clock, auditor):
+    open_passive_session(CHANNEL, auditor=auditor, clock=clock)
+
+
+@pytest.mark.parametrize("opener", [_polled, _passive])
+@pytest.mark.parametrize("make_clock", [FakeClock, SlowerSystemClock])
+def test_on_real_hardware_timing_comes_from_the_system_clock(auditor, sink, opener, make_clock):
+    """Finding N2: rate slots, the ceiling, the listen window, and reading ages can't run on a caller's clock."""
+    with pytest.raises(SafetyViolation):  # refused before the DLL is even loaded
+        opener(make_clock(), auditor)
+    assert [r["reason"] for r in events(sink, "rejected")] == ["clock_not_the_system_clock"]
+    assert events(sink, "session_refused")[0]["reason"] == "clock_not_the_system_clock"
+
+
+@pytest.mark.parametrize("opener", [_polled, _passive])
+def test_on_real_hardware_the_system_clock_passes_that_check(auditor, opener):
+    with pytest.raises(HardwareFirewallError):  # as far as loading the DLL, which tests can't
+        opener(SystemClock(), auditor)
+
+
+def test_the_simulator_may_use_its_own_clock(sim, auditor):
+    session = open_polled(sim, auditor)  # library= given: the simulated clock is the right one
+    assert not session.killswitch.tripped
+
+
+# ---- finding N3: a closed polled session sends nothing ----
+
+
+def test_a_closed_session_sends_nothing_even_through_a_reopened_channel(sim, auditor, sink):
+    old = open_polled(sim, auditor)
+    old.close()
+    new = open_polled(sim, auditor)  # the same channel, opened again
+    written = len(sim.dll.writes)
+    with pytest.raises(SafetyViolation) as refused:
+        old.request(LOGGING_RPM_SPEED)
+    assert refused.value.reason == "session_closed"
+    assert len(sim.dll.writes) == written
+    sim.clock.advance(0.2)
+    assert old.pump() == []  # nor does it read the new session's traffic
+    assert new.pump()
+
+
+def test_a_closed_sessions_write_function_refuses(sim, auditor, sink):
+    old = open_polled(sim, auditor)
+    writer = the_writer(old)
+    old.close()
+    open_polled(sim, auditor)
+    with pytest.raises(SafetyViolation) as refused:
+        writer(0x7E0, bytes.fromhex("02010C0000000000"), purpose="test", kind="request")
+    assert refused.value.reason == "writer_closed"
+    assert sim.dll.writes == []
 
 
 def test_kill_switches_the_channel_to_listen_only(sim, auditor, sink):

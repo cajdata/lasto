@@ -2,7 +2,7 @@ import pytest
 
 from lasto.safety import isotp
 from lasto.safety.errors import SafetyViolation
-from lasto.safety.isotp import FrameKind
+from lasto.safety.isotp import FrameKind, IsoTpError
 
 
 def test_single_frame_normal_addressing():
@@ -64,6 +64,6 @@ def test_parse_extended_addressing():
     ],
 )
 def test_malformed_frames(data, ext, reason):
-    with pytest.raises(SafetyViolation) as refused:
+    with pytest.raises(IsoTpError) as malformed:
         isotp.parse(data, ext_address=ext)
-    assert refused.value.reason == reason
+    assert malformed.value.reason == reason

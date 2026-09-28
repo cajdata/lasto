@@ -4,8 +4,10 @@ import pytest
 from helpers import CHANNEL, HANDLE
 
 from lasto.safety import pcan_constants as pc
+from lasto.safety import pcan_dll
+from lasto.safety.audit import REFUSALS
 from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed
-from lasto.safety.pcan_dll import load_readonly
+from lasto.safety.pcan_dll import ReadOnlyPcan, load_readonly
 from lasto.safety.pcan_passive import PassiveChannel, open_passive
 from lasto.sim.fake_pcan import FakePcanDll
 from lasto.sim.pytest_plugin import HardwareFirewallError
@@ -83,6 +85,42 @@ def test_closes_if_error_reporting_cannot_be_enabled():
     with pytest.raises(InterfaceError):
         open_passive(CHANNEL, pcan=load_readonly(dll))
     assert not dll.channel(HANDLE).initialized
+
+
+class ReadOnlyLookAlike:
+    """Every read-only call a passive channel makes, plus a way to write: what #6 must keep out."""
+
+    def __init__(self, dll):
+        self._inner = load_readonly(dll)
+        self.write = dll.CAN_Write
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class WiderBinding(ReadOnlyPcan):
+    """A subclass could add anything; only the binding class itself is trusted."""
+
+    __slots__ = ()
+
+
+def _look_alike(dll):
+    return ReadOnlyLookAlike(dll)
+
+
+def _subclass(dll):
+    return WiderBinding(pcan_dll.bind_readonly(dll))
+
+
+@pytest.mark.parametrize("make", [_look_alike, _subclass])
+def test_passive_path_takes_only_the_read_only_binding_itself(auditor, sink, make):
+    """Finding #6: whatever is handed in, the passive path never gets a binding that could transmit."""
+    REFUSALS.attach(auditor)
+    dll = FakePcanDll()
+    with pytest.raises(TypeError):
+        open_passive(CHANNEL, pcan=make(dll))
+    assert "CAN_Initialize" not in dll.calls
+    assert [r["reason"] for r in sink.records if r["event"] == "rejected"] == ["passive_needs_the_read_only_binding"]
 
 
 def test_passive_capture_never_writes(sim, clock):

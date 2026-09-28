@@ -42,6 +42,10 @@ Tests must prove the rules:
 - A simulator (mock CAN bus with realistic broadcast traffic, mock ECUs with ISO-TP, and a mock STN adapter) that fails the test run if it ever receives a denied service, a frame on a non-diagnostic ID, or any frame at all during passive mode.
 - 100 percent branch coverage on the safety core, enforced by the test command.
 
+## Threat model
+
+The safety core defends against accidental or convenient bypasses by code in this repository, including code a future Claude Code session writes. It does not claim to stop code in the same process that deliberately sets out to subvert it; Python can't prevent that. The structural scanner exists to make any such route stand out and fail the suite. Reviews rate severity against this model.
+
 ## Phases
 
 0. **Plan:** ask me questions, propose the architecture and file layout, set up the repo and the guardrails above. Stop for approval.
@@ -53,6 +57,7 @@ Tests must prove the rules:
 6. **Discovery** for anything the Creader never requests. Stop.
 7. **STN transport** for K-line modules (if Phase 2 or 3 shows any) and the crank profile. Stop.
 8. **Analysis, reports, and export packs.** Stop.
+9. **Local web GUI** for desk-side review, the Creader mapping workbench, broadcast decoding, and the definitions library, over the same service layer as the CLI. It never transmits: its safety boundary (`docs/architecture.md` §14.1) is non-negotiable. Sub-phases 9a (read-only browsing), 9b (mapping workbench, broadcast explorer), 9c (definitions library, live monitor, settings); stop after each.
 
 ## In this repo
 
@@ -63,5 +68,5 @@ Tests must prove the rules:
 - **Simulator is the default.** Real hardware needs `--live` plus an explicit channel or port. The CLI parser disables option abbreviation so nothing shorter than `--live` can enable it.
 - **Commits:** no Claude attribution of any kind (no Co-Authored-By trailer, no "Generated with Claude Code" line). The repo has no git identity configured; commit as the repo owner with `git -c user.name="Chris Johnson" -c user.email="56413569+cajdata@users.noreply.github.com" commit ...`.
 - **Units:** store SI and raw bytes; display imperial (°F, psi, mph, miles).
-- **Tests:** `.venv/Scripts/python -m pytest`. It fails below 100% branch coverage on `lasto.safety`, and it fails any test that sends the simulator forbidden traffic, even if the code under test caught the error. For many more property-test examples, run `HYPOTHESIS_PROFILE=thorough .venv/Scripts/python -m pytest tests/safety/test_properties.py --no-cov`.
-- **Dev environment:** until uv is installed, `.venv` holds the package plus the pinned dev group (`pip install -e . --group dev`).
+- **Tests:** `uv run pytest`. It fails below 100% branch coverage on `lasto.safety`, and it fails any test that sends the simulator forbidden traffic, even if the code under test caught the error. For many more property-test examples, run `HYPOTHESIS_PROFILE=thorough uv run pytest tests/safety/test_properties.py --no-cov`.
+- **Dev environment:** uv manages `.venv` from `uv.lock`, which pins every dependency, transitive ones included, with sha256 hashes; `.python-version` pins Python 3.13. `uv sync --locked` builds it. A new dependency goes in `pyproject.toml`, then `uv lock`, in the phase that first needs it.

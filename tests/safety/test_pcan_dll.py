@@ -1,12 +1,14 @@
 """The read-only PCAN binding: what it binds, what it refuses, and how it reads."""
 
 import ctypes
+import os
 
 import pytest
 from helpers import HANDLE
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety import pcan_dll
+from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
 from lasto.safety.errors import InterfaceError, SafetyViolation
 from lasto.safety.frames import CanFrame, ErrorFrame, ReadError, StatusMessage
 from lasto.safety.pcan_dll import PcanChannel, ReadOnlyPcan, load_readonly
@@ -34,11 +36,48 @@ def test_setvalue_only_accepts_listed_settings():
         assert refused.value.reason == "pcan_setting_not_allowed"
 
 
-def test_dll_path(monkeypatch):
-    monkeypatch.setenv("SystemRoot", r"D:\Win")
-    assert pcan_dll.dll_path() == r"D:\Win\System32\PCANBasic.dll"
-    monkeypatch.delenv("SystemRoot")
-    assert pcan_dll.dll_path() == r"C:\Windows\System32\PCANBasic.dll"
+def windows_system_folder() -> str:
+    """Asked of Windows here, separately from the safety core."""
+    buffer = ctypes.create_unicode_buffer(260)
+    assert 0 < ctypes.WinDLL("kernel32").GetSystemDirectoryW(buffer, 260) < 260
+    return buffer.value
+
+
+def test_the_system_folder_comes_from_windows_at_import():
+    assert pcan_dll.SYSTEM_DIRECTORY == windows_system_folder()
+    assert pcan_dll.dll_path() == os.path.join(windows_system_folder(), "PCANBasic.dll")
+
+
+@pytest.mark.parametrize("system_root", [r"D:\elsewhere", None])
+def test_the_environment_cannot_redirect_the_dll(monkeypatch, system_root):
+    """SystemRoot is an environment variable anything in the process can change; the DLL path never reads it."""
+    if system_root is None:
+        monkeypatch.delenv("SystemRoot", raising=False)
+    else:
+        monkeypatch.setenv("SystemRoot", system_root)
+    assert pcan_dll.dll_path() == os.path.join(windows_system_folder(), "PCANBasic.dll")
+
+
+def test_the_system_folder_lookup():
+    def reports(length, text=""):
+        def get_system_directory(buffer, size):
+            buffer.value = text
+            return length
+
+        return get_system_directory
+
+    assert pcan_dll.system_directory(reports(19, r"C:\WINDOWS\system32")) == r"C:\WINDOWS\system32"
+    assert pcan_dll.system_directory(reports(0)) == ""  # the call failed
+    assert pcan_dll.system_directory(reports(300, "C:" + "x" * 250)) == ""  # didn't fit; never a truncated path
+
+
+def test_no_system_folder_means_no_dll(clock):
+    sink = MemoryAuditSink()
+    REFUSALS.attach(Auditor(sink, clock))
+    with pytest.raises(InterfaceError, match="system folder"):
+        pcan_dll.require_system_directory("")
+    pcan_dll.require_system_directory(windows_system_folder())
+    assert [r["reason"] for r in sink.records if r["event"] == "rejected"] == ["system_directory_unknown"]
 
 
 def test_loading_the_real_dll_is_blocked_by_the_test_firewall():
@@ -48,10 +87,16 @@ def test_loading_the_real_dll_is_blocked_by_the_test_firewall():
         load_readonly()
 
 
-def test_load_library_needs_64_bit_python(monkeypatch):
-    monkeypatch.setattr(pcan_dll, "POINTER_BYTES", 4)
+def test_the_test_run_is_seen_as_firewalled():
+    # The plugin marked its wrapper; test_killswitch.py shows a process without it isn't seen as firewalled.
+    assert pcan_dll.hardware_firewall_installed()
+
+
+def test_load_library_needs_64_bit_python():
     with pytest.raises(InterfaceError, match="64-bit"):
-        pcan_dll.load_library()
+        pcan_dll.require_64_bit(4)
+    pcan_dll.require_64_bit(8)
+    assert pcan_dll.POINTER_BYTES == 8  # the process these tests run in
 
 
 def test_load_library_reports_a_missing_dll(monkeypatch):
@@ -200,9 +245,32 @@ def test_enable_reporting_failure():
 def test_close_is_idempotent():
     dll = FakePcanDll()
     channel = open_channel(dll)
-    channel.close()
-    channel.close()
+    assert channel.close() is True
+    assert channel.close() is True
     assert dll.calls.count("CAN_Uninitialize") == 1
+
+
+def test_a_close_the_driver_refuses_is_audited_and_can_be_tried_again(clock):
+    """Finding #5: CAN_Uninitialize's answer counts; a channel that didn't close may still be on the bus."""
+    sink = MemoryAuditSink()
+    REFUSALS.attach(Auditor(sink, clock))
+    dll = FakePcanDll()
+    channel = open_channel(dll)
+    dll.uninitialize_status = pc.PCAN_ERROR_ILLOPERATION
+    assert channel.close() is False
+    assert dll.channel(HANDLE).initialized
+    [failed] = [r for r in sink.records if r["event"] == "channel_close_failed"]
+    assert failed["channel"] == "PCAN_USBBUS1" and "0x8000000" in failed["status"]
+    dll.uninitialize_status = pc.PCAN_ERROR_OK
+    assert channel.close() is True
+    assert not dll.channel(HANDLE).initialized
+
+
+def test_a_channel_already_gone_counts_as_closed():
+    dll = FakePcanDll()
+    channel = open_channel(dll)
+    dll.uninitialize_status = pc.PCAN_ERROR_INITIALIZE  # the driver says it isn't initialized
+    assert channel.close() is True
 
 
 def test_channel_names():

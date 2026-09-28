@@ -1,20 +1,21 @@
 """The transmit gate: rules 2, 3, 5-11 end to end, plus response handling and flow control."""
 
 import pytest
-from helpers import LOGGING_RPM_SPEED, GateHarness, events, frame, open_polled, park
+from helpers import LOGGING_RPM_SPEED, GateHarness, LooksLikeTheEngineId, events, frame, open_polled, park, rewritten
 
 from lasto.safety import ecus
 from lasto.safety import requests as rq
+from lasto.safety.audit import Auditor, MemoryAuditSink
 from lasto.safety.ecus import ENGINE, Ecu, EcuKind
 from lasto.safety.errors import InterfaceError, KillSwitchTripped, SafetyViolation
 from lasto.safety.frames import CanFrame, ErrorFrame
+from lasto.safety.exchange import ExchangeState
 from lasto.safety.gate import (
     CONSECUTIVE_FRAME_TIMEOUT,
     LATE_RESPONSE_GRACE,
     MAX_RESPONSE_PENDING,
     P2_STAR_TIMEOUT,
     P2_TIMEOUT,
-    ExchangeState,
     Gate,
 )
 from lasto.safety.killswitch import CONSECUTIVE_TIMEOUT_LIMIT
@@ -38,7 +39,7 @@ def test_logging_request_round_trip(sim, auditor, sink):
     sim.vehicle.state.rpm = 750
     exchange = session.request(LOGGING_RPM_SPEED)
     assert exchange.state is ExchangeState.DONE and exchange.done
-    assert exchange.responses == [(0x7E8, bytes.fromhex("410C0BB80D00"))]
+    assert exchange.responses == ((0x7E8, bytes.fromhex("410C0BB80D00")),)
     assert sim.dll.writes == [(0x51, 0x7E0, bytes.fromhex("03010C0D00000000"))]
     [record] = events(sink, "transmit")
     assert (record["can_id"], record["kind"], record["purpose"]) == ("0x7E0", "request", "logging")
@@ -57,7 +58,7 @@ def test_parked_multi_frame_read_sends_flow_control_on_the_request_id(sim, audit
     park(session)
     exchange = session.request(rq.read_vehicle_info(0x02, purpose=Purpose.IDENTIFY, ecu=ENGINE))
     assert exchange.state is ExchangeState.DONE
-    assert exchange.responses == [(0x7E8, b"\x49\x02\x01" + b"JTJBT20X060000001")]
+    assert exchange.responses == ((0x7E8, b"\x49\x02\x01" + b"JTJBT20X060000001"),)
     assert (0x51, 0x7E0, FC) in sim.dll.writes
     assert [r["kind"] for r in events(sink, "transmit")].count("flow_control") == 1
 
@@ -144,11 +145,22 @@ def test_profile_must_hold_logging_requests(clock, auditor):
         GateHarness(clock, auditor, profile=["010C"])
 
 
+def test_a_closed_gate_refuses_first_and_closes_its_write_function(clock, auditor, sink):
+    """Finding N3."""
+    h = GateHarness(clock, auditor)
+    exchange = h.gate.submit(LOGGING_RPM_SPEED)
+    h.gate.close()
+    assert exchange.state is ExchangeState.ABORTED and h.writer.closed
+    h.killswitch.trip("hotkey")  # a closed gate says so before anything else
+    refused(h.gate, LOGGING_RPM_SPEED, "session_closed")
+    assert len(h.writer.frames) == 1
+
+
 def test_not_armed(clock, auditor, sink):
     h = GateHarness(clock, auditor, armed=False)
     refused(h.gate, LOGGING_RPM_SPEED, "gate_not_armed")
     assert events(sink, "rejected")[0]["reason"] == "gate_not_armed"
-    assert h.link.frames == []
+    assert h.writer.frames == []
 
 
 def test_only_typed_requests(h):
@@ -166,6 +178,26 @@ def test_unapproved_ecu_is_refused(h):
     refused(h.gate, rq.read_pid([0x0C], purpose=Purpose.SNAPSHOT, ecu=TRANSMISSION), "ecu_not_approved")
 
 
+@pytest.mark.parametrize("request_id", [0x7E0, "look-alike"])
+def test_only_the_approved_entry_itself_reaches_the_bus(h, request_id):
+    """Finding #4: a copy of the engine entry, or one whose ID only compares equal to 0x7E0, is refused."""
+    rid = LooksLikeTheEngineId(0x7E1) if request_id == "look-alike" else request_id
+    impostor = Ecu(ENGINE.name, ENGINE.kind, rid, ENGINE.response_id, ENGINE.ext_address, ENGINE.evidence)
+    h.park()
+    refused(h.gate, rq.read_local_id(impostor, 0x01, purpose=Purpose.SNAPSHOT), "ecu_not_approved")
+    assert h.writer.frames == []
+
+
+def test_a_target_that_is_not_an_ecu_entry_is_refused_not_crashed_on(h, sink):
+    """Finding #9: only reachable by forging a Request past its constructor, but refused and audited all the same."""
+    forged = object.__new__(rq.Request)
+    for name, value in (("target", 0x7E0), ("payload", b"\x21\x01"), ("purpose", Purpose.SNAPSHOT)):
+        object.__setattr__(forged, name, value)
+    refused(h.gate, forged, "ecu_not_approved")
+    assert events(sink, "rejected")[-1]["detail"] == "ecu_not_approved: 0x7E0"
+    assert h.writer.frames == []
+
+
 def test_interlocks_apply(h):
     refused(h.gate, rq.read_pid([0x05], purpose=Purpose.LOGGING, ecu=ENGINE), "not_in_logging_profile")
     refused(h.gate, rq.read_dtcs(DtcKind.STORED, purpose=Purpose.SNAPSHOT), "vehicle_not_confirmed_stationary")
@@ -181,7 +213,7 @@ def test_kill_switch_blocks_everything(h, sink):
     with pytest.raises(KillSwitchTripped):
         h.gate.submit(LOGGING_RPM_SPEED)
     assert events(sink, "rejected")[0]["reason"] == "kill_switch"
-    assert h.link.frames == []
+    assert h.writer.frames == []
 
 
 def test_kill_during_a_rate_limit_wait_stops_the_frame(clock, auditor):
@@ -197,24 +229,64 @@ def test_kill_during_a_rate_limit_wait_stops_the_frame(clock, auditor):
     clock.sleep = sleep_then_kill
     with pytest.raises(KillSwitchTripped):
         h.gate.submit(LOGGING_RPM_SPEED)
-    assert len(h.link.frames) == 1
+    assert len(h.writer.frames) == 1
 
 
 def test_rate_limit_waits_briefly_and_refuses_long_waits(h, clock):
     h.gate.submit(LOGGING_RPM_SPEED)
     h.gate.abort()
     before = clock.monotonic()
-    h.gate.submit(LOGGING_RPM_SPEED)  # waits out the 50 ms spacing
-    assert clock.monotonic() - before == pytest.approx(0.05)
+    h.gate.submit(LOGGING_RPM_SPEED)  # waits out the 50 ms spacing (plus the pacing margin)
+    assert clock.monotonic() - before == pytest.approx(0.05, abs=0.002)
     h.gate.abort()
     for _ in range(6):
         h.limiter.backoff(clock.monotonic())
     refused(h.gate, LOGGING_RPM_SPEED, "rate_limited")
 
 
+def test_the_shared_spacing_counts_from_the_end_of_the_write(h, clock):
+    h.writer.duration = 0.03  # a slow write
+    h.gate.submit(LOGGING_RPM_SPEED)
+    first_done = clock.monotonic()
+    h.gate.abort()
+    h.gate.submit(LOGGING_RPM_SPEED)
+    assert h.writer.times[1] - first_done >= 1 / 20
+
+
+def test_logging_flat_out_stays_under_the_write_functions_own_ceiling(sim, auditor, sink):
+    session = open_polled(sim, auditor)
+    for _ in range(70):
+        assert session.request(LOGGING_RPM_SPEED).state is ExchangeState.DONE
+    assert events(sink, "rejected") == []
+    sent = [record["mono"] for record in events(sink, "transmit")]
+    assert len(sent) == 70
+    assert sent[-1] - sent[0] < 70 / 19  # flat out: close to the ceiling, not far below it
+    for i, start in enumerate(sent):
+        assert sum(1 for t in sent[i:] if t - start < 1.0) <= 20
+
+
 def test_write_failure_trips_the_kill_switch(h):
-    h.link.fail = InterfaceError("adapter unplugged")
+    h.writer.fail = InterfaceError("adapter unplugged")
     with pytest.raises(InterfaceError):
+        h.gate.submit(LOGGING_RPM_SPEED)
+    assert h.killswitch.cause == "interface_write_failed"
+    assert h.gate.pending is None
+
+
+class RefusesAnomalyRecords(MemoryAuditSink):
+    """An audit log that fails on exactly the record the gate writes when it trips the kill switch."""
+
+    def write(self, record):
+        if record["event"] == "gate_anomaly":
+            raise OSError("disk full")
+        super().write(record)
+
+
+def test_the_kill_latches_even_if_the_anomaly_cannot_be_audited(clock):
+    """Finding N4: the gate trips first, then audits."""
+    h = GateHarness(clock, Auditor(RefusesAnomalyRecords(), clock))
+    h.writer.fail = InterfaceError("adapter unplugged")
+    with pytest.raises((OSError, InterfaceError)):
         h.gate.submit(LOGGING_RPM_SPEED)
     assert h.killswitch.cause == "interface_write_failed"
     assert h.gate.pending is None
@@ -232,13 +304,16 @@ def test_write_failure_trips_the_kill_switch(h):
         (0x7E0, bytes.fromhex("0105000000000000"), "service_not_allowlisted"),
         (0x7DF, bytes.fromhex("0221010000000000"), "manufacturer_service_on_functional_id"),
         ("7E0", bytes.fromhex("02010C0000000000"), "can_id_not_allowlisted"),
+        (True, bytes.fromhex("02010C0000000000"), "can_id_not_allowlisted"),
+        (0x7E0, bytearray.fromhex("02010C0000000000"), "frame_length"),
+        (0x7E0, FC, "frame_kind_mismatch"),
     ],
 )
 def test_last_check_before_the_wire(h, can_id, data, reason):
     with pytest.raises(SafetyViolation) as caught:
         h.gate._transmit(can_id, data, purpose="test", kind="request")
     assert caught.value.reason == reason
-    assert h.link.frames == []
+    assert h.writer.frames == []
 
 
 def test_unknown_frame_kinds_are_refused(h):
@@ -256,14 +331,14 @@ def test_flow_control_only_answers_a_waiting_first_frame(h):
     assert fc() == "flow_control_unsolicited"  # nothing pending
     exchange = h.gate.submit(LOGGING_RPM_SPEED)
     assert fc() == "flow_control_unsolicited"  # pending, but no first frame
-    exchange.rx_id = 0x7E9
+    exchange._rx_id = 0x7E9
     assert fc() == "flow_control_wrong_id"  # responder isn't approved
-    exchange.rx_id = 0x7E8
+    exchange._rx_id = 0x7E8
     assert fc(can_id=0x7DF) == "flow_control_wrong_id"
     assert fc(data=bytes.fromhex("3001000000000000")) == "flow_control_malformed"
-    exchange.flow_control_sent = True
+    exchange._flow_control_sent = True
     assert fc() == "flow_control_unsolicited"  # at most one per first frame
-    assert h.link.frames == [(0x7E0, bytes.fromhex("03010C0D00000000"))]
+    assert h.writer.frames == [(0x7E0, bytes.fromhex("03010C0D00000000"))]
 
 
 def test_flow_control_is_refused_on_a_broadcast_id(clock, auditor, sink):
@@ -271,8 +346,9 @@ def test_flow_control_is_refused_on_a_broadcast_id(clock, auditor, sink):
     h.gate.submit(rq.read_pid([0x0D], purpose=Purpose.LOGGING))
     h.gate.on_frame(frame(0x7E8, 0x10, 0x14, 0x49, 0x02, 0x01, 0x41, 0x42, 0x43))
     assert h.killswitch.cause == "flow_control_refused"
-    assert events(sink, "rejected")[0]["request"] == "flow control"
-    assert len(h.link.frames) == 1  # only the request
+    [refusal] = events(sink, "rejected")
+    assert (refusal["reason"], refusal["request"]) == ("can_id_carries_broadcast", "0x7E0 30 00 00 00 00 00 00 00")
+    assert len(h.writer.frames) == 1  # only the request
 
 
 def test_frames_that_are_not_diagnostic_are_ignored(h):
@@ -293,12 +369,16 @@ def test_answers_nobody_asked_for_trip_the_kill_switch(h):
     assert h.killswitch.cause == "unexpected_response"
 
 
-def test_a_late_answer_to_the_last_request_is_tolerated(h, clock):
+def test_a_late_answer_to_the_last_request_is_tolerated_and_logged(h, clock, sink):
     h.gate.submit(LOGGING_RPM_SPEED)
     clock.advance(P2_TIMEOUT)
     h.gate.poll()
+    clock.advance(0.2)
     h.gate.on_frame(frame(0x7E8, 0x03, 0x41, 0x0D, 0x00))
     assert not h.killswitch.tripped
+    [late] = events(sink, "late_response_ignored")
+    assert (late["can_id"], late["data"]) == ("0x7E8", "03 41 0D 00 00 00 00 00")
+    assert late["seconds_after_last_request_ended"] == pytest.approx(0.2)
     h.gate.on_frame(frame(0x7E9, 0x03, 0x41, 0x0D, 0x00))  # a different ECU is not "late"
     assert h.killswitch.cause == "unexpected_response"
 
@@ -348,16 +428,28 @@ def test_response_pending_limit(h):
 def test_multi_frame_reassembly_and_sequence_errors(h, sink):
     exchange = h.gate.submit(LOGGING_RPM_SPEED)
     h.gate.on_frame(frame(0x7E8, 0x10, 0x0E, 0x41, 0x0C, 0x0B, 0xB8, 0x0D, 0x00))
-    assert h.link.frames[-1] == (0x7E0, FC)
+    assert h.writer.frames[-1] == (0x7E0, FC)
     assert exchange.deadline == pytest.approx(h.clock.monotonic() + CONSECUTIVE_FRAME_TIMEOUT)
     h.gate.on_frame(frame(0x7E8, 0x10, 0x0E, 1, 2, 3, 4, 5, 6))  # a second first frame is ignored
-    assert [f for f in h.link.frames if f[1] == FC] == [(0x7E0, FC)]
+    assert [f for f in h.writer.frames if f[1] == FC] == [(0x7E0, FC)]
     h.gate.on_frame(frame(0x7E8, 0x21, 0x05, 0x50, 0x0F, 0x20, 0x11, 0x33, 0x42))
     assert exchange.state is ExchangeState.PENDING  # 13 of 14 bytes so far
     h.gate.on_frame(frame(0x7E8, 0x23, 0, 0, 0, 0, 0, 0, 0))  # sequence 3, expected 2
     assert exchange.state is ExchangeState.ABORTED
     assert events(sink, "isotp_sequence_error")
     assert not h.killswitch.tripped
+
+
+def test_a_second_responders_first_frame_is_logged_when_it_is_dropped(clock, auditor, sink):
+    """Finding #9: while one multi-frame answer is being received, another gets no flow control, and the log says so."""
+    request = rq.read_pid([0x0D], purpose=Purpose.LOGGING)
+    h = GateHarness(clock, auditor, profile=[request])
+    h.gate.submit(request)
+    h.gate.on_frame(frame(0x7E8, 0x10, 0x09, 0x41, 0x0D, 0x00, 0x0C, 0x0B, 0xB8))
+    h.gate.on_frame(frame(0x7E9, 0x10, 0x09, 0x41, 0x0D, 0x00, 0x0C, 0x0B, 0xB8))
+    [abandoned] = events(sink, "response_abandoned")
+    assert abandoned["can_id"] == "0x7E9" and "already receiving" in abandoned["detail"]
+    assert [f for f in h.writer.frames if f[1] == FC] == [(0x7E0, FC)]  # flow control only for the first
 
 
 def test_consecutive_frames_outside_the_accepted_transfer_are_ignored(clock, auditor):
@@ -368,7 +460,7 @@ def test_consecutive_frames_outside_the_accepted_transfer_are_ignored(clock, aud
     h.gate.on_frame(frame(0x7E8, 0x10, 0x09, 0x41, 0x0D, 0x00, 0x0C, 0x0B, 0xB8))
     h.gate.on_frame(frame(0x7E9, 0x21, 9, 9, 9, 9, 9, 9, 9))  # another ECU's frame
     assert exchange.state is ExchangeState.PENDING
-    assert exchange.rx_data == bytearray(bytes.fromhex("410D000C0BB8"))
+    assert exchange._rx_data == bytearray(bytes.fromhex("410D000C0BB8"))
     assert not h.killswitch.tripped
 
 
@@ -377,7 +469,7 @@ def test_multi_frame_completes(h):
     h.gate.on_frame(frame(0x7E8, 0x10, 0x09, 0x41, 0x0C, 0x0B, 0xB8, 0x0D, 0x00))
     h.gate.on_frame(frame(0x7E8, 0x21, 0x05, 0x50, 0xAA))
     assert exchange.state is ExchangeState.DONE
-    assert exchange.responses == [(0x7E8, bytes.fromhex("410C0BB80D000550AA"))]
+    assert exchange.responses == ((0x7E8, bytes.fromhex("410C0BB80D000550AA")),)
 
 
 def test_functional_timeouts_are_not_counted(clock, auditor):
@@ -468,3 +560,26 @@ def test_local_id_answers_do_not_feed_the_interlocks(clock, auditor):
 def test_gate_only_knows_the_approved_request_ids(h):
     assert h.gate._request_ids == {0x7DF} | {ecu.request_id for ecu in ecus.APPROVED_ECUS}
     assert isinstance(h.gate, Gate)
+
+
+# ---- a rewritten approved entry (finding P1) ----
+
+
+def test_a_rewritten_entry_moves_no_request(sim, auditor, sink):
+    """Rewriting the engine entry in place used to send a logging poll on whatever ID it was given."""
+    with rewritten(ENGINE, request_id=0x0B0, response_id=0x0B8, ext_address=0x40):
+        session = open_polled(sim, auditor)
+        sim.vehicle.state.rpm = 750
+        exchange = session.request(LOGGING_RPM_SPEED)
+    assert exchange.state is ExchangeState.DONE
+    assert exchange.responses == ((0x7E8, bytes.fromhex("410C0BB80D00")),)
+    assert sim.dll.writes == [(0x51, 0x7E0, bytes.fromhex("03010C0D00000000"))]  # normal addressing, on 0x7E0
+
+
+def test_flow_control_goes_where_the_route_says_after_a_rewrite(h):
+    exchange = h.gate.submit(LOGGING_RPM_SPEED)
+    with rewritten(ENGINE, request_id=0x0B0, ext_address=0x40):
+        h.gate.on_frame(frame(0x7E8, 0x10, 0x09, 0x41, 0x0C, 0x0B, 0xB8, 0x0D, 0x00))
+        h.gate.on_frame(frame(0x7E8, 0x21, 0x05, 0x50, 0xAA))
+    assert h.writer.frames[-1] == (0x7E0, FC)
+    assert exchange.state is ExchangeState.DONE and not h.killswitch.tripped

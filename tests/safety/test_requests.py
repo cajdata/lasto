@@ -1,10 +1,13 @@
 """Rule 5: typed request builders, and nothing else, make requests."""
 
+import copy
 import dataclasses
 
 import pytest
+from helpers import events
 
 from lasto.safety import requests as rq
+from lasto.safety.audit import REFUSALS
 from lasto.safety.ecus import ENGINE
 from lasto.safety.errors import SafetyViolation
 from lasto.safety.requests import DtcKind, Purpose
@@ -99,18 +102,33 @@ def test_requests_cannot_be_made_directly():
         rq.Request(None, b"\x01\x0c", Purpose.LOGGING, object())
 
 
-def test_copies_are_rechecked():
+@pytest.mark.parametrize("copier", [dataclasses.replace, copy.replace])
+def test_no_copy_of_a_request_carries_the_builders_token(auditor, sink, copier):
+    """Finding N6: even a harmless-looking change made by copying is refused; only builders make requests."""
+    REFUSALS.attach(auditor)
     request = rq.read_local_id(ENGINE, 0x01, purpose=P)
+    with pytest.raises(TypeError):
+        copier(request, payload=b"\x21\x02")
+    assert [r["reason"] for r in events(sink, "rejected")] == ["request_not_from_a_builder"]
+
+
+def test_exact_copies_are_still_the_same_request():
+    request = rq.read_local_id(ENGINE, 0x01, purpose=P)
+    assert copy.copy(request) == request and copy.deepcopy(request) == request
+
+
+def test_even_with_the_builders_token_a_request_is_rechecked():
+    token = rq._BUILDER
     with pytest.raises(SafetyViolation) as refused:
-        dataclasses.replace(request, payload=b"\x10\x03")
+        rq.Request(ENGINE, b"\x10\x03", P, token)
     assert refused.value.reason == "service_never_allowed"
     with pytest.raises(SafetyViolation) as refused:
-        dataclasses.replace(request, target=None)
+        rq.Request(None, b"\x21\x01", P, token)
     assert refused.value.reason == "manufacturer_service_on_functional_id"
     with pytest.raises(ValueError):
-        dataclasses.replace(request, payload=b"")
+        rq.Request(ENGINE, b"", P, token)
     with pytest.raises(ValueError):
-        dataclasses.replace(request, payload=bytes(8))
+        rq.Request(ENGINE, bytes(8), P, token)
 
 
 def test_requests_are_immutable():

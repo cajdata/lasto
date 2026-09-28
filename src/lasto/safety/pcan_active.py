@@ -1,87 +1,242 @@
-"""Normal-mode PCAN channel for polled sessions. The only CAN_Write binding in lasto.
+"""The polled (normal-mode) PCAN channel, and the one CAN_Write binding in lasto.
 
-Only lasto.safety.session opens one of these, and only the gate calls
-ActiveChannel.write, after checking every frame against the policy.
+open_active opens a channel in normal mode and returns two things: an
+ActiveChannel, which can only read (and switch back to listen-only after a
+kill), and a Writer, the only object in lasto that holds CAN_Write. Only
+lasto.safety.session calls open_active, and it gives the Writer to the gate
+and to nothing else.
+
+The Writer doesn't trust its caller. For every frame it runs the policy's
+full stateless check on the exact bytes, confirms the frame is the kind the
+caller says it is, checks the kill switch, holds request frames to the hard
+ceiling (rule 6: at most 20 in any second, across every caller; on real
+hardware measured with SystemClock), and writes the audit record before the
+frame goes out. So even a
+direct call can only send what the policy allows, no faster than the
+ceiling. The gate adds the checks that need state: flow control only for a
+first frame that is waiting for it, the interlocks, and the per-purpose rates
+and back-off. Flow control frames don't count toward the ceiling; the gate
+sends at most one per first frame.
 """
 
 from __future__ import annotations
 
 import ctypes
+import threading
+import weakref
+from collections import deque
+from collections.abc import Callable, Collection
+from typing import Any
 
 from lasto.safety import pcan_constants as pc
-from lasto.safety.errors import InterfaceError, SafetyViolation
+from lasto.safety import policy
+from lasto.safety._frozen import SealedType, freeze
+from lasto.safety.audit import Auditor, refuse
+from lasto.safety.clock import Clock, SystemClock, require_system_clock
+from lasto.safety.errors import SafetyViolation
+from lasto.safety.killswitch import KILL_SWITCH
 from lasto.safety.pcan_dll import (
-    READONLY_FUNCTIONS,
     PcanChannel,
     ReadOnlyPcan,
-    bind,
+    bind_readonly,
     check_available,
     check_driver,
     load_library,
+    refuse_interface,
 )
+from lasto.safety.ratelimit import CEILING_FRAMES, CEILING_WINDOW
 
-TRANSMIT_FUNCTIONS = (*READONLY_FUNCTIONS, "CAN_Write")
+
+class ActiveChannel(PcanChannel):
+    """A PCAN channel in normal mode. It reads; it has no way to write."""
+
+    __slots__ = ()
+
+    def enter_listen_only(self) -> bool:
+        """Switch to listen-only after a kill, and report whether it read back as on."""
+        status = self._pcan.set_value(self._handle, pc.PCAN_LISTEN_ONLY, pc.PCAN_PARAMETER_ON)
+        return status == pc.PCAN_ERROR_OK and self.listen_only()
 
 
-class TransmitPcan(ReadOnlyPcan):
-    """PCAN-Basic calls for a polled channel: the read-only set, plus writing standard frames."""
+class RequestCeiling(metaclass=SealedType):
+    """Rule 6's hard ceiling across every write function in the process (finding N3).
 
-    # A polled channel is initialized with listen-only explicitly off.
-    SETVALUE_ALLOWED = ReadOnlyPcan.SETVALUE_ALLOWED | {(pc.PCAN_LISTEN_ONLY, pc.PCAN_PARAMETER_OFF)}
+    Request frames are counted per clock. On real hardware every session runs
+    on SystemClock, so the whole process shares one window; in the simulator,
+    sessions that share a simulated clock share a window. Its lock also puts
+    one frame on the wire at a time, process-wide, so concurrent callers
+    can't slip past together.
+    """
 
-    def write_standard(self, handle: int, can_id: int, data: bytes) -> int:
+    __slots__ = ("_lock", "_windows")
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        # When the most recent request frames were written, per clock (the class stands for every SystemClock).
+        self._windows: weakref.WeakKeyDictionary[object, deque[float]] = weakref.WeakKeyDictionary()
+
+    @property
+    def lock(self) -> threading.RLock:
+        return self._lock
+
+    def _window(self, clock: Clock) -> deque[float]:
+        key = SystemClock if type(clock) is SystemClock else clock
+        window = self._windows.get(key)
+        if window is None:
+            window = self._windows[key] = deque(maxlen=CEILING_FRAMES)
+        return window
+
+    def admit(self, clock: Clock, now: float, request: str) -> None:
+        """Refuse (audited) a request frame if the last CEILING_FRAMES went out within CEILING_WINDOW."""
+        window = self._window(clock)
+        if len(window) == CEILING_FRAMES and now - window[0] < CEILING_WINDOW:
+            refuse(
+                SafetyViolation(
+                    "request_ceiling", f"{CEILING_FRAMES} request frames in the last {CEILING_WINDOW:g} s already"
+                ),
+                transport="pcan",
+                request=request,
+            )
+
+    def record(self, clock: Clock, now: float) -> None:
+        self._window(clock).append(now)
+
+
+# The one ceiling for the process.
+REQUEST_CEILING = RequestCeiling()
+
+
+class Writer(metaclass=SealedType):
+    """The one function that puts a frame on the bus. Called as writer(can_id, data, purpose=..., kind=...)."""
+
+    __slots__ = (
+        "_auditor", "_broadcast_ids", "_can_write", "_channel_name", "_clock", "_closed", "_error_text", "_handle",
+    )  # fmt: skip
+
+    def __init__(
+        self,
+        can_write: Callable[..., int],
+        handle: int,
+        channel_name: str,
+        error_text: Callable[[int], str],
+        auditor: Auditor,
+        clock: Clock,
+        broadcast_ids: frozenset[int],
+    ) -> None:
+        self._can_write = can_write
+        self._handle = handle
+        self._channel_name = channel_name
+        self._error_text = error_text
+        self._auditor = auditor
+        self._clock = clock
+        self._broadcast_ids = broadcast_ids
+        self._closed = False
+
+    def close(self) -> None:
+        """For good: the session closed, so refuse every frame from now on (finding N3)."""
+        with REQUEST_CEILING.lock:
+            self._closed = True
+
+    def __call__(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
+        with REQUEST_CEILING.lock:  # one frame at a time, process-wide
+            self._write(can_id, data, purpose=purpose, kind=kind)
+
+    def _write(self, can_id: int, data: bytes, *, purpose: str, kind: str) -> None:
+        text = policy.frame_text(can_id, data)
+        if self._closed:
+            refuse(SafetyViolation("writer_closed", "its polled session is closed"), transport="pcan", request=text)
+        checked = policy.check_frame(can_id, data, broadcast_ids=self._broadcast_ids)
+        if kind != checked:
+            refuse(
+                SafetyViolation("frame_kind_mismatch", f"a {checked} frame sent as {kind!r}"),
+                transport="pcan",
+                request=text,
+            )
+        KILL_SWITCH.check(request=text)
+        now = self._clock.monotonic()
+        if kind == "request":
+            REQUEST_CEILING.admit(self._clock, now, text)
+        self._auditor.transmit(transport="pcan", can_id=can_id, data=data, purpose=purpose, kind=kind)
+        if kind == "request":
+            REQUEST_CEILING.record(self._clock, now)  # counted once recorded, whether or not CAN_Write then succeeds
         message = pc.TPCANMsg()
         message.ID = can_id
         message.MSGTYPE = pc.PCAN_MESSAGE_STANDARD
         message.LEN = len(data)
         for index, byte in enumerate(data):
             message.DATA[index] = byte
-        return self._call("CAN_Write", ctypes.c_uint16(handle), ctypes.pointer(message))
-
-
-def load_transmit(library: object | None = None) -> TransmitPcan:
-    source = load_library() if library is None else library
-    return TransmitPcan(bind(source, TRANSMIT_FUNCTIONS))
-
-
-class ActiveChannel(PcanChannel):
-    """A PCAN channel in normal mode. The gate is its only writer."""
-
-    def __init__(self, pcan: TransmitPcan, handle: int, name: str, api_version: str) -> None:
-        super().__init__(pcan, handle, name, api_version)
-        self._transmit = pcan
-
-    def write(self, can_id: int, data: bytes) -> None:
-        if not 0 <= can_id <= 0x7FF or len(data) != 8:
-            raise SafetyViolation("frame_shape", "lasto only sends 8-byte frames with 11-bit IDs")
-        status = self._transmit.write_standard(self._handle, can_id, data)
+        status = int(self._can_write(ctypes.c_uint16(self._handle), ctypes.pointer(message))) & 0xFFFFFFFF
         if status != pc.PCAN_ERROR_OK:
-            raise InterfaceError(f"CAN_Write failed on {self.name}: {self._transmit.error_text(status)}")
+            refuse_interface(
+                "can_write_failed",
+                f"CAN_Write failed on {self._channel_name}: {self._error_text(status)}",
+                policy.frame_text(can_id, data),
+            )
 
-    def enter_listen_only(self) -> bool:
-        """Switch to listen-only after a kill, and report whether it read back as on."""
-        status = self._transmit.set_value(self._handle, pc.PCAN_LISTEN_ONLY, pc.PCAN_PARAMETER_ON)
-        return status == pc.PCAN_ERROR_OK and self.listen_only()
+
+def _clear_listen_only(set_value: Callable[..., int], handle: int) -> int:
+    """The one CAN_SetValue that turns listen-only off: before a polled channel is initialized, and only here."""
+    buffer = ctypes.c_uint32(pc.PCAN_PARAMETER_OFF)
+    status = set_value(
+        ctypes.c_uint16(handle),
+        ctypes.c_uint8(pc.PCAN_LISTEN_ONLY),
+        ctypes.pointer(buffer),
+        ctypes.c_uint32(ctypes.sizeof(buffer)),
+    )
+    return int(status) & 0xFFFFFFFF
 
 
-def open_active(channel_name: str, *, pcan: TransmitPcan | None = None) -> ActiveChannel:
+def open_active(
+    channel_name: str,
+    *,
+    auditor: Auditor,
+    clock: Clock,
+    library: object | None = None,
+    broadcast_ids: Collection[int] = frozenset(),
+) -> tuple[ActiveChannel, Writer]:
+    """Open a channel in normal mode, from the real DLL or a stand-in. Only the polled session calls this.
+
+    On real hardware the write function's ceiling is measured with SystemClock, whatever else a caller has.
+    """
     handle = pc.channel_handle(channel_name)
-    pcan = load_transmit() if pcan is None else pcan
+    if library is None:
+        require_system_clock(clock, request=f"open {channel_name} in normal mode")
+    source: Any = load_library() if library is None else library
+    functions = bind_readonly(source)
+    pcan = ReadOnlyPcan(functions)
     api_version = check_driver(pcan)
     check_available(pcan, handle, channel_name)
-    status = pcan.set_value(handle, pc.PCAN_LISTEN_ONLY, pc.PCAN_PARAMETER_OFF)
+    status = _clear_listen_only(functions["CAN_SetValue"], handle)
     if status != pc.PCAN_ERROR_OK:
-        raise InterfaceError(f"could not clear listen-only on {channel_name}: {pcan.error_text(status)}")
+        refuse_interface(
+            "listen_only_not_cleared",
+            f"could not clear listen-only on {channel_name}: {pcan.error_text(status)}",
+            channel_name,
+        )
     status = pcan.initialize(handle, pc.PCAN_BAUD_500K)
     if status != pc.PCAN_ERROR_OK:
-        raise InterfaceError(f"could not initialize {channel_name}: {pcan.error_text(status)}")
+        refuse_interface(
+            "initialize_failed", f"could not initialize {channel_name}: {pcan.error_text(status)}", channel_name
+        )
     channel = ActiveChannel(pcan, handle, channel_name, api_version)
     try:
         status, value = pcan.get_u32(handle, pc.PCAN_LISTEN_ONLY)
         if status != pc.PCAN_ERROR_OK or value != pc.PCAN_PARAMETER_OFF:
-            raise InterfaceError(f"{channel_name} did not come up in normal mode")
+            refuse_interface("not_in_normal_mode", f"{channel_name} did not come up in normal mode", channel_name)
         channel.enable_reporting()
+        writer = Writer(
+            source.CAN_Write,
+            handle,
+            channel_name,
+            pcan.error_text,
+            auditor,
+            clock,
+            frozenset(broadcast_ids),
+        )
     except BaseException:
         channel.close()
         raise
-    return channel
+    return channel, writer
+
+
+freeze(__name__)
