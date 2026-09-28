@@ -43,12 +43,13 @@ def attached(clock):
 # (what is refused, how, exception type, audited reason)
 SITES = [
     ("Request made directly", lambda: rq.Request(ENGINE, b"\x21\x01", P), TypeError, "request_not_from_a_builder"),
-    ("Request copied with a never-allowed service", lambda: dataclasses.replace(LOCAL, payload=b"\x04"), SafetyViolation, "service_never_allowed"),
-    ("Request copied to the functional ID", lambda: dataclasses.replace(LOCAL, target=None), SafetyViolation, "manufacturer_service_on_functional_id"),
-    ("Request copied with an empty payload", lambda: dataclasses.replace(LOCAL, payload=b""), ValueError, "bad_payload"),
-    ("Request copied with a text payload", lambda: dataclasses.replace(LOCAL, payload="21"), ValueError, "bad_payload"),
-    ("Request copied with a raw CAN ID target", lambda: dataclasses.replace(LOCAL, target=0x7E0), TypeError, "bad_target"),
-    ("Request copied with a bad purpose", lambda: dataclasses.replace(LOCAL, purpose="snapshot"), TypeError, "bad_purpose"),
+    ("Request copied", lambda: dataclasses.replace(LOCAL, payload=b"\x21\x02"), TypeError, "request_not_from_a_builder"),  # N6
+    ("Request with a builder's token and a never-allowed service", lambda: rq.Request(ENGINE, b"\x04", P, rq._BUILDER), SafetyViolation, "service_never_allowed"),
+    ("Request with a builder's token, to the functional ID", lambda: rq.Request(None, b"\x21\x01", P, rq._BUILDER), SafetyViolation, "manufacturer_service_on_functional_id"),
+    ("Request with a builder's token and an empty payload", lambda: rq.Request(ENGINE, b"", P, rq._BUILDER), ValueError, "bad_payload"),
+    ("Request with a builder's token and a text payload", lambda: rq.Request(ENGINE, "21", P, rq._BUILDER), ValueError, "bad_payload"),
+    ("Request with a builder's token and a raw CAN ID target", lambda: rq.Request(0x7E0, b"\x21\x01", P, rq._BUILDER), TypeError, "bad_target"),
+    ("Request with a builder's token and a bad purpose", lambda: rq.Request(ENGINE, b"\x21\x01", "snapshot", rq._BUILDER), TypeError, "bad_purpose"),
     ("builder: byte out of range", lambda: rq.read_pid([300], purpose=P), ValueError, "bad_argument"),
     ("builder: word out of range", lambda: rq.read_did(ENGINE, -1, purpose=P), ValueError, "bad_argument"),
     ("builder: raw CAN ID instead of an ECU", lambda: rq.read_local_id(0x7E0, 1, purpose=P), TypeError, "not_an_ecu_entry"),
@@ -249,7 +250,7 @@ def test_refusals_with_no_session_open_are_held_for_the_next_audit_log(clock):
     with pytest.raises(ValueError):
         rq.read_pid([], purpose=P)
     with pytest.raises(SafetyViolation):
-        dataclasses.replace(LOCAL, payload=b"\x11\x01")
+        rq.Request(ENGINE, b"\x11\x01", P, rq._BUILDER)
     sink = attached(clock)
     held = events(sink, "rejected")
     assert [r["reason"] for r in held] == ["pid_count", "service_never_allowed"]

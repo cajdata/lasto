@@ -191,7 +191,7 @@ def test_only_the_approved_entry_itself_reaches_the_bus(h, request_id):
 def test_a_target_that_is_not_an_ecu_entry_is_refused_not_crashed_on(h, sink):
     """Finding #9: only reachable by forging a Request past its constructor, but refused and audited all the same."""
     forged = object.__new__(rq.Request)
-    for name, value in (("target", 0x7E0), ("payload", b"\x21\x01"), ("purpose", Purpose.SNAPSHOT), ("_token", None)):
+    for name, value in (("target", 0x7E0), ("payload", b"\x21\x01"), ("purpose", Purpose.SNAPSHOT)):
         object.__setattr__(forged, name, value)
     refused(h.gate, forged, "ecu_not_approved")
     assert events(sink, "rejected")[-1]["detail"] == "ecu_not_approved: 0x7E0"

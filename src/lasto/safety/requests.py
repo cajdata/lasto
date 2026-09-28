@@ -9,7 +9,7 @@ before anything is transmitted. Every refusal here is audited (rule 11).
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass
 
 from lasto.safety import policy
 from lasto.safety._frozen import SealedEnum, SealedType, freeze
@@ -45,16 +45,21 @@ def describe(target: object, payload: object, purpose: object) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Request(metaclass=SealedType):
-    """A read request for one ECU (target) or for every OBD ECU (target None, the functional ID)."""
+    """A read request for one ECU (target) or for every OBD ECU (target None, the functional ID).
+
+    The builders pass a private token, checked and never stored, so no copy can carry it:
+    dataclasses.replace and copy.replace build a new Request without it and are refused
+    (finding N6). An exact copy (copy.copy, deepcopy) is the same request and stays valid.
+    """
 
     target: Ecu | None
     payload: bytes
     purpose: Purpose
-    _token: object = field(default=None, repr=False, compare=False)
+    _token: InitVar[object] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _token: object) -> None:
         text = self.describe()
-        if self._token is not _BUILDER:
+        if _token is not _BUILDER:
             refuse(
                 TypeError("build requests with the functions in lasto.safety.requests"),
                 transport="request",
