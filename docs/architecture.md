@@ -288,7 +288,7 @@ What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr
 - **Unit tests** for every allowlist decision: IDs, services, the never-list, addressing modes, FC conditions, STN commands (including normalization tricks: case, spaces, backspace, hex-only lines, empty lines).
 - **Hypothesis** fuzzes CAN IDs, payloads, addressing, typed request sequences, and injected faults through the gate against `FakePcanDll`, asserting that every frame reaching `CAN_Write` satisfies the policy. It fuzzes the `Writer` directly too, around the gate. It does the same for strings reaching the fake serial port.
 - **Structural tests** read the source:
-  - only `safety/pcan_active.py` names `CAN_Write`, and only the gate calls the `Writer`
+  - only `safety/pcan_active.py` names `CAN_Write`, and only the gate calls the `Writer`: the session hands the write function from `open_active` to `Gate(...)` and does nothing else with it, the gate calls it once, in `_transmit`, only `Writer._write` calls `CAN_Write`, and no other safety module names a writer. A profile hook confirms it at runtime across the fuzzed simulated sessions.
   - only `safety/stn_port.py` opens or writes serial, and no literal in `src/` names a serial device path
   - nothing outside `lasto.safety` imports the DLL bindings or pyserial
   - code outside the safety core uses only its public API. Names are resolved through every re-export and attribute chain back to the module that defines them (`tests/scan.py`).

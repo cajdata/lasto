@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import types
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
@@ -39,6 +40,42 @@ class LooksLikeTheEngineId(int):
 
 def events(sink: MemoryAuditSink, name: str) -> list[dict[str, object]]:
     return [record for record in sink.records if record["event"] == name]
+
+
+class WriteWatch:
+    """Every call into the write function during a watch, and each caller that wasn't Gate._transmit."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.strangers: list[str] = []
+
+
+@contextmanager
+def watching_the_write_function() -> Iterator[WriteWatch]:
+    """At runtime, frames reach the write function only from the gate: watch who calls Writer.__call__.
+
+    The structural test proves it from the source (test_structure.py); this watches whole simulated
+    sessions do it. A profile hook sees each call into the Writer and the function that made it.
+    """
+    from lasto.safety.gate import Gate
+    from lasto.safety.pcan_active import Writer
+
+    write, transmit = Writer.__call__.__code__, Gate._transmit.__code__
+    watch = WriteWatch()
+
+    def profile(frame: types.FrameType, event: str, _arg: object) -> None:
+        if event == "call" and frame.f_code is write:
+            watch.calls += 1
+            caller = frame.f_back.f_code  # type: ignore[union-attr]
+            if caller is not transmit:
+                watch.strangers.append(caller.co_qualname)
+
+    previous = sys.getprofile()
+    sys.setprofile(profile)
+    try:
+        yield watch
+    finally:
+        sys.setprofile(previous)
 
 
 @contextmanager

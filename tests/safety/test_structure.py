@@ -1,7 +1,8 @@
 """Structural rules, checked by reading the source.
 
 - Only safety/pcan_active.py binds or calls CAN_Write (the simulator's fake DLL may list it), and
-  only its Writer holds it. Only the gate calls the Writer.
+  only its Writer holds it. Only the gate calls the Writer: the session hands it straight to the gate,
+  the gate calls it once in _transmit, and no other safety module names a writer.
 - The passive path imports nothing that can transmit and names no write function.
 - Only safety/stn_port.py opens a serial port, and no literal in src/ names a serial device path.
 - Only the hardware bindings use ctypes.
@@ -173,14 +174,132 @@ def attribute_calls(tree: ast.Module, attr: str) -> list[ast.Call]:
     return [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == attr]
 
 
-def test_frames_are_written_only_by_the_gate_through_the_writer():
-    for name, tree in sources().items():
-        if not name.startswith("lasto.safety"):
+WRITE_FUNCTION = re.compile(r"(?i)writer|can_write")
+
+
+def _identifier(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.arg):
+        return node.arg
+    return ""
+
+
+def _context(tree: ast.AST) -> tuple[dict[int, ast.AST], dict[int, str]]:
+    """Each node's parent, and the name of the function it sits in ("" at module level)."""
+    parents: dict[int, ast.AST] = {}
+    functions: dict[int, str] = {}
+
+    def visit(node: ast.AST, function: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = child.name if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef) else function
+            parents[id(child)], functions[id(child)] = node, inner
+            visit(child, inner)
+
+    visit(tree, "")
+    return parents, functions
+
+
+def _handed_to_the_gate(tree: ast.AST, parents: dict[int, ast.AST]) -> tuple[set[int], list[str]]:
+    """Follow the write function from open_active: it may only be unpacked and passed to Gate(...).
+
+    Returns the nodes that do exactly that, and a problem for anything else."""
+    fine: set[int] = set()
+    found: list[str] = []
+    for call in ast.walk(tree):
+        if not (isinstance(call, ast.Call) and _identifier(call.func) == "open_active"):
             continue
-        # audit writes its log file; stn_port writes to the adapter behind its own command allowlist.
-        assert attribute_calls(tree, "write") == [] or name in {"lasto.safety.audit", "lasto.safety.stn_port"}, name
-        assert attribute_calls(tree, "_writer") == [] or name == "lasto.safety.gate", name
-        assert attribute_calls(tree, "_can_write") == [] or name == "lasto.safety.pcan_active", name
+        assign = parents.get(id(call))
+        target = assign.targets[0] if isinstance(assign, ast.Assign) and len(assign.targets) == 1 else None
+        if not (isinstance(target, ast.Tuple) and len(target.elts) == 2 and all(isinstance(e, ast.Name) for e in target.elts)):
+            found.append(f"line {call.lineno}: open_active's result isn't unpacked into (channel, writer)")
+            continue
+        writer = target.elts[1]
+        fine.add(id(writer))
+        for use in ast.walk(tree):
+            if isinstance(use, ast.Name) and use.id == writer.id and use is not writer:  # type: ignore[union-attr]
+                gate = parents.get(id(use))
+                if isinstance(gate, ast.Call) and _identifier(gate.func) == "Gate" and any(arg is use for arg in gate.args):
+                    fine.add(id(use))
+                else:
+                    found.append(f"line {use.lineno}: uses the write function other than handing it to the gate")
+    return fine, found
+
+
+def _only_in(tree: ast.AST, attribute: str, function: str, parents: dict[int, ast.AST], functions: dict[int, str]) -> list[str]:
+    """`attribute` is called exactly once, in `function`; otherwise it is only assigned, or closed in close()."""
+    found, calls = [], 0
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Attribute) and node.attr == attribute) or isinstance(node.ctx, ast.Store):
+            continue
+        parent, where = parents[id(node)], functions[id(node)]
+        if isinstance(parent, ast.Call) and parent.func is node and where == function:
+            calls += 1
+        elif not (isinstance(parent, ast.Attribute) and parent.attr == "close" and where == "close"):
+            found.append(f"line {node.lineno}: {attribute} used in {where or 'the module'}")
+    if calls != 1:
+        found.append(f"{attribute} is called {calls} times in {function}, not once")
+    return found
+
+
+def write_path_problems(module: str, tree: ast.Module) -> list[str]:
+    """Where safety core code writes a frame, or handles the write function, anywhere but the gate's one call.
+
+    The session hands the write function from open_active to the gate and does nothing else with it; the
+    gate calls it once, in _transmit; only the Writer's _write calls CAN_Write; and no other safety module
+    names a writer at all, so a bare writer(...) call can't hide behind a local name (review finding).
+    """
+    found = []
+    if not module.startswith("lasto.safety"):
+        return found
+    # audit writes its log file; stn_port writes to the adapter behind its own command allowlist.
+    if attribute_calls(tree, "write") and module not in {"lasto.safety.audit", "lasto.safety.stn_port"}:
+        found.append("calls a write method")
+    parents, functions = _context(tree)
+    if module == "lasto.safety.gate":
+        return found + _only_in(tree, "_writer", "_transmit", parents, functions)
+    if module == "lasto.safety.pcan_active":
+        return found + _only_in(tree, "_can_write", "_write", parents, functions)
+    fine, problems = _handed_to_the_gate(tree, parents)
+    found += problems
+    named = sorted(
+        {
+            f"line {getattr(node, 'lineno', '?')}: {_identifier(node)}"
+            for node in ast.walk(tree)
+            if WRITE_FUNCTION.search(_identifier(node)) and id(node) not in fine
+        }
+    )
+    return found + [f"names a write function ({where})" for where in named]
+
+
+@pytest.mark.parametrize(
+    ("module", "snippet", "flagged"),
+    [
+        # The session gets the write function from open_active and hands it to the gate, and nothing else.
+        ("lasto.safety.session", "channel, writer = open_active(name)\ngate = Gate(writer, auditor)", False),
+        ("lasto.safety.session", "channel, writer = open_active(name)\nGate(writer)\nwriter(0x7E0, data, purpose='p', kind='request')", True),
+        ("lasto.safety.session", "channel, writer = open_active(name)\nsend = writer\nGate(writer)", True),
+        ("lasto.safety.session", "pair = open_active(name)\nGate(pair[1])", True),
+        ("lasto.safety.reader", "def poll(self):\n    self._writer(0x7E0, data)", True),
+        ("lasto.safety.reader", "def poll(self, writer):\n    writer(0x7E0, data)", True),
+        # The gate calls it once, in _transmit, and closes it in close.
+        ("lasto.safety.gate", "class Gate:\n    def _transmit(self):\n        self._writer(1)\n    def close(self):\n        self._writer.close()", False),
+        ("lasto.safety.gate", "class Gate:\n    def _transmit(self):\n        self._writer(1)\n    def poll(self):\n        self._writer(2)", True),
+        ("lasto.safety.gate", "class Gate:\n    def submit(self):\n        send = self._writer", True),
+        # Only the Writer's _write calls CAN_Write.
+        ("lasto.safety.pcan_active", "class Writer:\n    def _write(self):\n        self._can_write(1)\n    def other(self):\n        self._can_write(2)", True),
+    ],
+)
+def test_the_write_path_check(module, snippet, flagged):
+    """Review finding: a bare writer(...) call in session.py passed the old attribute-name check."""
+    assert bool(write_path_problems(module, ast.parse(snippet))) is flagged
+
+
+def test_frames_are_written_only_by_the_gate_through_the_writer():
+    found = {name: problems for name, tree in sources().items() if (problems := write_path_problems(name, tree))}
+    assert found == {}
     assert len(attribute_calls(sources()["lasto.safety.gate"], "_writer")) == 1
     assert len(attribute_calls(sources()["lasto.safety.pcan_active"], "_can_write")) == 1
 

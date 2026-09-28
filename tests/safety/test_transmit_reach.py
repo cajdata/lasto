@@ -13,7 +13,7 @@ import threading
 import types
 
 import pytest
-from helpers import LOGGING_RPM_SPEED, events, open_polled, paths_to, the_writer
+from helpers import LOGGING_RPM_SPEED, events, open_polled, paths_to, the_writer, watching_the_write_function
 
 from lasto.safety.clock import SystemClock
 from lasto.safety.errors import KillSwitchTripped, SafetyViolation
@@ -96,6 +96,17 @@ def test_the_write_function_checks_everything_itself(sim, auditor, sink, can_id,
         writer(can_id, data, purpose="test", kind=kind)
     assert sim.dll.writes == before
     assert [r["reason"] for r in events(sink, "rejected")] == [reason]
+
+
+def test_the_runtime_watch_sees_who_calls_the_write_function(sim, auditor):
+    """The watch the session fuzzing relies on: a request through the gate passes, a direct call is named."""
+    session = open_polled(sim, auditor)
+    writer = the_writer(session)
+    with watching_the_write_function() as watch:
+        session.request(LOGGING_RPM_SPEED)
+        writer(0x7E0, REQUEST, purpose="test", kind="request")
+    assert watch.calls == 2
+    assert watch.strangers == ["test_the_runtime_watch_sees_who_calls_the_write_function"]
 
 
 def test_the_write_function_checks_the_kill_switch_and_audits_first(sim, auditor, sink):

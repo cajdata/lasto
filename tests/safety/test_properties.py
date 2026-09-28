@@ -6,7 +6,7 @@ safety core, so a mistake in the core's allowlists can't also hide in the test.
 
 import string
 
-from helpers import CHANNEL, LOGGING_RPM_SPEED, GateHarness, frame, open_polled
+from helpers import CHANNEL, LOGGING_RPM_SPEED, GateHarness, frame, open_polled, watching_the_write_function
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -357,16 +357,19 @@ def test_polled_sessions_only_send_allowed_frames(plan):
         "probe": rq.interlock_probe(0x0D),
         "dtcs": rq.read_dtcs(DtcKind.STORED, purpose=Purpose.SNAPSHOT),
     }
-    for name, behavior, intruder in plan:
-        if behavior is not None:
-            sim.vehicle.engine.script.append(behavior)
-        if intruder:
-            SimTester(sim.bus).request(0x7E0, b"\x21\x01", delay=0.001)
-        try:
-            session.request(requests[name])
-        except (SafetyViolation, KillSwitchTripped):
-            pass
+    with watching_the_write_function() as watch:
+        for name, behavior, intruder in plan:
+            if behavior is not None:
+                sim.vehicle.engine.script.append(behavior)
+            if intruder:
+                SimTester(sim.bus).request(0x7E0, b"\x21\x01", delay=0.001)
+            try:
+                session.request(requests[name])
+            except (SafetyViolation, KillSwitchTripped):
+                pass
     for handle, can_id, data in sim.dll.writes:
         assert handle == 0x51
         assert_allowed(can_id, data)
+    # Every frame reached the write function from the gate, requests and flow control alike.
+    assert watch.strangers == [] and watch.calls >= len(sim.dll.writes)
     # The simulator's own oracle judged every write too (autouse fixture).
