@@ -5,8 +5,8 @@ toc: true
 numbered: false
 title: "Roadmap: what's built and what isn't | Lasto"
 h1: "Roadmap: what's built and what isn't"
-description: "Lasto is built in nine phases, and each one is reviewed before the next starts. See which phases are done, and which one first sends anything to the truck."
-lede: "Lasto is pre-alpha. It's built in nine phases, and each one stops for my review before the next starts. A feature shows up in the docs only after its phase is signed off."
+description: "Lasto is built in ten phases, and each one is reviewed before the next starts. See which phases are done, and which one first sends anything to the truck."
+lede: "Lasto is pre-alpha. It's built in ten phases, and each one stops for my review before the next starts. A feature shows up in the docs only after its phase is signed off."
 page_type: WebPage
 ---
 

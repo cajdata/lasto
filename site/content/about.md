@@ -32,7 +32,7 @@ Lasto is read-only by design. Passive mode sends nothing, and polled mode will s
 
 ## Privacy {#privacy}
 
-This site has no analytics and no cookies, and it loads nothing from other servers. GitHub Pages hosts it and logs visitor IP addresses for security, under GitHub's privacy statement. Lasto itself has no networking code and is built to run offline in the truck.
+This site has no analytics and no cookies, and it loads nothing from other servers. GitHub Pages hosts it and logs visitor IP addresses for security, under GitHub's privacy statement. Lasto itself sends nothing over the internet and is built to run offline in the truck. The local GUI planned for Phase 9 will only answer the laptop it runs on.
 
 ## Contact {#contact}
 

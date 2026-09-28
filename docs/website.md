@@ -1,6 +1,17 @@
 # lasto.dev website plan
 
-Status: **W0 and W1 approved 2026-09-27.** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`. How to build and edit the site is in `site/README.md`; the going-live steps are in section 10.
+Status: **W0 and W1 approved 2026-09-27. Phase 1 approved 2026-09-28, and `main` merged into `website` (section 0b).** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`. How to build and edit the site is in `site/README.md`; the going-live steps are in section 10.
+
+## 0b. Phase 1 approved, main merged (2026-09-28)
+
+- **Merge:** `main` at 9887565 (the Phase 1 approval, the review fixes, uv with a hashed lock, the pinned hatchling, and the approved Phase 9 GUI plan) merged into `website` with no conflicts. The app's environment comes from `uv sync --locked`.
+- **Site dependencies:** still hash-pinned in `site/requirements.txt` and `site/requirements-test.txt`. Locally they go in their own environment, `.venv-site`, installed with `uv pip install --require-hashes --only-binary :all:` (commands in `site/README.md`): `uv sync` would remove them from `.venv`, and `uv run --with-requirements` doesn't check hashes. CI installs them with `pip --require-hashes`.
+- **Extraction:** the rate table became a `MappingProxyType`, so the reader now also evaluates `MappingProxyType` of a dict literal, `int()` of a number, and `+ - * /` between numbers, and still refuses every other call. New facts from source: the write function's ceiling (frames and window), the longest rate wait, the listen-only recheck interval, and the passive reopen limits.
+- **Roadmap:** Phase 1 is done, approved 2026-09-28, and public, so the Safety page links to the code. Phase 9, the local GUI, is planned, with `/docs/gui/` reserved. The build checks that "built in N phases" matches the roadmap.
+- **Safety pages:** rewritten for the model on `main`, and split in two to stay under the page budget (Chris's choice). `/safety/` keeps the rules, what the design does and doesn't claim (the threat model in plain words), and what isn't proven yet. `/safety/core/` covers the machinery: real hardware only on request, the listen-only timing diagram (moved from `/safety/` for headroom), the one write function and its process-wide ceiling, flow control, the sealed core and its own clock, the serial guard and its pending review, the audit log, and the tests. The route table, the latched kill switch, and the passive recheck with reopen or end stay on `/safety/`. Their dates follow every file in the safety core.
+- **Claims checked against the code:** every claim that changed from the old Safety page was listed and checked against the source by independent reviewers, and the ones they found overstated were corrected, twice where needed. The same check turned up safety core findings for the main session (reported to Chris, not changed here).
+- **Page weight:** one shared path for the external-link icon, and a timing diagram drawn with one segment per level change, save about 1.7 KB a page with no visible change.
+- **Order:** step 1 of the order in section 0a is done. Next are the W3 launch checks once the site is live.
 
 ## 0a. Decisions (W1, 2026-09-27)
 

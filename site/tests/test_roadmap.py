@@ -35,8 +35,16 @@ NINE = ["planned"] * 9
 
 def test_real_roadmap_loads_and_validates():
     r = data.load_roadmap()
-    assert [p.number for p in r.phases] == list(range(9))
+    assert [p.number for p in r.phases] == list(range(10))
     assert r.phase(0).done
+
+
+def test_phase_1_is_approved_and_public_and_the_gui_is_planned():
+    r = data.load_roadmap()
+    one, gui = r.phase(1), r.phase(9)
+    assert one.done and one.public and one.approved == dt.date(2026, 9, 28)
+    assert gui.slug == "gui" and gui.status == "planned" and not gui.public
+    assert gui.transmits == "No"
 
 
 def test_copy_that_counts_the_phases_must_match_the_roadmap():

@@ -90,6 +90,29 @@ def test_unpushed_phase_gets_no_code_links(built):
         assert "/src/lasto/safety/" not in (out / "safety" / "index.html").read_text(encoding="utf-8")
 
 
+def test_public_safety_core_gets_permalinks(built):
+    out, b, _ = built
+    if b.roadmap.phase(1).public:
+        # 12 characters of the commit: GitHub resolves them, and they save page weight on every code link.
+        rules = (out / "safety" / "index.html").read_text(encoding="utf-8")
+        assert re.search(r'href="https://github\.com/cajdata/lasto/blob/[0-9a-f]{12}/src/lasto/safety/policy\.py#L\d+', rules)
+        core = (out / "safety" / "core" / "index.html").read_text(encoding="utf-8")
+        assert re.search(r'href="https://github\.com/cajdata/lasto/blob/[0-9a-f]{12}/src/lasto/safety/pcan_active\.py"', core)
+        assert not re.search(r"/blob/[0-9a-f]{13,}/", rules + core)
+
+
+def test_safety_pages_cover_the_safety_model(built):
+    out, _, _ = built
+    rules = (out / "safety" / "index.html").read_text(encoding="utf-8")
+    for anchor in ("listen-only", "polled", "modules", "kill-switch", "enforced", "threat-model", "not-proven"):
+        assert f'id="{anchor}"' in rules, anchor
+    core = (out / "safety" / "core" / "index.html").read_text(encoding="utf-8")
+    for anchor in ("on-the-wire", "writer", "frozen", "serial-guard", "audit", "tests"):
+        assert f'id="{anchor}"' in core, anchor
+        assert f'href="/safety/core/#{anchor}"' in rules, anchor
+    assert 'href="/safety/#threat-model"' in core
+
+
 def test_external_link_icon_is_one_shared_path(built):
     out, b, _ = built
     for page in b.pages:
@@ -100,13 +123,22 @@ def test_external_link_icon_is_one_shared_path(built):
 
 def test_timing_diagram_draws_each_level_once(built):
     out, _, _ = built
-    html = (out / "safety" / "index.html").read_text(encoding="utf-8")
+    html = (out / "safety" / "core" / "index.html").read_text(encoding="utf-8")
     waves = re.findall(r'<path class="wave[^"]*" d="([^"]+)"', html)
     assert len(waves) == 2
     for d in waves:
         # A horizontal run is one H segment: an H is never followed by another H.
         assert not re.search(r"H[\d.]+H", d), d
     assert waves[1] == "M164 90.5H1011"  # listen-only: the transmit line never leaves recessive
+
+
+def test_safety_page_date_follows_the_whole_safety_core():
+    from sitegen import paths
+    from sitegen.pages import page_dependencies
+
+    deps = set(page_dependencies({"body": "{{ facts.ceiling }}"}))
+    assert set(paths.SAFETY.glob("*.py")) <= deps
+    assert paths.SAFETY / "serial_guard.py" in deps and paths.SAFETY / "pcan_active.py" in deps
 
 
 def test_refuses_to_build_over_a_folder_it_didnt_make(tmp_path):
