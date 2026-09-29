@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned actions in .github/workflows current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  # The site build's hash-pinned requirements (site/requirements*.txt).
+  - package-ecosystem: pip
+    directory: /site
+    schedule:
+      interval: monthly

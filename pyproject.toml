@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "lasto"
 dynamic = ["version"]
-description = "Passive, read-only CAN bus logger for Toyota and Lexus trucks."
+description = "A read-only data logger for a 2006 Lexus GX470."
 readme = "README.md"
 requires-python = ">=3.13"
 license = "GPL-3.0-or-later"
@@ -33,12 +33,18 @@ dev = [
     "pytest-cov==7.1.0",
     "hypothesis==6.168.1",
 ]
+# The lasto.dev website build (site/) pins its own dependencies, with hashes, in
+# site/requirements.txt. None of them are lasto dependencies.
 
 [tool.hatch.version]
 path = "src/lasto/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lasto"]
+
+[tool.hatch.build.targets.sdist]
+# The website source and its fonts don't belong in the lasto package.
+exclude = ["/site"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,96 @@
+# Builds lasto.dev from site/ and deploys it to GitHub Pages from main.
+# Pull requests build and check the site but never deploy.
+name: site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "src/lasto/**"  # the Safety page and service map read the safety core's source
+      - "SECURITY.md"
+      - ".github/workflows/site.yml"
+  pull_request:
+    paths:
+      - "site/**"
+      - "src/lasto/**"
+      - ".github/workflows/site.yml"
+  schedule:
+    - cron: "23 7 1 * *"  # monthly, so security.txt's Expires date never goes stale
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time per branch. On main, a newer push replaces a waiting older one, so an
+# older build can never deploy over a newer one. Pull request runs cancel their older runs.
+concurrency:
+  group: site-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0  # full history, for accurate "Last updated" and sitemap dates
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: site/requirements*.txt
+
+      - name: Install the site build (hash-checked)
+        run: python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r site/requirements.txt -r site/requirements-test.txt
+
+      - name: Test the build code
+        run: python -m pytest -c site/pytest.ini site/tests
+
+      - name: Build and check the site
+        run: python site/build.py build --strict
+
+      - name: Check internal links
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: --offline --no-progress --include-fragments --index-files index.html --root-dir ${{ github.workspace }}/site/dist 'site/dist/**/*.html'
+          fail: true
+
+      - name: Upload the site
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/dist
+          include-hidden-files: true  # without this, /.well-known/security.txt is silently dropped
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false  # never cancel a deploy halfway
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+      - name: Smoke test https://lasto.dev/
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          BASE: https://lasto.dev/
+        run: |
+          if [ "$PAGE_URL" != "$BASE" ]; then
+            echo "::error::Pages reports $PAGE_URL; expected $BASE (set the custom domain and tick Enforce HTTPS)"
+            exit 1
+          fi
+          for path in "" safety/ roadmap/ about/ index.md safety/index.md llms.txt llms-full.txt sitemap.xml robots.txt .well-known/security.txt; do
+            curl -fsS --max-time 30 --retry 5 --retry-delay 20 --retry-all-errors -o /dev/null "${BASE}${path}"
+          done

@@ -1,0 +1,35 @@
+# Site-wide settings. Page content lives in site/content/, build status in roadmap.toml.
+
+name = "Lasto"
+base_url = "https://lasto.dev"
+language = "en"
+summary = "A read-only data logger for a 2006 Lexus GX470."
+name_note = "“Lasto” is Sindarin, one of Tolkien’s Elvish languages, for “listen,” because the app listens and never talks out of turn."
+
+repo = "https://github.com/cajdata/lasto"
+pypi = "https://pypi.org/project/lasto/"
+license = "GPL-3.0-or-later"
+license_url = "https://www.gnu.org/licenses/gpl-3.0.html"
+license_file = "https://github.com/cajdata/lasto/blob/main/LICENSE"
+
+author = "Chris Johnson"
+author_url = "https://github.com/cajdata"
+
+security_contact = "https://github.com/cajdata/lasto/security/advisories/new"
+security_policy = "https://github.com/cajdata/lasto/security/policy"
+
+# Names used only to say what Lasto works with. Add a name here when the site starts using it.
+trademarks = ["Toyota", "Lexus", "PEAK-System", "PCAN", "OBDLink", "Launch", "Creader"]
+
+# Top navigation after the wordmark. Docs joins in W2, once there's a docs index to link to.
+[[nav]]
+label = "Safety"
+href = "/safety/"
+
+[[nav]]
+label = "Roadmap"
+href = "/roadmap/"
+
+[[nav]]
+label = "GitHub"
+href = "https://github.com/cajdata/lasto"

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="{{ site.language }}">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; script-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ page.title }}</title>
+<meta name="description" content="{{ page.description }}">
+{% if page.indexable %}
+<link rel="canonical" href="{{ page.canonical }}">
+{% else %}
+<meta name="robots" content="noindex">
+{% endif %}
+<meta name="author" content="{{ site.author }}">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1C2024" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preload" href="/fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/fragment-mono.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/css/site.css">
+{% if page.mirrors %}
+<link rel="alternate" type="text/markdown" href="{{ site.base_url }}{{ page.mirror_url }}" title="{{ page.h1 }} (Markdown)">
+{% endif %}
+<link rel="describedby" type="text/plain" href="{{ site.base_url }}/llms.txt">
+<meta property="og:type" content="{{ 'website' if page.url == '/' else 'article' }}">
+<meta property="og:site_name" content="{{ site.name }}">
+<meta property="og:locale" content="en_US">
+<meta property="og:title" content="{{ page.meta.get('og_title', page.h1) }}">
+<meta property="og:description" content="{{ page.description }}">
+<meta property="og:url" content="{{ page.canonical }}">
+<meta property="og:image" content="{{ page.og_image_url }}">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="{{ page.stamp ~ ': ' if page.stamp }}{{ page.h1 }}. A service map shows polled mode may send {{ facts.allowed_services|length }} of 256 service bytes, all read-only, and passive mode sends none.">
+{% if page.url != '/' %}
+<meta property="article:modified_time" content="{{ page.modified.isoformat() }}">
+{% endif %}
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{{ jsonld|safe }}</script>
+</head>
+<body class="l-{{ page.meta.get('layout', 'page') }}">
+<a class="skip" href="#main">Skip to content</a>
+<svg class="sprite" aria-hidden="true" focusable="false"><defs><g id="mk"><path d="M2 6.5H30V14L27 25.5H5L2 14Z" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="21" cy="11.75" r="2.75" fill="currentColor"/><circle cx="21" cy="19.75" r="2.75" fill="currentColor"/></g></defs></svg>
+<header class="rh">
+<div class="sheet rh-in">
+<a class="brand" href="/" aria-label="Lasto, home"{% if page.url == '/' %} aria-current="page"{% endif %}><svg class="mark" viewBox="0.75 5.25 30.5 21.5" width="24" height="17" aria-hidden="true" focusable="false"><use href="#mk"/></svg><span>lasto</span></a>
+<nav class="site" aria-label="Site">
+<ul>
+{% for item in site.nav %}
+<li><a href="{{ item.href }}"{% if item.href == page.url %} aria-current="page"{% endif %}>{{ item.label }}{% if item.href.startswith('http') %}{% include "partials/ext.html" %}{% endif %}</a></li>
+{% endfor %}
+</ul>
+</nav>
+</div>
+</header>
+<main id="main" tabindex="-1">
+<div class="sheet">
+{% block title %}{% endblock %}
+{{ page.body_html|safe }}
+{% block after %}{% endblock %}
+</div>
+</main>
+<footer class="rf">
+<div class="sheet rf-in">
+<p class="rf-id"><span class="rf-pn">lasto</span> <span>{% if page.stamp %}{{ page.stamp }}, {% endif %}<span class="mono">rev.&nbsp;{{ page.rev }}</span>, last updated <time class="mono" datetime="{{ page.updated }}">{{ page.updated }}</time></span></p>
+<div class="rf-main">
+<p>Built by {{ site.author }}. <a href="/about/#name">What the name means</a>.</p>
+<p>Lasto is read-only by design and comes with no warranty under <a class="nw" href="{{ site.license_file }}">{{ site.license }}{% include "partials/ext.html" %}</a>. Use it at your own risk.</p>
+<p>{{ site.trademarks[:-1]|join(', ') }}, and {{ site.trademarks[-1] }} are trademarks of their owners. Lasto isn’t affiliated with or endorsed by any of them, and uses their names only to say what it works with.</p>
+</div>
+<div class="rf-side">
+<ul class="rf-links">
+<li><a href="/about/">About Lasto</a></li>
+<li><a href="{{ site.security_contact }}">Report a security problem privately{% include "partials/ext.html" %}</a></li>
+{% if page.mirrors %}
+<li><a href="{{ page.mirror_url }}" type="text/markdown">View this page as Markdown</a></li>
+{% endif %}
+</ul>
+<p>Set in Archivo and Fragment Mono, both under the SIL Open Font License: <a href="/fonts/OFL-Archivo.txt">Archivo license</a>, <a href="/fonts/OFL-FragmentMono.txt">Fragment Mono license</a>.</p>
+</div>
+</div>
+</footer>
+</body>
+</html>

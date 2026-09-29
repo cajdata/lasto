@@ -1,0 +1,213 @@
+# The one place build status is written down. The roadmap page, the home page status
+# lines, page stamps, llms.txt, and the 404 page all read it.
+#
+# status     done | awaiting-approval | in-progress | planned
+#            "done" means Chris signed the phase off. Only "done" publishes a phase's docs.
+# public     true once the phase's commits are on GitHub main. Links to code need it.
+# transmits  what the phase adds on the wire, as shown in the roadmap table.
+# commands   must match the COMMANDS table in src/lasto/cli.py; the build checks it.
+#
+# When a phase is approved: set status = "done", add approved = YYYY-MM-DD, and set
+# public = true once its commits are pushed.
+
+project_status = "pre-alpha"
+
+[[phase]]
+number = 0
+slug = "plan"
+name = "Plan"
+status = "done"
+built = 2026-09-26
+approved = 2026-09-26
+public = true
+transmits = "No"
+summary = "The questions, the architecture, and the guardrails that keep development away from real hardware."
+delivers = [
+  "The architecture and file layout, with the decisions recorded up front",
+  "Development guardrails that block anything aimed at a real PCAN channel or COM port",
+  "A bench parts list for proving listen-only and silent mode",
+]
+commands = []
+live_test = "None"
+open = []
+
+[[phase]]
+number = 1
+slug = "safety-core"
+name = "Safety core, simulator, and tests"
+status = "awaiting-approval"
+built = 2026-09-26
+public = false
+transmits = "No"
+summary = "Every rule about what can reach the truck, for both the PCAN-USB and the OBDLink MX+, written in code and tested against a simulated truck."
+delivers = [
+  "The safety core: listen-only open with readback, the transmit gate, allowlists, rate limits, the kill switch, interlocks, and the audit log",
+  "A simulator that stands in for the PCAN driver, the MX+, and the truck, and fails the test run if it ever receives forbidden traffic",
+  "Unit, property-based, and structural tests, with the test command set to fail below 100 percent branch coverage on the safety core",
+  "A command-line skeleton where every command says which phase delivers it",
+]
+commands = []
+live_test = "None. Nothing in this phase touches the truck."
+open = []
+
+[[phase]]
+number = 2
+slug = "passive-capture"
+name = "Passive drive capture and storage"
+status = "planned"
+public = false
+transmits = "No"
+summary = "Record everything on the high-speed CAN bus in listen-only mode, and keep it safe through a pulled cable or a crash."
+delivers = [
+  "Passive capture that starts when the bus wakes up and ends 60 seconds after it goes quiet",
+  "Storage: compressed candump segments plus a SQLite index, with recovery after a crash",
+  "A session list and an audit log viewer",
+]
+commands = ["lasto drive", "lasto log"]
+live_test = "Key on with the engine off, then a short drive. I run both at the truck."
+open = ["The disk budget and retention, set once the first capture shows how much data a drive makes."]
+site_note = "A scrubbed real capture replaces the example frames on this site."
+
+[[phase]]
+number = 3
+slug = "mapping"
+name = "Creader-assisted mapping"
+status = "planned"
+public = false
+transmits = "No"
+summary = "Listen while the Launch Creader asks the truck for data, then match the raw answers to the numbers on its screen."
+delivers = [
+  "Conversation capture on CAN, and on the K-line through the MX+ in silent mode",
+  "A reference template you fill in with the values the Creader shows",
+  "A solver that finds byte positions, scale, and offset, and ranks the candidates",
+  "Definitions files for the signals that check out",
+]
+commands = ["lasto map", "lasto verify"]
+live_test = "A Creader engine data stream, then a KDSS data stream."
+open = ["Whether the Creader Elite V3.0 T reaches the KDSS module on a 2006 GX470."]
+
+[[phase]]
+number = 4
+slug = "polled-reads"
+name = "Polled reads"
+status = "planned"
+public = false
+transmits = "Read-only requests"
+summary = "The first phase where Lasto sends anything: read-only diagnostic requests for data the truck may not broadcast, like transmission temperature."
+delivers = [
+  "Identify: VIN, calibration IDs, and module names",
+  "A parked health snapshot: trouble codes, freeze frames, readiness, and Mode 06 results",
+  "Logging profiles, including one for long grades",
+  "A live view with alarms: transmission 220 °F warning and 240 °F critical, coolant 225 and 235 °F, voltage below 12.5 V or above 15.0 V while running",
+  "The Ctrl+Alt+K hotkey wired into polled sessions",
+]
+commands = ["lasto identify", "lasto snapshot", "lasto view", "lasto drive --profile"]
+live_test = "Parked first, then a drive with the grades profile."
+open = []
+
+[[phase]]
+number = 5
+slug = "broadcast-decoding"
+name = "Broadcast decoding and DBC output"
+status = "planned"
+public = false
+transmits = "No"
+summary = "Decode what the truck broadcasts on its own, and write it out as a DBC file other CAN tools can open."
+delivers = [
+  "Decoders for the broadcast IDs found in Phase 2",
+  "A DBC file for the GX470",
+  "Re-decoding old sessions with newer definitions",
+]
+commands = ["lasto decode"]
+live_test = ""
+open = []
+
+[[phase]]
+number = 6
+slug = "discovery"
+name = "Discovery"
+status = "planned"
+public = false
+transmits = "Read-only requests, parked only"
+summary = "A parked-only search for data the Creader never asks for, at 5 requests per second, with the motion interlock and battery guard on."
+delivers = [
+  "Identifier sweeps of approved modules, never airbag or immobilizer modules",
+  "Results that get reviewed before any new module address is approved",
+]
+commands = ["lasto discover"]
+live_test = ""
+open = ["How many 'not supported' answers discovery tolerates before it stops."]
+
+[[phase]]
+number = 7
+slug = "k-line"
+name = "K-line modules and the crank profile"
+status = "planned"
+public = false
+transmits = "Decided in this phase"
+summary = "Reach modules on the K-line (pin 7) if the Phase 2 and 3 captures show it's worth it, and log battery voltage during engine start through the MX+."
+delivers = [
+  "An STN transport for K-line modules, if approved",
+  "A crank profile for battery voltage during engine start",
+]
+commands = []
+live_test = ""
+open = ["Starting a K-line session needs StartCommunication (0x81), which isn't on the allowlist. Whether to allow it gets decided here, as its own safety core change."]
+
+[[phase]]
+number = 8
+slug = "reports"
+name = "Analysis, reports, and export packs"
+status = "planned"
+public = false
+transmits = "No"
+summary = "Charts, session reports, and export packs you can open in other tools."
+delivers = [
+  "Session reports with charts",
+  "Export packs: CSV, Parquet, and a summary JSON",
+]
+commands = ["lasto report", "lasto export"]
+live_test = ""
+open = []
+
+# Docs pages whose URLs are reserved now and published when their phase is done.
+# The roadmap lists them under their phase, and the 404 page explains them.
+[[reserved]]
+path = "/docs/passive-capture/"
+title = "Passive capture"
+phase = 2
+
+[[reserved]]
+path = "/docs/mapping/"
+title = "Mapping signals with your scan tool"
+phase = 3
+
+[[reserved]]
+path = "/docs/polled-reads/"
+title = "Polled reads"
+phase = 4
+
+[[reserved]]
+path = "/docs/logging-profiles/"
+title = "Logging profiles"
+phase = 4
+
+[[reserved]]
+path = "/docs/broadcast-decoding/"
+title = "Broadcast decoding"
+phase = 5
+
+[[reserved]]
+path = "/docs/discovery/"
+title = "Discovery"
+phase = 6
+
+[[reserved]]
+path = "/docs/k-line/"
+title = "K-line modules"
+phase = 7
+
+[[reserved]]
+path = "/docs/reports-and-exports/"
+title = "Reports and exports"
+phase = 8

@@ -1,0 +1,46 @@
+# Plain descriptions of diagnostic service bytes, for the Safety page and Fig. 1.
+#
+# This file only supplies words. Which services are allowed or never allowed comes from
+# the safety core source (src/lasto/safety/policy.py), read at build time. The build fails
+# if a service in the source has no description here, or if a description here names a
+# service the source doesn't list, so the two can't drift apart.
+
+[allowed]
+"01" = "Current data (Mode 01)"
+"02" = "Freeze frame data"
+"03" = "Stored trouble codes"
+"06" = "On-board monitor test results (Mode 06)"
+"07" = "Pending trouble codes"
+"09" = "Vehicle information, like the VIN and calibration IDs"
+"0A" = "Permanent trouble codes"
+"13" = "Read trouble codes (Toyota and KWP2000)"
+"17" = "Read trouble code status"
+"18" = "Read trouble codes by status"
+"19" = "Read trouble code information"
+"1A" = "Read module identification"
+"21" = "Read data by local identifier"
+"22" = "Read data by identifier"
+
+[never]
+"04" = "Clear trouble codes (OBD-II)"
+"08" = "Control on-board systems"
+"10" = "Change the diagnostic session"
+"11" = "Reset a module"
+"14" = "Clear trouble codes"
+"23" = "Read memory by address"
+"27" = "Security access"
+"28" = "Communication control"
+"2C" = "Define identifiers on the fly"
+"2E" = "Write data by identifier"
+"2F" = "Input and output control"
+"30" = "Input and output control by local identifier"
+"31" = "Routine control"
+"34" = "Request download"
+"35" = "Request upload"
+"36" = "Transfer data"
+"37" = "Transfer exit"
+"38" = "Request file transfer"
+"3B" = "Write data by local identifier"
+"3D" = "Write memory by address"
+"3E" = "Tester present"
+"85" = "Control trouble code setting"
