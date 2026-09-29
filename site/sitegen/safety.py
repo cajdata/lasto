@@ -55,9 +55,32 @@ def _evaluate(node: ast.AST, env: dict[str, object]) -> object:
         if isinstance(left, int) and isinstance(right, int) and not isinstance(left, bool) and not isinstance(right, bool):
             return left | right
         raise BuildError("| only between sets or between integers")
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+        left, right = _evaluate(node.left, env), _evaluate(node.right, env)
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (left, right)):
+            raise BuildError("arithmetic only between numbers")
+        ops = {ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b, ast.Mult: lambda a, b: a * b, ast.Div: lambda a, b: a / b}
+        try:
+            return ops[type(node.op)](left, right)
+        except ArithmeticError as exc:
+            raise BuildError(f"arithmetic failed: {exc}") from None
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        # The only calls evaluated: frozenset(...), MappingProxyType(...) (a read-only view of a dict literal),
+        # and int(...) of a number. Anything else stays unevaluated, so nothing in the source can run.
         if node.func.id == "frozenset" and len(node.args) == 1 and not node.keywords:
             return frozenset(_evaluate(node.args[0], env))  # type: ignore[arg-type]
+        if node.func.id == "MappingProxyType" and len(node.args) == 1 and not node.keywords:
+            if not isinstance(node.args[0], ast.Dict):
+                raise BuildError("MappingProxyType of something that isn't a dict literal")
+            return _evaluate(node.args[0], env)
+        if node.func.id == "int" and len(node.args) == 1 and not node.keywords:
+            inner = _evaluate(node.args[0], env)
+            if not isinstance(inner, (int, float)) or isinstance(inner, bool):
+                raise BuildError("int() of something that isn't a number")
+            try:
+                return int(inner)  # truncates, as the app's own int() does
+            except (ArithmeticError, ValueError) as exc:
+                raise BuildError(f"int() failed: {exc}") from None
         if not node.args:
             # A constructor call with keyword arguments, such as Ecu(name=..., ...).
             return {"__type__": node.func.id, **{k.arg: _evaluate(k.value, env) for k in node.keywords if k.arg}}
@@ -72,13 +95,17 @@ class _Module:
     values: dict[str, object] = field(default_factory=dict)
     refs: dict[str, SourceRef] = field(default_factory=dict)
     # Names bound anywhere other than one top-level assignment: reassigned, augmented (|=),
-    # bound inside a function, class, loop, or branch, or declared global. Their top-level
-    # value may not be the one the app uses, so the site refuses to read them.
+    # bound inside a function, class, loop, or branch, or declared global, and any constant
+    # computed from one of those. Their top-level value may not be the one the app uses, so
+    # the site refuses to read them.
     unstable: set[str] = field(default_factory=set)
 
     def get(self, name: str) -> object:
         if name in self.unstable:
-            raise BuildError(f"{self.rel} changes {name} after defining it; the site can only read single literal constants")
+            raise BuildError(
+                f"{self.rel} changes {name} after defining it, or computes it from a name that changes; "
+                "the site can only read single literal constants"
+            )
         if name not in self.values:
             raise BuildError(f"{self.rel} no longer defines {name} as a literal constant; update sitegen/safety.py")
         return self.values[name]
@@ -121,6 +148,8 @@ def _read(path: Path, root: Path) -> _Module:
             name, value = stmt.target.id, stmt.value
         else:
             continue
+        if any(isinstance(n, ast.Name) and n.id in mod.unstable for n in ast.walk(value)):
+            mod.unstable.add(name)  # computed from a name that changes, so it may too (in source order, so it carries on)
         try:
             mod.values[name] = _evaluate(value, mod.values)
         except BuildError:
@@ -139,6 +168,15 @@ def _num(value: object, what: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise BuildError(f"{what} isn't a number")
     return value
+
+
+def _count(value: object, what: str) -> int:
+    """A whole number: an int, or a float with nothing after the point. Never rounded, so the site can't
+    show a limit the app doesn't enforce."""
+    number = _num(value, what)
+    if isinstance(number, float) and not number.is_integer():
+        raise BuildError(f"{what} is {number}, which isn't a whole number")
+    return int(number)
 
 
 @dataclass(frozen=True)
@@ -171,6 +209,12 @@ class SafetyFacts:
     response_pending_wait: float
     response_pending_max: int
     listen_window: float
+    ceiling_frames: int
+    ceiling_window: float
+    max_rate_wait: float
+    status_interval: float
+    reopen_attempts: int
+    max_reopens: int
     hotkey: str
     commands: dict[str, tuple[str, int]]
     refs: dict[str, SourceRef]
@@ -225,6 +269,7 @@ def load_facts(root: Path | None = None) -> SafetyFacts:
     gate = _read(safety / "gate.py", base)
     hot = _read(safety / "hotkey.py", base)
     session = _read(safety / "session.py", base)
+    reader = _read(safety / "reader.py", base)
     cli = _read(base / "src" / "lasto" / "cli.py", base)
 
     obd = _ints(policy.get("OBD_SERVICES"), "OBD_SERVICES")
@@ -251,6 +296,12 @@ def load_facts(root: Path | None = None) -> SafetyFacts:
     ceiling = _num(rate.get("HARD_CEILING_PER_SECOND"), "HARD_CEILING_PER_SECOND")
     if any(r > ceiling for r in rates.values()):
         raise BuildError("a purpose rate is above the hard ceiling")
+    ceiling_frames = _count(rate.get("CEILING_FRAMES"), "CEILING_FRAMES")
+    ceiling_window = _num(rate.get("CEILING_WINDOW"), "CEILING_WINDOW")
+    if not ceiling_window > 0:
+        raise BuildError(f"CEILING_WINDOW is {ceiling_window}; the write function's window has to be longer than 0 s")
+    if ceiling_frames / ceiling_window > ceiling:
+        raise BuildError("the write function's backstop is looser than the hard ceiling")
 
     hotkey = _hotkey(hot)
 
@@ -260,7 +311,7 @@ def load_facts(root: Path | None = None) -> SafetyFacts:
     commands = {str(k): (str(v[0]), int(v[1])) for k, v in raw_commands.items()}
 
     refs: dict[str, SourceRef] = {}
-    for mod in (policy, ecus, rate, kill, inter, gate, hot, session, cli):
+    for mod in (policy, ecus, rate, kill, inter, gate, hot, session, reader, cli):
         for name, ref in mod.refs.items():
             refs.setdefault(name, ref)
 
@@ -270,21 +321,27 @@ def load_facts(root: Path | None = None) -> SafetyFacts:
         never_services=never,
         dtc_read_services=_ints(policy.get("DTC_READ_SERVICES"), "DTC_READ_SERVICES"),
         probe_pids=_ints(policy.get("PROBE_PIDS"), "PROBE_PIDS"),
-        functional_id=int(_num(policy.get("FUNCTIONAL_REQUEST_ID"), "FUNCTIONAL_REQUEST_ID")),
-        padding_byte=int(_num(policy.get("PADDING_BYTE"), "PADDING_BYTE")),
+        functional_id=_count(policy.get("FUNCTIONAL_REQUEST_ID"), "FUNCTIONAL_REQUEST_ID"),
+        padding_byte=_count(policy.get("PADDING_BYTE"), "PADDING_BYTE"),
         ecus=ecu_list,
         rates=rates,
         ceiling=ceiling,
         backoff_start=_num(rate.get("BACKOFF_START"), "BACKOFF_START"),
         backoff_max=_num(rate.get("BACKOFF_MAX"), "BACKOFF_MAX"),
-        nrc_consecutive=int(_num(kill.get("CONSECUTIVE_NRC_LIMIT"), "CONSECUTIVE_NRC_LIMIT")),
-        nrc_window_limit=int(_num(kill.get("WINDOW_NRC_LIMIT"), "WINDOW_NRC_LIMIT")),
+        nrc_consecutive=_count(kill.get("CONSECUTIVE_NRC_LIMIT"), "CONSECUTIVE_NRC_LIMIT"),
+        nrc_window_limit=_count(kill.get("WINDOW_NRC_LIMIT"), "WINDOW_NRC_LIMIT"),
         nrc_window_seconds=_num(kill.get("NRC_WINDOW_SECONDS"), "NRC_WINDOW_SECONDS"),
-        timeout_limit=int(_num(kill.get("CONSECUTIVE_TIMEOUT_LIMIT"), "CONSECUTIVE_TIMEOUT_LIMIT")),
+        timeout_limit=_count(kill.get("CONSECUTIVE_TIMEOUT_LIMIT"), "CONSECUTIVE_TIMEOUT_LIMIT"),
         min_engine_off_voltage=_num(inter.get("MIN_ENGINE_OFF_VOLTAGE"), "MIN_ENGINE_OFF_VOLTAGE"),
         response_pending_wait=_num(gate.get("P2_STAR_TIMEOUT"), "P2_STAR_TIMEOUT"),
-        response_pending_max=int(_num(gate.get("MAX_RESPONSE_PENDING"), "MAX_RESPONSE_PENDING")),
+        response_pending_max=_count(gate.get("MAX_RESPONSE_PENDING"), "MAX_RESPONSE_PENDING"),
         listen_window=_num(session.get("LISTEN_WINDOW"), "LISTEN_WINDOW"),
+        ceiling_frames=ceiling_frames,
+        ceiling_window=ceiling_window,
+        max_rate_wait=_num(gate.get("MAX_RATE_WAIT"), "MAX_RATE_WAIT"),
+        status_interval=_num(reader.get("STATUS_INTERVAL"), "STATUS_INTERVAL"),
+        reopen_attempts=_count(session.get("REOPEN_ATTEMPTS"), "REOPEN_ATTEMPTS"),
+        max_reopens=_count(session.get("MAX_REOPENS_PER_SESSION"), "MAX_REOPENS_PER_SESSION"),
         hotkey=hotkey,
         commands=commands,
         refs=refs,

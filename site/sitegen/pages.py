@@ -98,7 +98,9 @@ def smart(text: str) -> str:
     return text.replace("'", "’")
 
 
-SAFETY_FILES = ["policy.py", "ecus.py", "ratelimit.py", "killswitch.py", "interlocks.py", "gate.py", "hotkey.py", "session.py"]
+# Characters of a commit SHA in code permalinks. GitHub resolves an abbreviation, and at 12 it
+# stays unique in a repository this size, while every link on a long page gets 28 bytes lighter.
+PERMALINK_SHA = 12
 
 
 def page_dependencies(meta: dict) -> list[Path]:
@@ -111,7 +113,8 @@ def page_dependencies(meta: dict) -> list[Path]:
     body = meta["body"]
     deps: set[Path] = set()
     if "facts." in body or "code_link(" in body or "code_file(" in body or "figure service-map" in body:
-        deps.update(paths.SAFETY / name for name in SAFETY_FILES)
+        # The whole safety core: the facts come from several files, and every file link is a permalink.
+        deps.update(paths.SAFETY.glob("*.py"))
         deps.add(paths.CLI)
     if "roadmap." in body or "status_sentence" in body or "figure service-map" in body or meta.get("layout") == "home":
         deps.add(paths.DATA / "roadmap.toml")
@@ -208,7 +211,7 @@ class Builder:
         if sha is None:
             return text
         lines = f"L{ref.line}" if ref.line == ref.end_line else f"L{ref.line}-L{ref.end_line}"
-        return f"[{text}]({self.site['repo']}/blob/{sha}/{ref.file}#{lines})"
+        return f"[{text}]({self.site['repo']}/blob/{sha[:PERMALINK_SHA]}/{ref.file}#{lines})"
 
     def code_file(self, name: str) -> str:
         """Markdown for a whole safety core file: a permalink once Phase 1 is public, plain text before."""
@@ -221,7 +224,7 @@ class Builder:
         sha = gitinfo.last_commit_sha(path)
         if sha is None:
             return text
-        return f"[{text}]({self.site['repo']}/blob/{sha}/{path.relative_to(paths.ROOT).as_posix()})"
+        return f"[{text}]({self.site['repo']}/blob/{sha[:PERMALINK_SHA]}/{path.relative_to(paths.ROOT).as_posix()})"
 
     # -- build -------------------------------------------------------------------------
 

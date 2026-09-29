@@ -35,13 +35,14 @@ open = []
 number = 1
 slug = "safety-core"
 name = "Safety core, simulator, and tests"
-status = "awaiting-approval"
+status = "done"
 built = 2026-09-26
-public = false
+approved = 2026-09-28
+public = true
 transmits = "No"
 summary = "Every rule about what can reach the truck, for both the PCAN-USB and the OBDLink MX+, written in code and tested against a simulated truck."
 delivers = [
-  "The safety core: listen-only open with readback, the transmit gate, allowlists, rate limits, the kill switch, interlocks, and the audit log",
+  "The safety core: listen-only open with readback and continuous rechecks, the transmit gate and the one write function behind it, allowlists, rate limits, the kill switch, interlocks, the serial guard, and the audit log",
   "A simulator that stands in for the PCAN driver, the MX+, and the truck, and fails the test run if it ever receives forbidden traffic",
   "Unit, property-based, and structural tests, with the test command set to fail below 100 percent branch coverage on the safety core",
   "A command-line skeleton where every command says which phase delivers it",
@@ -62,6 +63,8 @@ delivers = [
   "Passive capture that starts when the bus wakes up and ends 60 seconds after it goes quiet",
   "Storage: compressed candump segments plus a SQLite index, with recovery after a crash",
   "A session list and an audit log viewer",
+  "A service layer the command line and the Phase 9 GUI both build on",
+  "The serial guard in place before any hardware command runs",
 ]
 commands = ["lasto drive", "lasto log"]
 live_test = "Key on with the engine off, then a short drive. I run both at the truck."
@@ -84,7 +87,10 @@ delivers = [
 ]
 commands = ["lasto map", "lasto verify"]
 live_test = "A Creader engine data stream, then a KDSS data stream."
-open = ["Whether the Creader Elite V3.0 T reaches the KDSS module on a 2006 GX470."]
+open = [
+  "An independent review of the serial guard, before any MX+ code touches hardware.",
+  "Whether the Creader Elite V3.0 T reaches the KDSS module on a 2006 GX470.",
+]
 
 [[phase]]
 number = 4
@@ -170,6 +176,24 @@ commands = ["lasto report", "lasto export"]
 live_test = ""
 open = []
 
+[[phase]]
+number = 9
+slug = "gui"
+name = "Local web GUI"
+status = "planned"
+public = false
+transmits = "No"
+summary = "An app in your browser for reviewing drives, mapping signals, and managing definitions, built on the same code as the command line. It never sends anything to the truck, and it only answers the laptop it runs on."
+delivers = [
+  "9a: read-only browsing of sessions, charts, and health history",
+  "9b: the mapping workbench and a broadcast explorer",
+  "9c: the definitions library, a read-only live monitor, and settings",
+  "Start and stop for a passive capture, the only thing it does with hardware",
+]
+commands = []
+live_test = ""
+open = []
+
 # Docs pages whose URLs are reserved now and published when their phase is done.
 # The roadmap lists them under their phase, and the 404 page explains them.
 [[reserved]]
@@ -211,3 +235,8 @@ phase = 7
 path = "/docs/reports-and-exports/"
 title = "Reports and exports"
 phase = 8
+
+[[reserved]]
+path = "/docs/gui/"
+title = "The local GUI"
+phase = 9

@@ -2,19 +2,23 @@
 # Pull requests build and check the site but never deploy.
 name: site
 
+# The paths are everything the build and its tests read.
 on:
   push:
     branches: [main]
     paths:
       - "site/**"
       - "src/lasto/**"  # the Safety page and service map read the safety core's source
-      - "SECURITY.md"
-      - ".github/workflows/site.yml"
+      - "pyproject.toml"  # requires-python, for the "Runs on" line
+      - ".python-version"  # the Python this workflow sets up
+      - ".github/**"  # the site tests check every workflow and dependabot.yml
   pull_request:
     paths:
       - "site/**"
       - "src/lasto/**"
-      - ".github/workflows/site.yml"
+      - "pyproject.toml"
+      - ".python-version"
+      - ".github/**"
   schedule:
     - cron: "23 7 1 * *"  # monthly, so security.txt's Expires date never goes stale
   workflow_dispatch:
@@ -22,10 +26,11 @@ on:
 permissions:
   contents: read
 
-# One run at a time per branch. On main, a newer push replaces a waiting older one, so an
-# older build can never deploy over a newer one. Pull request runs cancel their older runs.
+# One run at a time per ref. On main, a newer run replaces a waiting older one and never
+# cancels the one running, so an older build can't deploy over a newer one. Pull request
+# runs cancel their older runs.
 concurrency:
-  group: site-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  group: site-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -39,27 +44,34 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version-file: .python-version
           cache: pip
           cache-dependency-path: site/requirements*.txt
 
+      # A block scalar: in a plain one, the ": " inside ":all: -r" is YAML syntax.
       - name: Install the site build (hash-checked)
-        run: python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r site/requirements.txt -r site/requirements-test.txt
+        run: >-
+          python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all:
+          -r site/requirements.txt -r site/requirements-test.txt
 
-      - name: Test the build code
+      - name: Test the build code, and actionlint on every workflow
         run: python -m pytest -c site/pytest.ini site/tests
 
       - name: Build and check the site
         run: python site/build.py build --strict
 
+      # Note: the lychee action downloads lychee without checking a hash. Pinning lychee by
+      # sha256, as the site tests do for actionlint, is a follow-up.
       - name: Check internal links
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           args: --offline --no-progress --include-fragments --index-files index.html --root-dir ${{ github.workspace }}/site/dist 'site/dist/**/*.html'
           fail: true
 
+      # The last step, so a build that fails never leaves a github-pages artifact behind: a
+      # re-run would upload a second one, and deploy-pages refuses to choose between them.
       - name: Upload the site
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site/dist
@@ -76,7 +88,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     concurrency:
-      group: pages
+      group: site-deploy
       cancel-in-progress: false  # never cancel a deploy halfway
     steps:
       - id: deployment
@@ -87,10 +99,10 @@ jobs:
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}
           BASE: https://lasto.dev/
         run: |
-          if [ "$PAGE_URL" != "$BASE" ]; then
+          if [ "${PAGE_URL%/}/" != "$BASE" ]; then  # with or without the trailing slash
             echo "::error::Pages reports $PAGE_URL; expected $BASE (set the custom domain and tick Enforce HTTPS)"
             exit 1
           fi
-          for path in "" safety/ roadmap/ about/ index.md safety/index.md llms.txt llms-full.txt sitemap.xml robots.txt .well-known/security.txt; do
+          for path in "" safety/ safety/core/ roadmap/ about/ index.md safety/index.md llms.txt llms-full.txt sitemap.xml robots.txt .well-known/security.txt; do
             curl -fsS --max-time 30 --retry 5 --retry-delay 20 --retry-all-errors -o /dev/null "${BASE}${path}"
           done

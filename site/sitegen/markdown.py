@@ -28,11 +28,12 @@ from sitegen import figures
 from sitegen.data import BuildError
 
 HEADING_ID = re.compile(r'\s*\{#([a-z0-9][a-z0-9-]*)(?:\s+tag="([^"]+)")?\}\s*$')
-# The word joiner keeps the arrow on the same line as the end of the link text.
+# The word joiner keeps the arrow on the same line as the end of the link text. The arrow's
+# path is drawn once per page, in the sprite in base.html, and each link points to it.
 EXT_SVG = (
     "\u2060"  # word joiner
-    '<svg class="ext" viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" focusable="false">'
-    '<path d="M2.5 7.5l5-5M3.5 2.5h4v4"/></svg><span class="vh"> (external site)</span>'
+    '<svg class="ext" viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">'
+    '<use href="#ext"/></svg><span class="vh"> (external site)</span>'
 )
 NBSP = "\u00a0"
 

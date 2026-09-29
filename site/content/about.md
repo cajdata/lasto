@@ -16,6 +16,8 @@ page_type: AboutPage
 
 I'm [Chris Johnson]({{ site.author_url }}), and I'm building Lasto for my own 2006 GX470. The first thing I want it to answer is how hot the transmission gets on long grades, and whether a regear is worth doing.
 
+The code and docs are written with Claude Code; I review every change, and each one has to pass the test suite and the safety rules.
+
 The [source code is on GitHub]({{ site.repo }}). The [lasto package on PyPI]({{ site.pypi }}) only reserves the name for now.
 
 ## License and warranty {#license}
@@ -30,7 +32,7 @@ Lasto is read-only by design. Passive mode sends nothing, and polled mode will s
 
 ## Privacy {#privacy}
 
-This site has no analytics and no cookies, and it loads nothing from other servers. GitHub Pages hosts it and logs visitor IP addresses for security, under GitHub's privacy statement. Lasto itself has no networking code and is built to run offline in the truck.
+This site has no analytics and no cookies, and it loads nothing from other servers. GitHub Pages hosts it and logs visitor IP addresses for security, under GitHub's privacy statement. Lasto itself sends nothing over the internet and is built to run offline in the truck. The local GUI planned for Phase 9 will only answer the laptop it runs on.
 
 ## Contact {#contact}
 

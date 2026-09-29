@@ -4,16 +4,21 @@ The project website. A small Python build turns Markdown and data files into a s
 
 ## Build and preview
 
+The site's dependencies are pinned with hashes in `site/requirements.txt` and `site/requirements-test.txt`, apart from the app's `uv.lock`. They get their own environment, `.venv-site`: `uv sync` would remove them from `.venv`, and `uv run --with-requirements` doesn't check the hashes. Install and run them like this (on Linux, `bin` in place of `Scripts`):
+
 ```bash
-python -m venv .venv
-.venv/Scripts/python -m pip install --require-hashes -r site/requirements.txt -r site/requirements-test.txt
-.venv/Scripts/python site/build.py build
-.venv/Scripts/python site/build.py serve --watch
+uv venv .venv-site
+uv pip install --python .venv-site/Scripts/python.exe --require-hashes --only-binary :all: -r site/requirements.txt -r site/requirements-test.txt
+.venv-site/Scripts/python site/build.py build
+.venv-site/Scripts/python site/build.py serve --watch
+.venv-site/Scripts/python -m pytest -c site/pytest.ini site/tests
 ```
 
-`serve` builds, then serves `site/dist` at http://127.0.0.1:8000/ and rebuilds when content, data, templates, static files, or the safety core source change. Every build runs the checks in `sitegen/checks.py`, and any problem fails it. CI adds `--strict`, which also needs full git history and committed sources.
+`serve` builds, then serves `site/dist` at http://127.0.0.1:8000/ and rebuilds when content, data, templates, static files, or the safety core source change. Every build runs the checks in `sitegen/checks.py`, and any problem fails it. CI installs the same files with `pip --require-hashes` and adds `--strict`, which also needs full git history and committed sources.
 
-Tests: `.venv/Scripts/python -m pytest -c site/pytest.ini site/tests`. They use their own config, so the app's pytest settings (the simulator plugin and the 100 percent coverage gate on `lasto.safety`) never apply to the site, and never get loosened for it.
+The tests use their own config, so the app's pytest settings (the simulator plugin and the 100 percent coverage gate on `lasto.safety`) never apply to the site, and never get loosened for it.
+
+The tests also run actionlint on every workflow in `.github/workflows`, so a workflow GitHub would reject fails here first. `tests/test_workflows.py` downloads the official actionlint release once into `site/.cache` and checks its sha256 before every run, so the first run needs network access. To update actionlint, change `ACTIONLINT_VERSION` and copy the two checksum lines from the new release's checksums file.
 
 ## Where things are
 
@@ -40,10 +45,10 @@ Tests: `.venv/Scripts/python -m pytest -c site/pytest.ini site/tests`. They use 
 ## When an app phase ships
 
 1. In `data/roadmap.toml`, set the phase's `status = "done"` and `approved = YYYY-MM-DD`, and `public = true` once its commits are on `main`.
-2. Update anything the build flags as stale (it knows which phrases stop being true after Phase 2).
+2. Update anything the build flags as stale (it knows which phrases stop being true after Phase 2, and checks that "built in N phases" matches the roadmap).
 3. Write or publish the docs the phase adds (W2 adds the docs section and its gating).
 
-With Phase 1 public, the Safety page's "Enforced in" notes become permalinks to the exact lines in the safety core.
+Phase 1 is public, so the Safety page's "Enforced in" notes are permalinks to the exact lines in the safety core, at the commit that last changed each file.
 
 ## Fonts
 

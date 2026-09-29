@@ -21,7 +21,7 @@ Lasto is being built with two modes, and both use a PEAK PCAN-USB interface on t
 
 ### Passive mode {#passive}
 
-In passive mode, Lasto puts the PCAN-USB in hardware listen-only mode, reads the setting back, and won't record if it can't confirm it. In listen-only mode the adapter's CAN controller sends nothing on the bus. It doesn't even send the acknowledge bit every other module sends.
+In passive mode, Lasto puts the PCAN-USB in hardware listen-only mode, reads the setting back, and won't record if it can't confirm it. While it records, it reads the setting again every {{ facts.status_interval|num }} seconds. In listen-only mode the adapter's CAN controller sends nothing on the bus. It doesn't even send the acknowledge bit every other module sends.
 
 [What isn't proven yet](/safety/#not-proven)
 
@@ -50,7 +50,7 @@ Table: Quick reference data
 | CAN interface | {{ hardware.legs[0].full }}, {{ hardware.legs[0].variant }}, {{ hardware.legs[0].model }} |
 | K-line interface | {{ hardware.legs[1].full }} over Bluetooth, from Phase 3 |
 | Sends in passive mode | Nothing. The passive code path has no transmit call |
-| Request rate, polled mode | Up to {{ facts.rates.logging|num }} per second while logging, {{ facts.rates.discovery|num }} during discovery, never more than {{ facts.ceiling|num }} |
+| Request rate, polled mode | Up to {{ facts.rates.logging|num }} per second while logging, {{ facts.rates.discovery|num }} during discovery, never more than {{ facts.ceiling|num }} per second in total |
 | Addresses it may ask | Standard OBD-II requests: `0x{{ facts.functional_id|hex3 }}`, which every OBD-II module answers. Everything else: {% for e in facts.ecus %}the {{ e.name }} computer, requests on `0x{{ e.request_id|hex3 }}` and answers on `0x{{ e.response_id|hex3 }}`{% if not loop.last %}; {% endif %}{% endfor %} |
 | Broadcast IDs | None recorded yet (Phase 2) |
 | Runs on | Windows, {{ python_req }} |
@@ -70,7 +70,7 @@ Everything will plug into the truck's OBD-II port through one 3-way splitter, so
 
 ## Where it stands {#status}
 
-{{ status_sentence }} Lasto gets built in nine phases, and each one stops for my review before the next starts.
+{{ status_sentence }} Lasto gets built in ten phases, and each one stops for my review before the next starts.
 
 Table: Build phases
 
