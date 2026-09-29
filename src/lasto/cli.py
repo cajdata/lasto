@@ -3,6 +3,13 @@
 The simulator is the default. Real hardware needs --live plus an explicit
 --channel (PCAN) or --port (OBDLink), typed every time. Every parser turns
 off option abbreviation, so nothing shorter than --live can turn it on.
+
+This module parses arguments and renders results; the work lives in
+lasto.services and lasto.operations. Before it dispatches any command except
+gui, main() imports the safety core, which installs the serial guard, so no
+lasto code in a command's process can open a serial port but the STN link.
+The GUI process never imports the safety core and installs its own guard
+(docs/architecture.md §14.4).
 """
 
 from __future__ import annotations
@@ -25,8 +32,11 @@ COMMANDS = {
     "report": ("Session report", 8),
     "export": ("Export pack: CSV, Parquet, and summary JSON", 8),
     "verify": ("Confirm solver candidates as verified definitions", 3),
+    "gui": ("Local web GUI for reviewing drives, mapping, and definitions", 9),
 }
 HARDWARE_COMMANDS = frozenset({"drive", "map", "snapshot", "identify", "discover"})
+# Commands whose process must never import the safety core (docs/architecture.md §14.4).
+SAFETY_CORE_FREE_COMMANDS = frozenset({"gui"})
 
 _CHANNEL = re.compile(r"PCAN_USBBUS([1-9]|1[0-6])")
 _PORT = re.compile(r"COM[1-9][0-9]{0,2}")
@@ -67,8 +77,15 @@ def _check_hardware_arguments(parser: argparse.ArgumentParser, args: argparse.Na
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command not in SAFETY_CORE_FREE_COMMANDS:
+        # Before anything else runs: importing the safety core installs its serial guard (finding P2).
+        import lasto.safety  # noqa: F401
     if args.command in HARDWARE_COMMANDS:
         _check_hardware_arguments(parser, args)
+    return _dispatch(args)
+
+
+def _dispatch(args: argparse.Namespace) -> int:
     _help, phase = COMMANDS[args.command]
     mode = "real hardware" if getattr(args, "live", False) else "the simulator"
     print(f"lasto {__version__}: '{args.command}' with {mode} arrives in Phase {phase}. Nothing is captured yet.")

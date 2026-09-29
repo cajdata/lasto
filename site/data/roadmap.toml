@@ -190,7 +190,7 @@ delivers = [
   "9c: the definitions library, a read-only live monitor, and settings",
   "Start and stop for a passive capture, the only thing it does with hardware",
 ]
-commands = []
+commands = ["lasto gui"]
 live_test = ""
 open = []
 

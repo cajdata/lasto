@@ -320,6 +320,8 @@ src/lasto/
     _frozen.py               # freeze(): sealed classes, frozen modules (§3.9)
     pcan_passive.py  stn_port.py  reader.py
     serial_guard.py          # audit hook: nothing else in the process opens a serial port by name
+  services/                  # hardware-free application logic; the CLI and the GUI both call it (§14.4)
+  operations/                # hardware-facing work; the only code outside the core that opens its sessions
   capture/  protocol/  storage/  decode/  mapping/  polling/  snapshot/  identify/  discover/
   analysis/  report/  export/  view/
   sim/                       # FakePcanDll, FakeStnPort, vehicle model, ECUs, Creader, violations
