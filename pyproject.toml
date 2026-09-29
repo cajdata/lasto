@@ -19,6 +19,10 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
+# Each dependency arrives in the phase that first needs it, pinned exactly (docs/architecture.md §10).
+dependencies = [
+    "zstandard==0.25.0",  # Phase 2: raw capture segments, one checksummed zstd frame per second
+]
 
 [project.urls]
 Homepage = "https://lasto.dev"
