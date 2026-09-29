@@ -130,23 +130,82 @@ def test_passive_path_imports_nothing_that_can_transmit():
         assert calls == [], f"{name} calls a write method"
 
 
-REFUSAL_TYPES = {
-    "SafetyViolation", "KillSwitchTripped", "PassiveModeUnconfirmed", "ValueError", "TypeError", "AdapterError",
-    "InterfaceError",
-}  # fmt: skip
+
+# Raises in the safety core that aren't refusals, by (module, function, what is raised), each with why.
+# Anything else raised outside refuse() fails the suite. Changing this list needs the owner's approval.
+NOT_REFUSALS = {
+    ("lasto.safety.audit", "_deliver", "failures[0]"): (
+        "re-raises an audit log's own failure, after every attached audit log has had the record (finding #8)"
+    ),
+    ("lasto.safety.killswitch", "trip", "errors[0]"): (
+        "re-raises a kill listener's failure, after the latch is set, every listener has run, and the trip is audited"
+    ),
+    ("lasto.safety.isotp", "parse", "IsoTpError"): (
+        "an ISO-TP parse error: the policy refuses (audited) outgoing bytes that raise one, and the gate trips "
+        "the kill switch on a received one"
+    ),
+}
+
+
+def refusals_outside_refuse(module: str, tree: ast.Module) -> list[str]:
+    """Every raise in the safety core that isn't audit.refuse() raising a refusal it has recorded.
+
+    Allowed: refuse() itself, a bare raise (re-raising what was caught), and NOT_REFUSALS. Anything else,
+    of any type, however it is built, fails, and so does an assert, which raises and vanishes under -O.
+    """
+    found = []
+    if not module.startswith("lasto.safety"):
+        return found
+    _, functions = _context(tree)
+    for node in ast.walk(tree):
+        where = functions.get(id(node), "")
+        if isinstance(node, ast.Assert):
+            found.append(f"line {node.lineno}: assert in {where or 'the module'}")
+        if not isinstance(node, ast.Raise) or node.exc is None:
+            continue
+        if module == "lasto.safety.audit" and where == "refuse":
+            continue  # the one place a refusal is raised, once it is recorded
+        exc = node.exc
+        raised = _identifier(exc.func) if isinstance(exc, ast.Call) else ast.unparse(exc)
+        if (module, where, raised) not in NOT_REFUSALS:
+            found.append(f"line {node.lineno}: raise {ast.unparse(exc)} in {where or 'the module'}")
+    return found
+
+
+@pytest.mark.parametrize(
+    ("module", "snippet", "flagged"),
+    [
+        ("lasto.safety.probe", "raise SafetyViolation('reason')", True),
+        ("lasto.safety.probe", "raise errors.InterfaceError('driver')", True),
+        ("lasto.safety.probe", "raise RuntimeError('any type at all')", True),
+        ("lasto.safety.probe", "error = SafetyViolation('reason')\nraise error", True),
+        ("lasto.safety.probe", "raise KeyError(key) from None", True),
+        ("lasto.safety.probe", "raise SafetyViolation", True),
+        ("lasto.safety.probe", "assert allowed, 'refused'", True),  # an assert is a raise, and vanishes under -O
+        ("lasto.safety.probe", "try:\n    check()\nexcept OSError:\n    raise", False),  # re-raises what was caught
+        ("lasto.safety.audit", "def refuse(error):\n    record(error)\n    raise error", False),
+        # The raises that aren't refusals, each only where it belongs.
+        ("lasto.safety.isotp", "def parse(data):\n    raise IsoTpError('isotp_malformed', 'no protocol byte')", False),
+        ("lasto.safety.gate", "def check(data):\n    raise IsoTpError('isotp_malformed', 'no protocol byte')", True),
+        ("lasto.safety.audit", "def _deliver(self):\n    raise failures[0]", False),
+        ("lasto.safety.killswitch", "def trip(self):\n    raise errors[0]", False),
+        ("lasto.safety.policy", "def check():\n    raise failures[0]", True),
+    ],
+)
+def test_the_refusal_check(module, snippet, flagged):
+    """Review finding: the old check only caught raise X(...) for seven named refusal types."""
+    assert bool(refusals_outside_refuse(module, ast.parse(snippet))) is flagged
 
 
 def test_every_refusal_in_the_safety_core_goes_through_refuse():
     """Rule 11: a refusal is raised only by audit.refuse(), which records it first."""
+    found = {name: problems for name, tree in sources().items() if (problems := refusals_outside_refuse(name, tree))}
+    assert found == {}
     raising_sites = 0
     for name, tree in sources().items():
         if not name.startswith("lasto.safety"):
             continue
         for node in ast.walk(tree):
-            if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
-                func = node.exc.func
-                raised = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-                assert raised not in REFUSAL_TYPES, f"{name} raises {raised} without refuse()"
             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "refuse":
                 raising_sites += 1
     refuse_def = next(
