@@ -81,15 +81,24 @@ def test_a_run_and_a_session_get_uuids(conn):
 
 def test_closing_a_session(conn):
     run = new_run(conn)
-    first, second = new_session(conn, run, "sessions/a").id, new_session(conn, run, "sessions/b").id
-    assert capture_db.sessions_left_open(conn) == [first, second]
-    capture_db.close_session(conn, first, ended_utc=LATER, end_reason="bus_silent")
-    capture_db.close_session(conn, second, ended_utc=LATER, end_reason="crashed", recovered=True)
+    first, second = new_session(conn, run, "sessions/a"), new_session(conn, run, "sessions/b")
+    assert [left.id for left in capture_db.sessions_left_open(conn)] == [first.id, second.id]
+    capture_db.close_session(conn, first.id, ended_utc=LATER, end_reason="bus_silent")
+    [left] = capture_db.sessions_left_open(conn)
+    assert left == capture_db.LeftOpen(second.key, second.id, run, UTC, 1_000_000_000, 1_759_168_800_000_000, None, None)
+    capture_db.close_recovered(conn, left, ended_utc=LATER, host_utc=LATER, detail={"seconds_indexed": 0})
     assert capture_db.sessions_left_open(conn) == []
     rows = dict(conn.execute("SELECT id, state || ' ' || end_reason FROM sessions").fetchall())
-    assert rows == {first: "closed bus_silent", second: "recovered crashed"}
+    assert rows == {first.id: "closed bus_silent", second.id: "recovered interrupted"}
+    assert conn.execute("SELECT session, kind, detail FROM events").fetchall() == [
+        (second.key, "recovered", '{"seconds_indexed": 0}')
+    ]
     with pytest.raises(ValueError, match="isn't open"):
-        capture_db.close_session(conn, first, ended_utc=LATER, end_reason="again")
+        capture_db.close_session(conn, first.id, ended_utc=LATER, end_reason="again")
+    with pytest.raises(ValueError, match="isn't open"):
+        capture_db.close_recovered(conn, left, ended_utc=LATER, host_utc=LATER, detail={})
+    assert conn.execute("SELECT count(*) FROM events").fetchone()[0] == 1  # the refused close left no event
+    assert not conn.in_transaction
 
 
 def test_a_run_records_what_the_channel_reported(conn):

@@ -264,7 +264,11 @@ What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr
   - The data folder comes from `--data`, then `LASTO_DATA`, then `%LOCALAPPDATA%\lasto`, and one that names a device (a serial port, the device namespace, or another reserved name) is refused, since SQLite opens its files where the serial guard can't see.
   - Tables: sessions, clock anchors, raw segment index, per-ID rollups for each second (`id_seconds`: count, first and last seen, smallest and largest gap, DLC range, which data bits changed, last data; per-ID stats for a session are computed from them), events (status, kill, errors), audit, conversations, signals and samples, DTCs, freeze frames, readiness, Mode 06, vehicle info, definitions and verification history, mapping sessions and reference values, discovery results, schema migrations.
 - **Timestamps:** the session start in UTC, the host monotonic clock, and the hardware timestamp, plus an anchor every 60 s. Per-frame time is a microsecond offset from the hardware clock, and UTC is derived from it. The laptop is offline, so UTC is only as good as its clock.
-- **Recovery:** sessions stay marked open until they close cleanly. On the next start, open sessions are trimmed to their last good frame and marked recovered.
+- **Recovery:** sessions stay marked open until they close cleanly. On the next start, under the capture lock:
+  - Each open session's segments are read from where their index ends. Every complete second found there is indexed, rollups included, as the recorder would have. The database knows each segment before its file exists, so none is missed.
+  - A torn tail is moved to a `.torn` file beside its segment, so the segment reads cleanly and no byte that reached the disk is thrown away. A segment shorter than its index is reported and left alone.
+  - The session is marked recovered (end reason `interrupted`) at its last indexed frame, with a `recovered` event saying what was found.
+  - A run left unended has its audit log indexed to the end, and ends at the last time it's known to have reached.
 - **Keep awake:** `SetThreadExecutionState` stops Windows from sleeping during capture. The lid-close action stays a Windows setting you control.
 - **Storage estimate:** a four-node bus is probably lightly loaded, perhaps 500-2,000 frames/s, which is about 5-30 MB per hour compressed. The real figure and a retention policy come after the first capture.
 

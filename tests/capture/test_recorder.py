@@ -121,6 +121,18 @@ def test_a_new_segment_starts_on_the_hour(conn, root, run):
     assert [row[0] for row in conn.execute("SELECT segment_seq FROM seconds ORDER BY second")] == [1, 1, 2, 2, 3]
 
 
+def test_the_database_knows_a_segment_before_its_file_exists(conn, root, run):
+    """So recovery finds every segment file a capture made, even one a crash left with nothing in it."""
+    clock = FakeClock()
+    recorder = start(conn, root, run, clock, frames_for(0)[0])
+    [(folder,)] = conn.execute("SELECT folder FROM sessions").fetchall()
+    root.absolute(f"{folder}/seg-0001.candump.zst").write_bytes(b"")  # creating the file fails
+    with pytest.raises(FileExistsError):
+        for frame in frames_for(0) + frames_for(1):
+            recorder.add(frame)
+    assert conn.execute("SELECT seq, path FROM segments").fetchall() == [(1, f"{folder}/seg-0001.candump.zst")]
+
+
 def test_the_time_base_and_anchors(conn, root, run):
     clock = FakeClock()
     recorder = start(conn, root, run, clock, frames_for(0)[0], anchor_every=10.0)

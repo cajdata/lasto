@@ -25,6 +25,7 @@ from lasto.storage.ids import new_id
 from lasto.storage.root import DataRoot, stored_path_problem
 
 APPLICATION_ID = 0x4C415343  # "LASC"
+UNREADABLE = "unreadable"  # the event of an audit line that isn't an audit record (lasto.storage.audit_index)
 
 V1 = """
 CREATE TABLE runs (
@@ -198,6 +199,47 @@ class Anchor:
     host_monotonic: float
 
 
+@dataclass(frozen=True, slots=True)
+class LeftOpen:
+    """A session a crash or power loss left open, with what recovery needs to close it."""
+
+    key: int
+    id: str
+    run_id: str
+    started_utc: str
+    base_hw_us: int
+    base_utc_us: int
+    last_hw_us: int | None  # its last indexed frame, if any
+    last_second: int | None  # its last indexed second, if any
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentRow:
+    seq: int
+    path: str
+    stored_bytes: int  # how much of the file the seconds table indexes, from its start
+
+
+@dataclass(frozen=True, slots=True)
+class LeftUnended:
+    """A run whose process stopped without ending it."""
+
+    id: str
+    started_utc: str
+    audit_path: str
+
+
+@dataclass(frozen=True, slots=True)
+class AuditLine:
+    """One line of a run's audit log, as the audit table indexes it."""
+
+    run_id: str
+    line: int  # counted from 1
+    utc: str
+    event: str
+    record: str
+
+
 def open_capture(root: DataRoot) -> sqlite3.Connection:
     """The capture process's writer connection, migrated to the current schema."""
     return opened_or_closed(connect(root.capture_db, synchronous="FULL"), lambda conn: migrate(conn, SCHEMA))
@@ -356,18 +398,89 @@ def add_event(
     )
 
 
-def close_session(
-    conn: sqlite3.Connection, session_id: str, *, ended_utc: str, end_reason: str, recovered: bool = False
-) -> None:
-    """Close an open session: closed after a clean end, recovered after a crash was trimmed."""
+def close_session(conn: sqlite3.Connection, session_id: str, *, ended_utc: str, end_reason: str) -> None:
+    """Close a session that ended cleanly."""
     cursor = conn.execute(
-        "UPDATE sessions SET state = ?, ended_utc = ?, end_reason = ? WHERE id = ? AND state = 'open'",
-        ("recovered" if recovered else "closed", ended_utc, end_reason, session_id),
+        "UPDATE sessions SET state = 'closed', ended_utc = ?, end_reason = ? WHERE id = ? AND state = 'open'",
+        (ended_utc, end_reason, session_id),
     )
     if cursor.rowcount != 1:
         raise ValueError(f"session {session_id} isn't open")
 
 
-def sessions_left_open(conn: sqlite3.Connection) -> list[str]:
+def sessions_left_open(conn: sqlite3.Connection) -> list[LeftOpen]:
     """Sessions a crash or power loss left open, oldest first: the next capture recovers them."""
-    return [row[0] for row in conn.execute("SELECT id FROM sessions WHERE state = 'open' ORDER BY started_utc, key")]
+    rows = conn.execute(
+        "SELECT key, id, run_id, started_utc, base_hw_us, base_utc_us, last_hw_us,"
+        " (SELECT max(second) FROM seconds WHERE seconds.session = sessions.key)"
+        " FROM sessions WHERE state = 'open' ORDER BY started_utc, key"
+    )
+    return [LeftOpen(*row) for row in rows]
+
+
+def segments_of(conn: sqlite3.Connection, session_key: int) -> list[SegmentRow]:
+    rows = conn.execute("SELECT seq, path, stored_bytes FROM segments WHERE session = ? ORDER BY seq", (session_key,))
+    return [SegmentRow(*row) for row in rows]
+
+
+def last_frames(conn: sqlite3.Connection, session_key: int) -> dict[tuple[int, bool], tuple[int, bytes]]:
+    """Each ID's last indexed frame in a session, (hardware timestamp, data), keyed by (ID, extended)."""
+    # With max(), SQLite takes the other bare columns from the row holding the maximum: the ID's latest rollup.
+    rows = conn.execute(
+        "SELECT can_id, extended, max(second), last_hw_us, last_data FROM id_seconds WHERE session = ?"
+        " GROUP BY can_id, extended",
+        (session_key,),
+    )
+    return {(can_id, bool(extended)): (hw_us, data) for can_id, extended, _, hw_us, data in rows}
+
+
+def close_recovered(
+    conn: sqlite3.Connection, session: LeftOpen, *, ended_utc: str, host_utc: str, detail: dict[str, object]
+) -> None:
+    """Close a session recovery has trimmed, with an event saying what it found, in one transaction."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        cursor = conn.execute(
+            "UPDATE sessions SET state = 'recovered', ended_utc = ?, end_reason = 'interrupted'"
+            " WHERE key = ? AND state = 'open'",
+            (ended_utc, session.key),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError(f"session {session.id} isn't open")
+        conn.execute(
+            "INSERT INTO events (run_id, session, host_utc, kind, detail) VALUES (?, ?, ?, 'recovered', ?)",
+            (session.run_id, session.key, host_utc, json.dumps(detail, sort_keys=True)),
+        )
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def runs_left_unended(conn: sqlite3.Connection) -> list[LeftUnended]:
+    """Runs whose process stopped without ending them, oldest first."""
+    rows = conn.execute("SELECT id, started_utc, audit_path FROM runs WHERE ended_utc IS NULL ORDER BY started_utc, id")
+    return [LeftUnended(*row) for row in rows]
+
+
+def run_times(conn: sqlite3.Connection, run_id: str) -> list[str]:
+    """Every UTC time a run is known to have reached: its start, its sessions' ends, and its last audit record."""
+    return [
+        row[0]
+        for row in conn.execute(
+            "SELECT started_utc FROM runs WHERE id = ?1"
+            " UNION ALL SELECT ended_utc FROM sessions WHERE run_id = ?1 AND ended_utc IS NOT NULL"
+            " UNION ALL SELECT utc FROM (SELECT utc FROM audit WHERE run_id = ?1 AND event != ?2 ORDER BY line DESC LIMIT 1)",
+            (run_id, UNREADABLE),
+        )
+    ]
+
+
+def audit_lines_indexed(conn: sqlite3.Connection, run_id: str) -> int:
+    """How many lines of a run's audit log the audit table holds, from the start of the file."""
+    return int(conn.execute("SELECT coalesce(max(line), 0) FROM audit WHERE run_id = ?", (run_id,)).fetchone()[0])
+
+
+def add_audit_lines(conn: sqlite3.Connection, lines: Sequence[AuditLine]) -> None:
+    if lines:
+        _transaction(conn, [("INSERT INTO audit VALUES (?, ?, ?, ?, ?)", astuple(line)) for line in lines])

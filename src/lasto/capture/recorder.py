@@ -4,7 +4,7 @@ Raw frames reach disk first (docs/architecture.md §1, rule 2 of the system's sh
 - A second is written to its segment and fsynced before its database transaction commits, so the
   database never points at data that isn't on disk.
 - A crash costs at most the second being written: a second written but not committed is found and
-  indexed by the next capture's recovery.
+  indexed by the next capture's recovery (lasto.capture.recovery).
 
 Time:
 - A second is a whole second of hardware time from the session's first frame.
@@ -183,8 +183,9 @@ class Recorder:
             if self._segment_file is not None:
                 self._segment_file.close()
             path = f"{self._folder}/seg-{seq:04d}.candump.zst"
-            self._segment_file = SegmentFile(self._root.absolute(path), self._base)
+            # The database knows each segment before its file exists, so recovery finds every file a capture made.
             capture_db.open_segment(self._conn, session_key=self.session_key, seq=seq, path=path)
+            self._segment_file = SegmentFile(self._root.absolute(path), self._base)
             self._segment_seq = seq
         return seq
 
