@@ -1,6 +1,26 @@
 # lasto.dev website plan
 
-Status: **W0 and W1 approved 2026-09-27. Phase 1 approved 2026-09-28, and `main` merged into `website` (section 0b). The site workflow fixed the same day (section 0c).** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`. How to build and edit the site is in `site/README.md`; the going-live steps are in section 10.
+Status: **W0 and W1 approved 2026-09-27. Phase 1 approved 2026-09-28, and `main` merged into `website` (section 0b). The site workflow fixed the same day (section 0c). Live at lasto.dev; W3 launch checks run 2026-09-28 (section 0d).** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`. How to build and edit the site is in `site/README.md`; the going-live steps are in section 10.
+
+## 0d. W3 launch checks (2026-09-28)
+
+Run against the live site at commit 3c6c943. Nothing failed, so nothing on the site changed.
+
+| Check | How | Result |
+|---|---|---|
+| Lighthouse 13.5.0 | PageSpeed Insights, mobile and desktop, one page of each type | Home, `/safety/`, `/safety/core/`, `/roadmap/`, `/about/`: 100 performance, accessibility, best practices, and SEO on both, and Agentic Browsing 3/3. `/404.html`: the same, except SEO 63, only for "Page is blocked from indexing", which is its `noindex` on purpose. |
+| HTML | W3C Nu validator, every page | 0 errors. One info warning per page: it applies `script-src 'none'` to the JSON-LD data block. A data block is never executed, and Chrome logs nothing, so it's a validator false positive. |
+| CSS | W3C CSS validator | 10 "errors", all features its profile doesn't know: `container-type`, `@container`, `vector-effect`. None is a real error. |
+| Structured data | validator.schema.org, every page | 0 errors, 0 warnings. All five home page entities read (WebSite, WebPage, SoftwareApplication, SoftwareSourceCode, Person). |
+| Rich results | Google's Rich Results Test, run by Chris (it needs a sign-in) | One valid SoftwareApplication item. Its only note is the optional `aggregateRating`, which stays out: there are no real ratings, and we won't invent any. |
+| Links | the pinned lychee, live pages, mirrors, and llms files, external links included | 459 checked, 0 broken. Two redirects, both expected: GitHub's sign-in for "new issue" and "new security advisory". |
+| Sitemap | fetched and cross-checked | The five indexable pages, each 200 with a matching canonical; `/404.html` left out. robots.txt points to it. `www` and `http` 301 to https://lasto.dev/. |
+
+- **What differed from the plan (below):** PageSpeed Insights no longer answers API calls without a key (its keyless daily quota is 0), so Lighthouse ran through the PageSpeed Insights web app, still the score of record. The Rich Results Test needs a Google sign-in, so Chris ran it. The Nu validator ran as W3C's online service. Google rated SoftwareApplication a valid item, better than the plan expected ("not eligible").
+- **Unscored Lighthouse insights, left as they are:** the stylesheet is render-blocking (about 90 ms on slow 4G), and GitHub Pages caches for only 10 minutes; neither costs a point. The best-practices trust items (HSTS, COOP, frame options, Trusted Types) need response headers GitHub Pages can't send. HSTS is covered anyway: every `.dev` domain is on browsers' HSTS preload list.
+- **lychee pinned like actionlint:** `site/sitegen/tools.py` pins both by version and sha256; `python site/build.py links` runs the link check, in CI and locally. The workflow no longer uses lychee-action, whose download wasn't hash-checked. Dependabot can't see these two pins; updating them is by hand (`site/README.md`).
+- **Dependabot:** no open pull requests. Every site package and pinned action is at its latest release. The github-actions job last ran before the YAML fix reached `main`; Insights, Dependency graph, Dependabot, "Check for updates" confirms it now parses.
+- **Search engines:** Chris verified lasto.dev in Google Search Console and Bing Webmaster Tools and submitted https://lasto.dev/sitemap.xml to both (steps in section 10, Step 7).
 
 ## 0c. The site workflow fixed (2026-09-28)
 
@@ -99,9 +119,9 @@ site/
 
 **Checks on every build:** one H1 and heading order; unique titles and descriptions; canonical URLs; internal links and anchors (mirrors too); the page budget; no third-party requests; font coverage; copy lint (em dashes, en dashes, the banned hype words); the honesty rule (no page for an unfinished phase); JSON-LD shape; sitemap matches the page set; security.txt `Expires` in range.
 
-**Deploy:** `.github/workflows/site.yml`, every action pinned by commit SHA, running on `ubuntu-24.04` (`ubuntu-latest` moves to 26.04 in October). It runs the site tests, which include actionlint on every workflow, builds with `--strict`, checks internal links offline with lychee, uploads with `include-hidden-files: true` (otherwise `/.well-known/` is silently dropped), and deploys from `main` only. The upload stays the last build step: a build that failed after uploading would leave a `github-pages` artifact behind, and a re-run would add a second one that deploy-pages refuses. The lychee action downloads lychee without checking a hash; pinning it by sha256 is a follow-up. Pull requests build but never deploy. A monthly scheduled run refreshes security.txt `Expires`. Concurrency is one run per ref, and a newer run on `main` never cancels one that's deploying. The paths filters list everything the build and its tests read, including `src/lasto/**`, because the Safety page reads its numbers from the source (section 8). Not built yet: a changelog refreshed by the monthly run, and release events that re-dispatch the workflow on `main` (the Pages environment rejects tag refs). Both arrive with the changelog in W2.
+**Deploy:** `.github/workflows/site.yml`, every action pinned by commit SHA, running on `ubuntu-24.04` (`ubuntu-latest` moves to 26.04 in October). It runs the site tests, which include actionlint on every workflow, builds with `--strict`, checks internal links offline with the pinned lychee (`python site/build.py links`), uploads with `include-hidden-files: true` (otherwise `/.well-known/` is silently dropped), and deploys from `main` only. The upload stays the last build step: a build that failed after uploading would leave a `github-pages` artifact behind, and a re-run would add a second one that deploy-pages refuses. lychee and actionlint are pinned by version and sha256 in `site/sitegen/tools.py` (section 0d). Pull requests build but never deploy. A monthly scheduled run refreshes security.txt `Expires`. Concurrency is one run per ref, and a newer run on `main` never cancels one that's deploying. The paths filters list everything the build and its tests read, including `src/lasto/**`, because the Safety page reads its numbers from the source (section 8). Not built yet: a changelog refreshed by the monthly run, and release events that re-dispatch the workflow on `main` (the Pages environment rejects tag refs). Both arrive with the changelog in W2.
 
-**W3 checks without Node in the repo:** Lighthouse 13.5.0 through a one-off `npx` step in CI, the Nu HTML validator from a pinned Docker image, lychee for external links, PageSpeed Insights against the deployed site as the score of record, and the Schema.org validator and Rich Results Test by hand. Expect Google to call SoftwareApplication "not eligible" for rich results, since it wants ratings or reviews and we won't invent any. The markup is still valid.
+**W3 checks without Node in the repo:** Lighthouse 13.5.0 through a one-off `npx` step in CI, the Nu HTML validator from a pinned Docker image, lychee for external links, PageSpeed Insights against the deployed site as the score of record, and the Schema.org validator and Rich Results Test by hand. Expect Google to call SoftwareApplication "not eligible" for rich results, since it wants ratings or reviews and we won't invent any. The markup is still valid. What actually ran at launch, and why it differed, is in section 0d.
 
 **Repo fixes that land first in W1 (not safety core):**
 
@@ -357,7 +377,26 @@ The first push to `main` that touches `site/` starts the deploy workflow, so Pag
 
 - https://lasto.dev/ loads with a valid certificate, and https://www.lasto.dev/ redirects to it.
 - https://lasto.dev/.well-known/security.txt and https://lasto.dev/llms.txt load.
-- Submitting the sitemap to Google Search Console and Bing Webmaster Tools is W3.
+- Submitting the sitemap to Google Search Console and Bing Webmaster Tools is W3 (Step 7).
+
+### Step 7: search engines (W3)
+
+Done 2026-09-28: both verified, and the sitemap submitted to both (section 0d).
+
+Verify both with DNS records, so nothing on the site changes: an HTML verification file or meta tag would be a site change, and the site loads nothing from either company. Keep the records afterwards; removing one un-verifies the site. Add them to the DNS table above once they're in.
+
+**Google Search Console** (https://search.google.com/search-console):
+1. Add property, choose **Domain** (it covers https, http, and www in one), and enter `lasto.dev`.
+2. Google shows a TXT record, `google-site-verification=...`. Add it at your DNS host for the bare domain (`@`), next to the GitHub challenge record, then press **Verify**. If DNS hasn't propagated yet, verify again in a few minutes.
+3. **Indexing**, **Sitemaps**: enter the full URL `https://lasto.dev/sitemap.xml` (a Domain property shows no prefix) and **Submit**. The status reads "Success" once Google has fetched it, with 5 discovered pages.
+4. Optional: **URL inspection** on `https://lasto.dev/`, then **Request indexing**.
+
+**Bing Webmaster Tools** (https://www.bing.com/webmasters):
+1. If it offers **Import from Google Search Console**, use it once Google shows the property as verified: it copies the site and its sitemap, with no second verification.
+2. Otherwise **Add your site manually** with `https://lasto.dev/`, and choose DNS verification: a CNAME record Bing names, pointing to `verify.bing.com`. Then **Verify**.
+3. **Sitemaps**, **Submit sitemap**: `https://lasto.dev/sitemap.xml`.
+
+robots.txt already names the sitemap, so both will also find it on their own; submitting just starts it sooner and shows its status.
 
 ### Keeping security.txt current
 
