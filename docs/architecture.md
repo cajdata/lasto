@@ -256,7 +256,9 @@ What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr
 
 ## 4. Capture and storage
 
-- **Reader thread** per channel, owned by the safety core. It pushes to subscribers in order: raw recorder → kill-switch monitor → gate response matcher → ISO-TP/KWP conversation tracker → live decoder.
+This section describes what Phase 2 built. Later phases add to it where it says so.
+
+- **Reader:** the safety core's reader, owned by the core. In Phase 2, `drive`'s capture loop pumps it on the main thread, with no thread of its own, and hands what it reads to the recorder as plain records (`capture/convert.py`). Later phases add consumers in this order: kill-switch monitor → gate response matcher → ISO-TP/KWP conversation tracker → live decoder.
 - **`lasto drive` (Phase 2, passive, `operations/drive.py`):** one run is one process holding one channel open, listen-only, in armed mode.
   - **Sessions:** the first frame starts a session. It ends after 60 s without a frame (key off), at its last frame, and the next frame starts a new one.
   - **Loop:** on the main thread, it reads the channel every 10 ms and hands each frame to the recorder. Once a second it indexes the audit log, copies the channel's audit events (listen-only rechecks, distrust, reopen, refusals) into the events table, writes the live feed, and checks for the stop file. A channel status while no session is open is a run event.
@@ -264,13 +266,19 @@ What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr
   - **Startup:** the capture lock, then recovery, then the run's own audit file (`audit/<UTC time>-pid<pid>-<random>.jsonl`, always a new file), the run row with the safety configuration snapshot, and the channel. What the channel reported when it opened (adapter, PCAN-Basic version, firmware) is recorded on the run from its `session_opened` audit record.
   - **Simulator:** the default, on its own clock, as fast as the capture can go: `--seconds` is simulated seconds (60 by default). On the truck, `--seconds` is an optional time limit, and Windows is kept from idle sleep.
   - **Throughput:** the simulator records 2,000 frames a second about 30 times faster than real time on the desktop, simulator overhead included.
-- **Raw log:** candump text (`(1727380000.123456) can0 7E0#0201000000000000`), written as one complete zstd frame (checksum on) per second of traffic, then flush and `fsync`. A new segment file starts at every session start and every hour, and the app never appends to a file that might end in a torn frame. The reader decodes frame by frame and drops a truncated or corrupt tail. A skippable zstd frame before each data frame holds a sequence number, the first and last timestamps, and the frame count, so `zstd -d` and `can-utils` still work.
+- **Raw log (`storage/segments.py`):** candump text (`(1727380000.123456) can0 7E0#0201000000000000`), written as one complete zstd frame (checksum on) per second of traffic, then flush and `fsync`. Error frames are candump error frames (`CAN_ERR_FLAG` with PCAN's error type); channel status goes to the events table instead.
+  - **Files:** `sessions/<date>/<session ID>/seg-0001.candump.zst`, a new one at every session start and every hour. A segment file is never opened if it exists, so nothing is ever appended to a file that might end in a torn frame.
+  - **Index:** a skippable zstd frame before each second's data frame holds a format tag, the second's number in the session, its first and last hardware timestamps, the frame count, and the data frame's length. `zstd -d` skips it, so a segment decompresses to plain candump text that `can-utils` reads.
+  - **Reading:** frame by frame; the first truncated or corrupt frame ends what's trusted. The `seconds` table records each second's place, so one second is read without the rest.
+- **Recorder (`capture/recorder.py`):** batches a session's frames by whole seconds of hardware time from its first frame. A second is written when the next one starts, or after 1.5 s of host time if the bus goes quiet. Each second goes to its segment and is fsynced, then one transaction records its place, each ID's rollup (`capture/rollups.py`), the running totals, and a clock anchor every minute.
 - **SQLite:** WAL mode with `synchronous=FULL` and one batched commit per second.
   - Two databases in the data folder (§14.3): `capture.sqlite`, written only by capture processes, and `workbench.sqlite` for what the GUI and the CLI's analysis write (vehicles, notes, tags, and later mapping work). Each carries its own `application_id` and schema version; lasto refuses another kind of database, or a newer one, and readers open read-only.
   - Runs (one per `lasto drive` process), sessions, and vehicles have random UUIDs. Every path in a database is relative to the data folder, with forward slashes.
   - The data folder comes from `--data`, then `LASTO_DATA`, then `%LOCALAPPDATA%\lasto`, and one that names a device (a serial port, the device namespace, or another reserved name) is refused, since SQLite opens its files where the serial guard can't see.
-  - Tables: sessions, clock anchors, raw segment index, per-ID rollups for each second (`id_seconds`: count, first and last seen, smallest and largest gap, DLC range, which data bits changed, last data; per-ID stats for a session are computed from them), events (status, kill, errors), audit, conversations, signals and samples, DTCs, freeze frames, readiness, Mode 06, vehicle info, definitions and verification history, mapping sessions and reference values, discovery results, schema migrations.
-- **Timestamps:** the session start in UTC, the host monotonic clock, and the hardware timestamp, plus an anchor every 60 s. Per-frame time is a microsecond offset from the hardware clock, and UTC is derived from it. The laptop is offline, so UTC is only as good as its clock.
+  - **Capture database, schema 1 (built):** `runs` (one per `lasto drive` process: channel, adapter, PCAN-Basic version, the safety configuration snapshot, its audit file), `sessions` (vehicle, mode, state, end reason, time base, totals), `segments`, `seconds` (each second's place in its segment), `anchors`, `events` (channel status, read errors, the channel's audit events, recovery, live feed failures), `audit` (an index of the run's JSON Lines audit log, which stays the record of truth), and `id_seconds` (each ID's rollup for each second: count, first and last seen, smallest and largest gap, DLC range, which data bits changed, last data; per-ID stats for a session are computed from them). Schema 1 stays open to change until the first live capture writes to it; after that, every change is a migration.
+  - **Workbench database, schema 1 (built):** `vehicles` (a default 2006 GX470 is created on the first capture), `session_notes`, `session_tags`.
+  - **Later phases add:** conversations, signals and samples, DTCs, freeze frames, readiness, Mode 06, vehicle info, definitions and verification history, mapping sessions and reference values, discovery results.
+- **Timestamps:** a session's time base is its first frame's hardware timestamp and the host UTC when it arrived, recorded as its first clock anchor (hardware timestamp, host UTC, host monotonic). Another anchor follows every 60 s, for drift. Every frame's time is its hardware timestamp in integer microseconds, and its UTC is derived through the time base, so the two convert back exactly. The laptop is offline, so UTC is only as good as its clock.
 - **Recovery:** sessions stay marked open until they close cleanly. On the next start, under the capture lock:
   - Each open session's segments are read from where their index ends. Every complete second found there is indexed, rollups included, as the recorder would have. The database knows each segment before its file exists, so none is missed.
   - A torn tail is moved to a `.torn` file beside its segment, so the segment reads cleanly and no byte that reached the disk is thrown away. A segment shorter than its index is reported and left alone.
@@ -344,12 +352,17 @@ src/lasto/
   records.py                 # plain Frame and BusEvent types; only capture converts from the core's types
   data/safety_config.json    # snapshot of the safety configuration, proved equal to the core by a test
   services/                  # hardware-free application logic; the CLI and the GUI both call it (§14.4)
+    safety_config.py  data.py  sessions.py      # the snapshot, the data folder, sessions for lasto log
   operations/                # hardware-facing work; the only code outside the core that opens its sessions
-  capture/  protocol/  storage/  decode/  mapping/  polling/  snapshot/  identify/  discover/
-  analysis/  report/  export/  view/
-  sim/                       # FakePcanDll, FakeStnPort, vehicle model, ECUs, Creader, violations
+    drive.py                 # lasto drive: passive capture in armed mode
+    keep_awake.py            # SetThreadExecutionState: the one ctypes use outside the core (exemption)
+  capture/                   # convert.py (core types to records), recorder.py, rollups.py, recovery.py
+  storage/                   # root.py (data folder), database.py, capture_db.py, workbench_db.py, ids.py,
+                             # segments.py, audit_index.py, capture_lock.py, live_db.py
+  protocol/  decode/  mapping/  polling/  snapshot/  identify/  discover/  analysis/  report/  export/  view/
+  sim/                       # FakePcanDll, FakeStnPort, vehicle model and scenarios, ECUs, Creader, violations
 definitions/  dbc/
-tests/  (conftest.py, safety/, sim/, storage/, guardrails/, ...)
+tests/  (conftest.py, safety/, sim/, capture/, storage/, services/, operations/, guardrails/, ...)
 docs/architecture.md
 .claude/settings.json  .claude/hooks/hardware_guard.py  CLAUDE.md
 ```
@@ -398,11 +411,13 @@ Offline install on the truck laptop:
 
 *(open: the offline install)*
 
-## 11. Phase 1 scope (built)
+## 11. What's built
 
 Safety core for both transports, `FakePcanDll`, `FakeStnPort`, the minimal vehicle model, the violation plugin, the hardware firewall, the structural tests, Hypothesis fuzzing, 100 % branch coverage, and a CLI skeleton with `--live` gating. No feature code.
 
 The STN transport in Phase 1 has **no path that puts anything on the vehicle bus**. It covers reset, identification, voltage reads, CAN silent monitoring, and K-line passive monitoring (needed in Phase 3). The only bus-facing use it would ever have is K-line polling, which needs the Phase 7 decision on 0x81 anyway. Until then every hex-only request line is denied, and the tests prove it.
+
+**Phase 2 (built; the live tests at the truck come next):** passive capture and storage (§4), `lasto drive` and `lasto log` (§9), and the §14.8 prerequisites for the GUI. Two safety core changes, each its own commit: on real hardware a session refuses an audit log that doesn't keep its records on disk (finding L5, §3.3), and held audit records go to a file as they're held. One new scanner exemption, its own commit: ctypes in `operations/keep_awake.py`. The bench test is optional for the passive tests (owner's decision, 2026-09-28).
 
 ## 12. Verification you run (never Claude)
 
@@ -425,14 +440,11 @@ The bench tests are the only time either adapter transmits on purpose, and only 
 
 | Phase | Item |
 |---|---|
-| 2 | **Save and report on a kill:** the kill switch already stops and logs; flushing capture storage and writing the report arrive with Phase 2 storage. |
-| 2 | **Audit log storage:** the durable audit log (SQLite, alongside the JSON Lines sink) is wired into real sessions. The JSON Lines file stays the record of truth; the capture database's audit table indexes it. *L5 (a real-hardware session accepted any audit sink) is fixed: see §3.3, step 7.* |
-| 2 | **Held audit records on disk:** refusals and kills recorded while no audit log is open are held in memory, handed to the next log that opens, and reported on stderr at exit. *The safety core side is done:* `audit.hold_on_disk(path)`, set once per process, appends each held record to a file and fsyncs it the moment it is held, so a crash can't lose it; a second call is refused (audited), and a failed disk write keeps the record held and says so at exit. The capture operation calls it at startup with a file in the data folder's `audit/` folder. |
-| 2 | **Broadcast IDs:** the gate's set of IDs seen carrying broadcast traffic is produced from capture statistics. |
-| 2 | **Storage:** estimate per driving hour, then set the disk budget and retention. |
-| 2 | **Bench test:** you decide before the first live test (optional; parts list in §12). |
-| 2 | **"Controller activated" messages:** the first live passive test shows whether the driver sends them routinely. If it does, their re-check stays cheap; if they come with resets, the reopen path handles them. |
-| 3 | **BLOCKER before any MX+ code touches hardware: the serial guard (review finding P2):** safety filters stopped both verification reviews while they analyzed the serial guard, so the P2 fix hasn't been independently verified. Nothing opens a serial port before Phase 3. First: <ul><li>**An independent review of the serial guard:** its path matching (`safety/serial_guard.py`), the test firewall's separate hook (`lasto.sim.pytest_plugin`), and the structural rule on serial device paths (`tests/safety/test_structure.py`). A later check already found two gaps in the path matching for that review to close: a device-interface path, such as `\\?\USB#VID_…` or a Bluetooth `\\?\BTHENUM#…` path, names a port with no COM name in it; and a port name written right after a drive letter (`C:COM5`) isn't recognized, because the drive letter and the name are read as one part. Phase 2 found a third: SQLite opens its database files itself, raising a `sqlite3.connect` audit event rather than `open`, so the hook never sees a database path at all, and a path that names a serial port would reach it. The data folder refuses device names on its own (`lasto.storage.root`), but the guard doesn't cover SQLite.</li><li>**The guard installed before any lasto code can open a port:** the audit hook goes in when the safety core is first imported, and `lasto/__init__.py` doesn't import the safety core today, so code that runs before that import isn't covered. Reconcile this with the Phase 9 GUI import boundary (proposal in §14.4).</li></ul> |
+| 2, after the live tests | **Broadcast IDs:** the gate's set of IDs seen carrying broadcast traffic comes from the step D captures (`lasto log SESSION --bus` lists every ID). Putting it into the safety core is a safety core change of its own, with your approval, before Phase 4 transmits. |
+| 2, after the live tests | **Storage:** the MB per hour `lasto log` reports for the real drive sets the disk budget and a retention proposal. |
+| 2, after the live tests | **"Controller activated" messages:** the first live passive test shows whether the driver sends them routinely (`listen_only_rechecked` events in `lasto log`). If it does, their re-check stays cheap; if they come with resets, the reopen path handles them. |
+| 4 | **Save and report on a kill:** the kill switch already stops and logs. Passive capture in Phase 2 has no kill: listen-only mode only records bus state. A polled capture's kill goes through the stop path Phase 2 built (close the session at its last frame, close the channel, index the audit log, end the run with its reason), and the report of a kill arrives with polled capture. |
+| 3 | **BLOCKER before any MX+ code touches hardware: the serial guard (review finding P2):** safety filters stopped both verification reviews while they analyzed the serial guard, so the P2 fix hasn't been independently verified. Nothing opens a serial port before Phase 3. First: <ul><li>**An independent review of the serial guard:** its path matching (`safety/serial_guard.py`), the test firewall's separate hook (`lasto.sim.pytest_plugin`), and the structural rule on serial device paths (`tests/safety/test_structure.py`). A later check already found two gaps in the path matching for that review to close: a device-interface path, such as `\\?\USB#VID_…` or a Bluetooth `\\?\BTHENUM#…` path, names a port with no COM name in it; and a port name written right after a drive letter (`C:COM5`) isn't recognized, because the drive letter and the name are read as one part. Phase 2 found a third: SQLite opens its database files itself, raising a `sqlite3.connect` audit event rather than `open`, so the hook never sees a database path at all, and a path that names a serial port would reach it. The data folder refuses device names on its own (`lasto.storage.root`), but the guard doesn't cover SQLite.</li><li>**The guard installed before any lasto code can open a port:** the audit hook goes in when the safety core is first imported. *Settled in Phase 2 (step A2):* `cli.main` imports the safety core as soon as it has parsed the command line, before it dispatches any command but `gui` (§14.4), and a subprocess test proves it for `drive`, `log` and `map`. For the review to confirm: that nothing lasto runs before that import can open a port (`lasto/__init__.py` and argument parsing open nothing), and that the GUI's own hook covers its process (§14.1).</li></ul> |
 | 3 | **Creader captures confirm:** 0x7E0 and any new request IDs, the padding byte, and the trimmed manufacturer service list. |
 | 3 | **MX+ checks:** stopping a monitor with a backspace, and silent monitoring on the real adapter. |
 | 3 | **Bootloader window (review finding E, deferred here):** the rule in §3.7 isn't enforced in code yet. `reset()` sends `ATZ` as soon as a connection opens, and again when retried after a prompt timeout. Settle, and verify on the real MX+ with the other MX+ checks: whether to wait for the banner and `>` after opening, reconnecting, or waking before sending anything; never re-send `ATZ` after a prompt timeout without first reading what the adapter sent; and how a Bluetooth reconnect or wake is detected. Nothing in Phase 1 or 2 opens the adapter on real hardware. |
@@ -610,6 +622,8 @@ src/lasto/
 - **Capture:** the GUI never slows or interrupts a running capture.
 
 ### 14.8 Changes this plan asks of Phases 2 to 8 (approved; they start with Phase 2)
+
+Phase 2's rows are built (§4, §9). The safety configuration is recorded on each run, which every session belongs to. For the zoom row, Phase 2 provides the per-second index into the raw segments; the signal index follows with decoding.
 
 | Phase | Change |
 |---|---|
