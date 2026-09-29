@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from coverage_gates import GATES, check
 from hypothesis import HealthCheck, settings
 
 from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
@@ -16,6 +17,28 @@ settings.register_profile("lasto", deadline=None, max_examples=150, suppress_hea
 # HYPOTHESIS_PROFILE=thorough python -m pytest tests/safety/test_properties.py  (slower, many more examples)
 settings.register_profile("thorough", deadline=None, max_examples=3000, suppress_health_check=_suppress)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "lasto"))
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtestloop(session: pytest.Session):
+    """After pytest-cov has measured and saved: fail the run if a gated package is below its gate.
+
+    This wrapper is registered after pytest-cov's, so it runs outside it: by the time the loop returns
+    here, the coverage data is complete. With --no-cov there is nothing to check.
+    """
+    result = yield
+    controller = getattr(session.config.pluginmanager.getplugin("_cov"), "cov_controller", None)
+    if controller is None or session.config.option.collectonly:
+        return result
+    lines, failures = check(controller.cov, GATES)
+    reporter = session.config.pluginmanager.getplugin("terminalreporter")
+    reporter.write_sep("-", "coverage gates (tests/coverage_gates.py)")
+    for line in lines:
+        reporter.write_line(line)
+    for failure in failures:
+        reporter.write_line(f"ERROR: {failure}", red=True, bold=True)
+        session.testsfailed += 1  # the run exits as failed
+    return result
 
 
 @pytest.fixture(autouse=True)

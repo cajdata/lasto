@@ -301,7 +301,7 @@ What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr
   - every argparse parser has `allow_abbrev=False`
 - **Reachability tests** walk every attribute path from a live polled session: the raw `CAN_Write` is reachable only inside the `Writer`, and the reader's channel can't write.
 - **Hardware firewall** (`lasto.sim.pytest_plugin`, loaded by the test command): loading `PCANBasic.dll` or opening a real serial port raises, through pyserial or by name (its own audit hook, separate from the safety core's).
-- **Coverage:** `uv run pytest` runs branch coverage on `lasto.safety` and fails below 100 %.
+- **Coverage:** `uv run pytest` measures branch coverage on all of lasto and fails below each package's gate (`tests/coverage_gates.py`): 100 % on the safety core, and 90 % on capture and storage, their truncation and crash-recovery paths included. Everything else, CLI rendering among it, is reported only.
 - **Guardrail tests:** a table of commands and tool calls through `.claude/hooks/hardware_guard.py`.
 
 ## 8. File layout
