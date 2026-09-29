@@ -117,8 +117,8 @@ def parse_candump_line(line: str, base: TimeBase) -> Frame:
     return Frame(hw_us, can_id, data, extended=True, rtr=rtr)
 
 
-class SegmentWriter:
-    """Writes one segment file, a second at a time, each fsynced before write_second returns."""
+class SegmentFile:
+    """One segment file being written, a second at a time, each fsynced before write_second returns."""
 
     def __init__(self, target: Path | BinaryIO, base: TimeBase) -> None:
         """A path opens a new file (never one that exists); a binary stream is written as it is (tests)."""

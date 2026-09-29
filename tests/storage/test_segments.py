@@ -12,7 +12,7 @@ from hypothesis import strategies as st
 from lasto.records import Frame
 from lasto.storage.segments import (
     SegmentDamaged,
-    SegmentWriter,
+    SegmentFile,
     TimeBase,
     candump_line,
     parse_candump_line,
@@ -28,9 +28,9 @@ def second(start_us: int, count: int = 3) -> list[Frame]:
 
 
 def write(path, seconds: list[list[Frame]]) -> list[tuple[int, int]]:
-    writer = SegmentWriter(path, BASE)
-    places = [writer.write_second(seq, frames) for seq, frames in enumerate(seconds)]
-    writer.close()
+    segment = SegmentFile(path, BASE)
+    places = [segment.write_second(seq, frames) for seq, frames in enumerate(seconds)]
+    segment.close()
     return places
 
 
@@ -113,11 +113,11 @@ def test_a_place_with_the_wrong_length_is_refused(tmp_path):
         read_second_at(tmp_path / "seg.candump.zst", offset, length + 5, BASE)
 
 
-def test_a_writer_over_a_stream_leaves_it_open():
+def test_a_segment_over_a_stream_leaves_it_open():
     buffer = io.BytesIO()
-    writer = SegmentWriter(buffer, BASE)
-    writer.write_second(0, second(1_000_000_000))
-    writer.close()
+    segment = SegmentFile(buffer, BASE)
+    segment.write_second(0, second(1_000_000_000))
+    segment.close()
     assert not buffer.closed
 
 
@@ -140,7 +140,7 @@ def test_zstd_tools_see_plain_candump_text(tmp_path):
 def test_a_segment_never_overwrites_or_appends_to_an_existing_file(tmp_path):
     (tmp_path / "seg.candump.zst").write_bytes(b"from an earlier run")
     with pytest.raises(FileExistsError):
-        SegmentWriter(tmp_path / "seg.candump.zst", BASE)
+        SegmentFile(tmp_path / "seg.candump.zst", BASE)
 
 
 @pytest.mark.parametrize(
@@ -155,7 +155,7 @@ def test_a_segment_never_overwrites_or_appends_to_an_existing_file(tmp_path):
 )
 def test_frames_the_format_cannot_hold_are_refused(frames):
     with pytest.raises(ValueError):
-        SegmentWriter(io.BytesIO(), BASE).write_second(0, frames)
+        SegmentFile(io.BytesIO(), BASE).write_second(0, frames)
 
 
 def test_a_file_cut_at_any_byte_reads_every_complete_second_and_no_more(tmp_path):
@@ -212,6 +212,6 @@ frames_strategy = st.builds(
 def test_any_second_of_frames_round_trips(frames):
     frames = sorted(frames, key=lambda frame: frame.hw_us)
     buffer = io.BytesIO()
-    SegmentWriter(buffer, BASE).write_second(0, frames)
+    SegmentFile(buffer, BASE).write_second(0, frames)
     [block], _ = read_segment(buffer.getvalue(), BASE)
     assert block.frames == tuple(frames)
