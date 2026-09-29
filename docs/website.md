@@ -20,7 +20,7 @@ Run against the live site at commit 3c6c943. Nothing failed, so nothing on the s
 - **Unscored Lighthouse insights, left as they are:** the stylesheet is render-blocking (about 90 ms on slow 4G), and GitHub Pages caches for only 10 minutes; neither costs a point. The best-practices trust items (HSTS, COOP, frame options, Trusted Types) need response headers GitHub Pages can't send. HSTS is covered anyway: every `.dev` domain is on browsers' HSTS preload list.
 - **lychee pinned like actionlint:** `site/sitegen/tools.py` pins both by version and sha256; `python site/build.py links` runs the link check, in CI and locally. The workflow no longer uses lychee-action, whose download wasn't hash-checked. Dependabot can't see these two pins; updating them is by hand (`site/README.md`).
 - **Dependabot:** no open pull requests. Every site package and pinned action is at its latest release. The github-actions job last ran before the YAML fix reached `main`; Insights, Dependency graph, Dependabot, "Check for updates" confirms it now parses.
-- **Search engines:** Chris verified lasto.dev in Google Search Console and Bing Webmaster Tools and submitted https://lasto.dev/sitemap.xml to both (steps in section 10, Step 7).
+- **Search engines:** Chris verified lasto.dev in Google Search Console with a DNS TXT record, imported it into Bing Webmaster Tools from Search Console, and submitted https://lasto.dev/sitemap.xml to both (steps in section 10, Step 7; the record is in the DNS table there).
 
 ## 0c. The site workflow fixed (2026-09-28)
 
@@ -314,7 +314,7 @@ Everything here is yours to do. Steps 1 and 2 can happen now. Steps 3 to 6 wait 
 
 ### The DNS records
 
-Checked 2026-09-27 against 1.1.1.1. The apex and `www` records are already in place, and the wildcard is gone.
+Checked 2026-09-27 against 1.1.1.1, and again 2026-09-28 after launch: every record below is in place, and there's no wildcard.
 
 | Type | Host | Answer | Status |
 |---|---|---|---|
@@ -327,11 +327,14 @@ Checked 2026-09-27 against 1.1.1.1. The apex and `www` records are already in pl
 | AAAA | (blank) | `2606:50c0:8002::153` | in place |
 | AAAA | (blank) | `2606:50c0:8003::153` | in place |
 | CNAME | `www` | `cajdata.github.io` | in place |
-| TXT | `_github-pages-challenge-cajdata` | the code GitHub shows you in step 1 | **missing** |
+| TXT | `_github-pages-challenge-cajdata` | the code GitHub shows you in step 1 | in place |
+| TXT | (blank) | `google-site-verification=pGA1-wkq3umHWy1F8c11hnz_lQBdP9qjP1Hqt5GkMWs` | in place (Search Console, Step 7) |
 
-Keep nothing else at the apex (no ALIAS, no parking record) and no wildcard. If you ever add CAA records, one must allow `letsencrypt.org`.
+Bing Webmaster Tools was imported from Google Search Console, so it has no DNS record of its own. Keep the Google record: removing it un-verifies the site in Search Console. The mail records from step 2 are listed there.
 
-Right now `http://lasto.dev` answers with GitHub's "Site not found". With the records pointing at GitHub and no verification, that's the takeover window: any GitHub account could attach lasto.dev to its own Pages site until step 1 is done.
+Keep no other address records at the apex (no ALIAS, no parking record) and no wildcard; TXT records like the ones above are fine. If you ever add CAA records, one must allow `letsencrypt.org`.
+
+Before launch, `http://lasto.dev` answered with GitHub's "Site not found". With the records pointing at GitHub and no verification, that was the takeover window: any GitHub account could have attached lasto.dev to its own Pages site. Step 1 closed it.
 
 ### Step 1: verify the domain on your GitHub account (do this first, and soon)
 
@@ -381,7 +384,7 @@ The first push to `main` that touches `site/` starts the deploy workflow, so Pag
 
 ### Step 7: search engines (W3)
 
-Done 2026-09-28: both verified, and the sitemap submitted to both (section 0d).
+Done 2026-09-28: Google verified by its TXT record (in the DNS table above), Bing imported from Search Console, and the sitemap submitted to both (section 0d).
 
 Verify both with DNS records, so nothing on the site changes: an HTML verification file or meta tag would be a site change, and the site loads nothing from either company. Keep the records afterwards; removing one un-verifies the site. Add them to the DNS table above once they're in.
 
