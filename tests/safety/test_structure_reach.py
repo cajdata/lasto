@@ -43,7 +43,7 @@ PUBLIC_API = {
         "SafetyError", "SafetyViolation", "KillSwitchTripped", "PassiveModeUnconfirmed", "InterfaceError", "AdapterError",
     },
     "lasto.safety.frames": {"CanFrame", "ErrorFrame", "StatusMessage", "ReadError", "Received"},
-    "lasto.safety.audit": {"Auditor", "AuditSink", "JsonlAuditSink", "MemoryAuditSink"},
+    "lasto.safety.audit": {"Auditor", "AuditSink", "JsonlAuditSink", "MemoryAuditSink", "hold_on_disk"},
     "lasto.safety.clock": {"Clock", "SystemClock"},
     "lasto.safety.exchange": {"Exchange", "ExchangeState"},
     "lasto.safety.stn_port": {"StnAdapter", "open_adapter"},

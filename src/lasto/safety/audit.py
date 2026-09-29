@@ -127,10 +127,12 @@ class RefusalLog(metaclass=SealedType):
       one that none of them could take is held;
     - an auditor that attaches takes the held records one at a time; if a
       write fails, the rest stay held and the auditor isn't attached;
-    - anything still held when the process exits is reported on stderr.
+    - anything still held when the process exits is reported on stderr;
+    - once hold_on_disk() names a file, every record is also appended to it,
+      and fsynced, the moment it is held, so a crash can't lose it.
     """
 
-    __slots__ = ("_attached", "_backlog", "_backlog_limit", "_dropped", "_lock")
+    __slots__ = ("_attached", "_backlog", "_backlog_limit", "_dropped", "_held_file", "_held_path", "_held_unwritten", "_lock")
 
     def __init__(self, *, backlog_limit: int = REFUSAL_BACKLOG_LIMIT) -> None:
         self._lock = threading.Lock()
@@ -139,6 +141,23 @@ class RefusalLog(metaclass=SealedType):
         # Held records: ("rejected", fields) or (event name, fields).
         self._backlog: deque[tuple[str, dict[str, object]]] = deque(maxlen=backlog_limit)
         self._dropped = 0
+        self._held_file: TextIO | None = None
+        self._held_path = ""
+        self._held_unwritten = 0  # held records the file couldn't take
+
+    def hold_on_disk(self, path: str | os.PathLike[str]) -> None:
+        """Also append every held record to this file, fsynced as it is held. Set once; a second call is refused."""
+        with self._lock:
+            already = self._held_path
+        if already:
+            refuse(
+                SafetyViolation("held_records_file_already_set", f"held records already go to {already}"),
+                transport="core",
+                request=f"hold records in {path}",
+            )
+        held_file = open(path, "a", encoding="utf-8", newline="\n")
+        with self._lock:
+            self._held_file, self._held_path = held_file, str(path)
 
     def attach(self, auditor: Auditor) -> None:
         """Send refusals to this auditor, starting with any held while nothing was attached.
@@ -218,30 +237,51 @@ class RefusalLog(metaclass=SealedType):
     def _hold(self, kind: str, fields: dict[str, object]) -> None:
         if len(self._backlog) == self._backlog_limit:
             self._dropped += 1
-        self._backlog.append((kind, {**fields, "held_since": datetime.now(UTC).isoformat()}))
+        record = {**fields, "held_since": datetime.now(UTC).isoformat()}
+        self._backlog.append((kind, record))
+        if self._held_file is None:
+            return
+        try:
+            self._held_file.write(json.dumps({"kind": kind, **record}, sort_keys=True, default=str) + "\n")
+            self._held_file.flush()
+            os.fsync(self._held_file.fileno())
+        except (OSError, ValueError):  # the disk failed, or the file was closed under it
+            self._held_unwritten += 1  # still held in memory, and reported at exit
 
     def report_held(self, stream: TextIO | None = None) -> None:
         """Write anything still held to stderr (or `stream`). Runs at exit, so no held record goes unseen."""
         with self._lock:
-            held, dropped = list(self._backlog), self._dropped
+            held, dropped, path, unwritten = list(self._backlog), self._dropped, self._held_path, self._held_unwritten
         if not held and not dropped:
             return
         out = sys.stderr if stream is None else stream
         more = f"; {dropped} more were dropped" if dropped else ""
         out.write(f"lasto: {len(held)} audit records were never written to an audit log{more}:\n")
+        if path:
+            missing = f", but {unwritten} of them couldn't be written to {path}" if unwritten else ""
+            out.write(f"lasto: they are also in {path}{missing}\n")
         for kind, fields in held:
             out.write(json.dumps({"kind": kind, **fields}, sort_keys=True, default=str) + "\n")
 
     def reset(self) -> None:
-        """Detach everything and forget held refusals (between tests)."""
+        """Detach everything, forget held refusals, and close the held-records file (between tests)."""
         with self._lock:
             self._attached = {}
             self._backlog = deque(maxlen=self._backlog_limit)
             self._dropped = 0
+            held_file, self._held_file, self._held_path, self._held_unwritten = self._held_file, None, "", 0
+        if held_file is not None:
+            held_file.close()
 
 
 REFUSALS = RefusalLog()
 atexit.register(REFUSALS.report_held)
+
+
+def hold_on_disk(path: str | os.PathLike[str]) -> None:
+    """Keep every record held while no audit log is attached in this file too, appended and fsynced as it is
+    held, so a crash can't lose it. Called once per process, at startup; a second call is refused."""
+    REFUSALS.hold_on_disk(path)
 
 
 def refuse(error: BaseException, *, transport: str, request: str = "", reason: str | None = None) -> NoReturn:

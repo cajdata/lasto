@@ -406,7 +406,7 @@ The bench tests are the only time either adapter transmits on purpose, and only 
 |---|---|
 | 2 | **Save and report on a kill:** the kill switch already stops and logs; flushing capture storage and writing the report arrive with Phase 2 storage. |
 | 2 | **Audit log storage:** the durable audit log (SQLite, alongside the JSON Lines sink) is wired into real sessions. The JSON Lines file stays the record of truth; the capture database's audit table indexes it. *L5 (a real-hardware session accepted any audit sink) is fixed: see §3.3, step 7.* |
-| 2 | **Held audit records on disk:** refusals and kills recorded while no audit log is open are held in memory, handed to the next log that opens, and reported on stderr at exit. Once Phase 2 sets the data location, they also go to a durable fallback file there, so a crash can't lose them. |
+| 2 | **Held audit records on disk:** refusals and kills recorded while no audit log is open are held in memory, handed to the next log that opens, and reported on stderr at exit. *The safety core side is done:* `audit.hold_on_disk(path)`, set once per process, appends each held record to a file and fsyncs it the moment it is held, so a crash can't lose it; a second call is refused (audited), and a failed disk write keeps the record held and says so at exit. The capture operation calls it at startup with a file in the data folder's `audit/` folder. |
 | 2 | **Broadcast IDs:** the gate's set of IDs seen carrying broadcast traffic is produced from capture statistics. |
 | 2 | **Storage:** estimate per driving hour, then set the disk budget and retention. |
 | 2 | **Bench test:** you decide before the first live test (optional; parts list in §12). |
