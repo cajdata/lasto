@@ -269,6 +269,8 @@ What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr
   - A torn tail is moved to a `.torn` file beside its segment, so the segment reads cleanly and no byte that reached the disk is thrown away. A segment shorter than its index is reported and left alone.
   - The session is marked recovered (end reason `interrupted`) at its last indexed frame, with a `recovered` event saying what was found.
   - A run left unended has its audit log indexed to the end, and ends at the last time it's known to have reached.
+- **Capture lock:** a capture process holds an OS lock on `capture.lock` in the data folder for its whole life, so only one capture writes the capture database, and only it recovers. Windows releases the lock when the process ends, however it ends. Anyone can ask whether a capture is running (§14.3).
+- **Live feed:** once a second the capture process writes its status (run, session, state, frame counts, frames per second, the last bus status, and a heartbeat) to `live.sqlite`, with synchronous NORMAL. A failure there is recorded as a run event when it starts and when it clears, and never stops the capture. Decoded values and alarms join it in Phase 4.
 - **Keep awake:** `SetThreadExecutionState` stops Windows from sleeping during capture. The lid-close action stays a Windows setting you control.
 - **Storage estimate:** a four-node bus is probably lightly loaded, perhaps 500-2,000 frames/s, which is about 5-30 MB per hour compressed. The real figure and a retention policy come after the first capture.
 
