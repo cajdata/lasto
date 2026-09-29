@@ -138,7 +138,7 @@ For every request, in order, stopping at the first failure:
    - **Clock:** on real hardware every timing rule (this window, the rate slots, the listen window, how old an interlock reading may be) runs on `SystemClock` itself. The sessions and `open_active` refuse any other clock, subclasses included, before the DLL is loaded. Only the simulator brings its own clock. `SystemClock` keeps its own references to `time.monotonic` and `time.sleep`, taken at import, so rebinding them on the `time` module can't steer it (review finding P3). Flow control frames don't count (the gate sends at most one per first frame).
    - So the gate never meets that backstop, it counts the shared spacing from the end of each write and adds a 1 ms margin, making its fastest pace 19.6 requests per second. Pacing at exactly 50 ms would put 21 frames inside one second through float rounding alone.
    - **Reading before sending:** the gate waits for its slot in slices of at most 20 ms and reads the channel after each (the polled reader, with an immediate status check), stopping at once on a kill. The last read comes right before the frame goes out, so every kill trigger that has already arrived is seen first: an error frame, a bus-off shown only in the status, or another tester. Then the interlocks are checked again with that moment's readings.
-7. **Audit, write-ahead:** log the frame and purpose. If the audit write fails, don't transmit.
+7. **Audit, write-ahead:** log the frame and purpose. If the audit write fails, don't transmit. On real hardware the sessions and `open_active` refuse, before the DLL is loaded, any audit log but an `Auditor` writing a `JsonlAuditSink`, which fsyncs each record before it returns; a subclass or a look-alike could hold records in memory or drop them (review finding L5). Only the simulator may use another sink.
 8. **Write**, then log the result.
 
 Rejections are logged with the reason and raised as `SafetyViolation`.
@@ -405,7 +405,7 @@ The bench tests are the only time either adapter transmits on purpose, and only 
 | Phase | Item |
 |---|---|
 | 2 | **Save and report on a kill:** the kill switch already stops and logs; flushing capture storage and writing the report arrive with Phase 2 storage. |
-| 2 | **Audit log storage:** the durable audit log (SQLite, alongside the JSON Lines sink) is wired into real sessions. **Refuse a sink that isn't durable (review finding L5):** with the real DLL, any `AuditSink` is accepted today, including one that discards records, so rule 11 depends on the caller. As with the clock (N2), a session on real hardware refuses any sink but the durable ones, before the DLL is loaded. |
+| 2 | **Audit log storage:** the durable audit log (SQLite, alongside the JSON Lines sink) is wired into real sessions. The JSON Lines file stays the record of truth; the capture database's audit table indexes it. *L5 (a real-hardware session accepted any audit sink) is fixed: see §3.3, step 7.* |
 | 2 | **Held audit records on disk:** refusals and kills recorded while no audit log is open are held in memory, handed to the next log that opens, and reported on stderr at exit. Once Phase 2 sets the data location, they also go to a durable fallback file there, so a crash can't lose them. |
 | 2 | **Broadcast IDs:** the gate's set of IDs seen carrying broadcast traffic is produced from capture statistics. |
 | 2 | **Storage:** estimate per driving hour, then set the disk budget and retention. |

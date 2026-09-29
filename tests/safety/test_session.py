@@ -4,8 +4,9 @@ import pytest
 from helpers import CHANNEL, HANDLE, LOGGING_RPM_SPEED, events, open_polled, the_writer
 
 from lasto.safety import pcan_constants as pc
-from lasto.safety.audit import Auditor
+from lasto.safety.audit import REFUSALS, Auditor, JsonlAuditSink, MemoryAuditSink
 from lasto.safety.clock import SystemClock
+from lasto.safety.pcan_active import open_active
 from lasto.safety.errors import KillSwitchTripped, SafetyViolation
 from lasto.safety.exchange import ExchangeState
 from lasto.safety.session import LISTEN_WINDOW, open_passive_session, open_polled_session
@@ -103,10 +104,10 @@ def test_on_real_hardware_the_listen_window_has_a_minimum(auditor, sink, listen_
     assert events(sink, "session_refused")[0]["reason"] == "listen_window_too_short"
 
 
-def test_on_real_hardware_the_full_listen_window_passes_that_check(auditor):
+def test_on_real_hardware_the_full_listen_window_passes_that_check(durable_auditor):
     with pytest.raises(HardwareFirewallError):  # it gets as far as loading the DLL, which tests can't
         open_polled_session(
-            CHANNEL, profile=[LOGGING_RPM_SPEED], auditor=auditor, clock=SystemClock(), listen_seconds=LISTEN_WINDOW
+            CHANNEL, profile=[LOGGING_RPM_SPEED], auditor=durable_auditor, clock=SystemClock(), listen_seconds=LISTEN_WINDOW
         )
 
 
@@ -135,9 +136,69 @@ def test_on_real_hardware_timing_comes_from_the_system_clock(auditor, sink, open
 
 
 @pytest.mark.parametrize("opener", [_polled, _passive])
-def test_on_real_hardware_the_system_clock_passes_that_check(auditor, opener):
+def test_on_real_hardware_the_system_clock_passes_that_check(durable_auditor, opener):
     with pytest.raises(HardwareFirewallError):  # as far as loading the DLL, which tests can't
-        opener(SystemClock(), auditor)
+        opener(SystemClock(), durable_auditor)
+
+
+class BufferedAuditSink(JsonlAuditSink):
+    """A JSON Lines sink by name, whose subclass could hold records in memory instead of writing them."""
+
+    __slots__ = ()
+
+
+class ForgetfulAuditor(Auditor):
+    """An auditor by name, whose subclass could drop records before they reach the sink."""
+
+    __slots__ = ()
+
+
+class LooksLikeASink:
+    def write(self, record: dict[str, object]) -> None:
+        """Keeps nothing."""
+
+
+@pytest.fixture
+def make_auditor(tmp_path, clock):
+    """Build each kind of audit log that isn't durable, and close any file one opens."""
+    files = []
+
+    def make(kind: str) -> Auditor:
+        if kind == "memory":
+            return Auditor(MemoryAuditSink(), clock)
+        if kind == "look-alike sink":
+            return Auditor(LooksLikeASink(), clock)  # type: ignore[arg-type]
+        sink = (BufferedAuditSink if kind == "sink subclass" else JsonlAuditSink)(tmp_path / f"{len(files)}.jsonl")
+        files.append(sink)
+        return Auditor(sink, clock) if kind == "sink subclass" else ForgetfulAuditor(sink, clock)
+
+    yield make
+    for sink in files:
+        sink.close()
+
+
+@pytest.mark.parametrize("opener", [_polled, _passive])
+@pytest.mark.parametrize("kind", ["memory", "look-alike sink", "sink subclass", "auditor subclass"])
+def test_on_real_hardware_the_audit_log_keeps_its_records_on_disk(clock, make_auditor, opener, kind):
+    """Finding L5: rule 11 can't depend on the caller's sink. Anything but an Auditor writing a JsonlAuditSink,
+    which fsyncs each record before it returns, is refused before the DLL is loaded."""
+    seen = MemoryAuditSink()
+    REFUSALS.attach(Auditor(seen, clock))  # a second log, to read the refusal from whatever the session was given
+    with pytest.raises(SafetyViolation) as refused:
+        opener(SystemClock(), make_auditor(kind))
+    assert refused.value.reason == "audit_log_not_durable"
+    assert [r["reason"] for r in events(seen, "rejected")] == ["audit_log_not_durable"]
+
+
+def test_on_real_hardware_the_write_function_needs_a_durable_audit_log_too(clock):
+    with pytest.raises(SafetyViolation) as refused:  # before the DLL is loaded
+        open_active(CHANNEL, auditor=Auditor(MemoryAuditSink(), clock), clock=SystemClock())
+    assert refused.value.reason == "audit_log_not_durable"
+
+
+def test_the_simulator_may_use_any_audit_log(sim, auditor):
+    session = open_polled(sim, auditor)  # library= given: a memory log is fine for tests
+    assert not session.killswitch.tripped
 
 
 def test_the_simulator_may_use_its_own_clock(sim, auditor):

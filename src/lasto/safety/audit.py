@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NoReturn, Protocol, TextIO
 
 from lasto.safety._frozen import SealedProtocolType, SealedType, freeze
+from lasto.safety.errors import SafetyViolation
 
 if TYPE_CHECKING:  # clock imports this module, to refuse a clock
     from lasto.safety.clock import Clock
@@ -251,6 +252,25 @@ def refuse(error: BaseException, *, transport: str, request: str = "", reason: s
     except Exception as audit_error:
         error.add_note(f"lasto could not write this refusal to the audit log: {audit_error!r}")
     raise error
+
+
+def require_durable(auditor: object, *, request: str) -> None:
+    """Refuse (audited) any audit log but an Auditor writing a JsonlAuditSink. For real hardware (finding L5).
+
+    That sink fsyncs each record before write() returns, which is what makes the transmit record
+    write-ahead. Any other sink, a subclass or a look-alike included, could hold records in memory or drop
+    them, so rule 11 would depend on the caller. The simulator may use any sink.
+    """
+    if type(auditor) is Auditor and type(auditor._sink) is JsonlAuditSink:
+        return
+    given = type(auditor._sink).__name__ if type(auditor) is Auditor else type(auditor).__name__  # type: ignore[attr-defined]
+    refuse(
+        SafetyViolation(
+            "audit_log_not_durable", f"{given}; on real hardware the audit log is a JsonlAuditSink, fsynced per record"
+        ),
+        transport="pcan",
+        request=request,
+    )
 
 
 freeze(__name__)

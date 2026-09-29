@@ -32,9 +32,9 @@ def test_the_read_only_binding_follows_its_list():
     assert list(pcan_dll.bind_readonly(FakePcanDll())) == list(pcan_dll.READONLY_FUNCTIONS)
 
 
-def test_default_loader_is_blocked_in_tests(auditor):
+def test_default_loader_is_blocked_in_tests(durable_auditor):
     with pytest.raises(HardwareFirewallError):
-        open_active(CHANNEL, auditor=auditor, clock=SystemClock())
+        open_active(CHANNEL, auditor=durable_auditor, clock=SystemClock())
 
 
 def test_on_real_hardware_the_write_function_runs_on_the_system_clock(auditor, sink):

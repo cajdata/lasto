@@ -7,7 +7,7 @@ either reopens it through the full open_passive sequence or ends.
 """
 
 import pytest
-from helpers import CHANNEL, HANDLE, events
+from helpers import CHANNEL, HANDLE, events, records_in
 
 from lasto.safety import pcan_constants as pc
 from lasto.safety import session as session_module
@@ -171,7 +171,8 @@ def test_close_and_properties(sim, auditor, sink):
     assert len(events(sink, "session_closed")) == 1
 
 
-def test_default_binding_is_the_real_dll_which_tests_cannot_reach(auditor, sink):
+def test_default_binding_is_the_real_dll_which_tests_cannot_reach(durable_auditor, tmp_path):
     with pytest.raises(HardwareFirewallError):
-        open_passive_session(CHANNEL, auditor=auditor, clock=SystemClock())
-    assert events(sink, "session_refused")[0]["reason"] == "HardwareFirewallError"
+        open_passive_session(CHANNEL, auditor=durable_auditor, clock=SystemClock())
+    refused = [r for r in records_in(tmp_path / "audit.jsonl") if r["event"] == "session_refused"]
+    assert refused[0]["reason"] == "HardwareFirewallError"

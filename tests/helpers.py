@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -40,6 +42,11 @@ class LooksLikeTheEngineId(int):
 
 def events(sink: MemoryAuditSink, name: str) -> list[dict[str, object]]:
     return [record for record in sink.records if record["event"] == name]
+
+
+def records_in(path: Path) -> list[dict[str, object]]:
+    """What a JSON Lines audit log holds."""
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
 class WriteWatch:

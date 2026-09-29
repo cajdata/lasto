@@ -8,7 +8,7 @@ import pytest
 from coverage_gates import GATES, check
 from hypothesis import HealthCheck, settings
 
-from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
+from lasto.safety.audit import REFUSALS, Auditor, JsonlAuditSink, MemoryAuditSink
 from lasto.sim.clock import FakeClock
 from lasto.sim.vehicle import Sim, build_sim
 
@@ -76,6 +76,14 @@ def sink() -> MemoryAuditSink:
 @pytest.fixture
 def auditor(sink: MemoryAuditSink, clock: FakeClock) -> Auditor:
     return Auditor(sink, clock)
+
+
+@pytest.fixture
+def durable_auditor(tmp_path, clock: FakeClock):
+    """An audit log that keeps its records on disk, which real hardware requires (finding L5)."""
+    sink = JsonlAuditSink(tmp_path / "audit.jsonl")
+    yield Auditor(sink, clock)
+    sink.close()
 
 
 @pytest.fixture
