@@ -467,6 +467,7 @@ def test_ctypes_only_in_the_hardware_bindings():
         "lasto.safety.pcan_dll",
         "lasto.safety.pcan_active",
         "lasto.safety.hotkey",
+        "lasto.operations.keep_awake",  # kernel32 SetThreadExecutionState only; loads no hardware driver
         "lasto.sim.pytest_plugin",  # the test firewall
     }
     users = {name for name, tree in sources().items() if any(i == "ctypes" or i.startswith("ctypes.") for i in imports(tree))}
