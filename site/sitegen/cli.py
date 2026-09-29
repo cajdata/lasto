@@ -1,4 +1,4 @@
-"""python site/build.py build | check | serve"""
+"""python site/build.py build | check | serve | links"""
 
 from __future__ import annotations
 
@@ -34,8 +34,19 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("serve", help="build, then serve on 127.0.0.1", allow_abbrev=False)
     s.add_argument("--port", type=int, default=8000)
     s.add_argument("--watch", action="store_true", help="rebuild and recheck when content, data, templates, or static files change")
+    lk = sub.add_parser("links", help="check the built site's links with the pinned lychee", allow_abbrev=False)
+    lk.add_argument("--online", action="store_true", help="also check links to other sites (needs network)")
+    lk.add_argument("--dist", type=Path, default=paths.DIST, help="built site to check (default site/dist)")
     args = parser.parse_args(argv)
     try:
+        if args.command == "links":
+            from sitegen import links, tools
+
+            try:
+                return links.check(args.dist, online=args.online)
+            except tools.ToolError as exc:
+                print(f"link check failed: {exc}", file=sys.stderr)
+                return 2
         if args.command == "build":
             return _build_and_check(args.out, args.strict)
         if args.command == "check":

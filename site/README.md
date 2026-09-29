@@ -11,14 +11,19 @@ uv venv .venv-site
 uv pip install --python .venv-site/Scripts/python.exe --require-hashes --only-binary :all: -r site/requirements.txt -r site/requirements-test.txt
 .venv-site/Scripts/python site/build.py build
 .venv-site/Scripts/python site/build.py serve --watch
+.venv-site/Scripts/python site/build.py links
 .venv-site/Scripts/python -m pytest -c site/pytest.ini site/tests
 ```
+
+`links` checks every link and anchor in the built site with lychee, offline, as CI does. Add `--online` to check links to other sites too.
 
 `serve` builds, then serves `site/dist` at http://127.0.0.1:8000/ and rebuilds when content, data, templates, static files, or the safety core source change. Every build runs the checks in `sitegen/checks.py`, and any problem fails it. CI installs the same files with `pip --require-hashes` and adds `--strict`, which also needs full git history and committed sources.
 
 The tests use their own config, so the app's pytest settings (the simulator plugin and the 100 percent coverage gate on `lasto.safety`) never apply to the site, and never get loosened for it.
 
-The tests also run actionlint on every workflow in `.github/workflows`, so a workflow GitHub would reject fails here first. `tests/test_workflows.py` downloads the official actionlint release once into `site/.cache` and checks its sha256 before every run, so the first run needs network access. To update actionlint, change `ACTIONLINT_VERSION` and copy the two checksum lines from the new release's checksums file.
+The tests also run actionlint on every workflow in `.github/workflows`, so a workflow GitHub would reject fails here first.
+
+actionlint and lychee are pinned in `sitegen/tools.py`: each is its project's official release, pinned by version and by the sha256 the release publishes. The first use downloads it into `site/.cache`, so it needs network access; every use checks the archive's sha256 and compares the binary with the archive's copy, so only a checked copy ever runs. Dependabot can't see these pins. To update one, change its version and copy the two hashes (Windows and Linux) from the new release.
 
 ## Where things are
 
@@ -31,7 +36,7 @@ The tests also run actionlint on every workflow in `.github/workflows`, so a wor
 | `data/hardware.toml` | The planned hardware chain, for Fig. 2 and the quick reference table. |
 | `templates/` | Jinja templates: `base.html`, `home.html`, `page.html`, the chain figure, and the social image. |
 | `static/` | CSS, the favicon, and the font sources with their licenses. |
-| `sitegen/` | The build. `safety.py` reads the safety core with `ast` and never imports it. |
+| `sitegen/` | The build. `safety.py` reads the safety core with `ast` and never imports it. `tools.py` pins actionlint and lychee, and `links.py` runs the link check. |
 
 ## Content conventions
 
