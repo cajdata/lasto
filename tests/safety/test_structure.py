@@ -93,6 +93,45 @@ def closure(module: str) -> set[str]:
     return seen
 
 
+def _in_the_core(name: str) -> bool:
+    return name == "lasto.safety" or name.startswith("lasto.safety.")
+
+
+def lasto_imports_outside_the_core(module: str, tree: ast.Module) -> list[str]:
+    """For a safety module, every lasto module it imports that isn't part of the safety core.
+
+    The safety core is self-contained: settings, storage, services, and the rest of lasto never feed it,
+    so nothing a user can edit, and nothing a future phase adds outside the core, can change what it
+    allows (docs/architecture.md §14.8). Imports inside functions and TYPE_CHECKING blocks count too.
+    """
+    if not _in_the_core(module):
+        return []
+    return sorted(name for name in imports(tree) if (name == "lasto" or name.startswith("lasto.")) and not _in_the_core(name))
+
+
+@pytest.mark.parametrize(
+    ("module", "snippet", "flagged"),
+    [
+        ("lasto.safety.probe", "from lasto import config", True),
+        ("lasto.safety.probe", "import lasto.storage.db", True),
+        ("lasto.safety.probe", "from lasto.records import Frame", True),
+        ("lasto.safety.probe", "def limits():\n    from lasto.services import settings", True),
+        ("lasto.safety.probe", "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from lasto.storage import db", True),
+        ("lasto.safety.probe", "import lasto", True),
+        ("lasto.safety.probe", "from lasto.safety import audit\nimport lasto.safety.policy\nimport json", False),
+        ("lasto.storage.db", "from lasto import config", False),  # outside the core, other rules apply
+    ],
+)
+def test_the_self_contained_core_check(module, snippet, flagged):
+    assert bool(lasto_imports_outside_the_core(module, ast.parse(snippet))) is flagged
+
+
+def test_the_safety_core_imports_nothing_from_lasto_outside_itself():
+    found = {name: outside for name, tree in sources().items() if (outside := lasto_imports_outside_the_core(name, tree))}
+    assert sum(_in_the_core(name) for name in sources()) >= 25
+    assert found == {}
+
+
 def test_the_scan_sees_the_code():
     assert {"lasto.safety.gate", "lasto.safety.pcan_active", "lasto.safety.pcan_passive", "lasto.cli"} <= set(sources())
 
