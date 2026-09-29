@@ -359,11 +359,14 @@ docs/architecture.md
 - **Entry point:** one command, `lasto`, with subcommands `drive`, `map`, `snapshot`, `identify`, `log`, `view`, `discover`, `decode`, `report`, `export`, `verify`.
 - **Simulator by default:** real hardware needs `--live` plus `--channel PCAN_USBBUSn` or `--port COMn`, typed every time. Config holds no default channel.
 - **No abbreviations:** every parser sets `allow_abbrev=False`, so `--liv` can't mean `--live`.
-- **Drive modes:** `drive` alone is passive; `drive --profile NAME` is polled.
+- **Drive modes:** `drive` alone is passive; `drive --profile NAME` is polled (Phase 4).
+- **`lasto drive [--live --channel PCAN_USBBUSn] [--seconds N] [--data DIR]` (Phase 2):** passive capture in armed mode (§4). The simulator runs `--seconds` simulated seconds (60 by default); on the truck `--seconds` is an optional time limit. `--port` and `--profile` are refused with a message until the phases that bring them. Before anything else, it sends held refusals to `audit/held.jsonl` in the data folder (B2). It exits with 1 if another capture is running, if the safety core refuses the channel, or if the channel is lost.
+- **`lasto log [SESSION|last] [--bus] [--data DIR]` (Phase 2):** without a session, every session newest first: start (UTC), length, state, end reason, frames, IDs, stored size, and MB per hour. With a session (its ID, its first characters, or `last`), the session's run and adapter, its events, the run's events while no session was open, and the run's audit log. `--bus` adds every CAN ID: frames, rate, mean period, smallest and largest gap, DLC, which data bits changed (8 bytes, hex), and first and last seen. It says so when a capture is running, from the capture lock and the live feed.
+- **Data folder:** `--data`, then `LASTO_DATA`, then `%LOCALAPPDATA%\lasto` (§4). The tests always use a temporary one.
 - **Raw console:** exists only as `lasto sim console`, which has no `--live` option.
 - **GUI (Phase 9):** `lasto gui` starts the local web GUI and opens the browser (§14). The CLI keeps every capability; the GUI is another front end over the same service layer.
 
-*(open: what `log` and `verify` should do)*
+*(open: what `verify` should do)*
 
 ## 10. Dependencies and tooling
 

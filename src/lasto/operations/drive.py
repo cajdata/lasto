@@ -31,17 +31,17 @@ from lasto.capture.convert import to_records
 from lasto.capture.recorder import Recorder
 from lasto.capture.recovery import Recovery, recover
 from lasto.operations.keep_awake import KeepAwake
-from lasto.records import BusEvent, Frame
-from lasto.safety.audit import Auditor, JsonlAuditSink
-from lasto.records import Record
+from lasto.records import BusEvent, Frame, Record
+from lasto.safety.audit import Auditor, JsonlAuditSink, hold_on_disk
 from lasto.safety.clock import Clock, SystemClock
+from lasto.safety.errors import InterfaceError, SafetyError
 from lasto.safety.session import PassiveSession, open_passive_session
 from lasto.services.safety_config import snapshot_text
 from lasto.sim.vehicle import Sim, build_sim
 from lasto.storage import capture_db, workbench_db
 from lasto.storage.audit_index import AuditIndex
 from lasto.storage.capture_db import AuditLine
-from lasto.storage.capture_lock import CaptureLock
+from lasto.storage.capture_lock import CaptureLock, CaptureRunning
 from lasto.storage.ids import new_id
 from lasto.storage.live_db import LiveFeed, LiveStatus
 from lasto.storage.root import DataRoot
@@ -56,6 +56,15 @@ MIRRORED = frozenset({
     "session_ended", "rejected",
 })  # fmt: skip
 _SIGNALS = {signal.SIGINT: "ctrl_c", signal.SIGBREAK: "ctrl_break"}
+# What stops a capture from starting, for the CLI to report: another capture, or the safety core refusing the channel.
+CANNOT_START = (CaptureRunning, SafetyError, InterfaceError)
+
+
+def hold_refusals(root: DataRoot) -> None:
+    """Once per process, before anything else: refusals recorded while no audit log is attached also go to
+    `audit/held.jsonl` in the data folder, fsynced as they're held, so a crash can't lose them."""
+    root.ensure()
+    hold_on_disk(root.audit_dir / "held.jsonl")
 
 
 @dataclass(frozen=True)
@@ -153,7 +162,8 @@ def _run(
             reason = capture.run(Auditor(sink, clock), stop, seconds)
     finally:
         sink.close()
-    report(f"Stopped ({reason}): {len(capture.sessions)} sessions, {capture.total:,} frames.")
+    count = len(capture.sessions)
+    report(f"Stopped ({reason}): {count} session{'' if count == 1 else 's'}, {capture.total:,} frames.")
     return DriveResult(run_id, tuple(capture.sessions), capture.total, reason, recovery)
 
 

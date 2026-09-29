@@ -41,6 +41,16 @@ def pytest_runtestloop(session: pytest.Session):
     return result
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _no_test_touches_the_real_data_folder(tmp_path_factory):
+    """lasto's data folder defaults to %LOCALAPPDATA%\\lasto. In tests the default is a temporary folder instead;
+    a test that needs its own passes --data or a DataRoot."""
+    patch = pytest.MonkeyPatch()
+    patch.setenv("LASTO_DATA", str(tmp_path_factory.mktemp("lasto-data")))
+    yield
+    patch.undo()
+
+
 @pytest.fixture(autouse=True)
 def _fresh_refusal_log():
     """Each test starts with nothing attached to the process-wide refusal log and nothing held."""
