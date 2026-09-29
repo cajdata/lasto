@@ -69,6 +69,16 @@ def test_services_are_hardware_free():
     assert sorted(name for name in reached if name.split(".")[0] in HARDWARE_LIBRARIES) == []
 
 
+def test_storage_is_hardware_free_and_below_services():
+    """Storage holds the data; capture writes it and services read it. It reaches neither, nor any hardware."""
+    storage = in_package("lasto.storage")
+    assert storage
+    reached = reach(storage)
+    below = NOT_FOR_SERVICES + ("lasto.services",)
+    assert sorted(name for name in reached if any(_is(name, package) for package in below)) == []
+    assert sorted(name for name in reached if name.split(".")[0] in HARDWARE_LIBRARIES) == []
+
+
 def test_only_operations_open_safety_core_sessions():
     """The session openers live in lasto.safety.session; outside the core, only operations may reach them."""
     openers = {

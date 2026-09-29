@@ -50,6 +50,20 @@ def _fresh_refusal_log():
 
 
 @pytest.fixture
+def opened():
+    """Wrap each database connection a test opens, opened(conn), and it is closed when the test ends."""
+    connections = []
+
+    def keep(conn):
+        connections.append(conn)
+        return conn
+
+    yield keep
+    for conn in connections:
+        conn.close()
+
+
+@pytest.fixture
 def clock() -> FakeClock:
     return FakeClock()
 
