@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from lasto.capture.convert import to_record
+from lasto.capture.convert import to_record, to_records
 from lasto.records import BusEvent, Frame
 from lasto.safety.frames import CanFrame, ErrorFrame, ReadError, StatusMessage
 
@@ -29,6 +29,11 @@ def test_an_error_frame():
 def test_bus_events():
     assert to_record(StatusMessage(0x00000008, 77)) == BusEvent("status", 0x00000008, 77)
     assert to_record(ReadError(0x00000020)) == BusEvent("read_error", 0x00000020, None)
+
+
+def test_a_read_in_order():
+    items = [CanFrame(0x025, b"\x01", 1), StatusMessage(0x4, 2), ErrorFrame(0x04, b"", 3)]
+    assert to_records(items) == [Frame(1, 0x025, b"\x01"), BusEvent("status", 0x4, 2), Frame(3, 0x04, b"", error=True)]
 
 
 def test_anything_else_is_refused():

@@ -20,6 +20,8 @@ STEERING_ANGLE_ID = 0x025
 YAW_RATE_ID = 0x024
 VEHICLE_SPEED_ID = 0x0B4
 ENGINE_RPM_ID = 0x2C4
+BACKGROUND_FIRST_ID = 0x300  # extra traffic for throughput tests; 0x300 up to 0x6FF stays clear of 0x7DF to 0x7EF
+BACKGROUND_IDS = 0x400
 
 
 @dataclass
@@ -39,10 +41,12 @@ def _u16(value: float) -> bytes:
 class SimVehicle:
     def __init__(self, bus: SimBus, state: VehicleState | None = None) -> None:
         self.state = VehicleState() if state is None else state
-        bus.add_broadcaster(Broadcaster(STEERING_ANGLE_ID, 0.010, self._steering))
-        bus.add_broadcaster(Broadcaster(YAW_RATE_ID, 0.010, lambda _t: bytes(8)), offset=0.002)
-        bus.add_broadcaster(Broadcaster(VEHICLE_SPEED_ID, 0.020, self._speed), offset=0.004)
-        bus.add_broadcaster(Broadcaster(ENGINE_RPM_ID, 0.020, self._rpm), offset=0.006)
+        self._bus = bus
+        self._broadcasters: list[Broadcaster] = []
+        self._broadcast(Broadcaster(STEERING_ANGLE_ID, 0.010, self._steering))
+        self._broadcast(Broadcaster(YAW_RATE_ID, 0.010, lambda _t: bytes(8)), offset=0.002)
+        self._broadcast(Broadcaster(VEHICLE_SPEED_ID, 0.020, self._speed), offset=0.004)
+        self._broadcast(Broadcaster(ENGINE_RPM_ID, 0.020, self._rpm), offset=0.006)
         state = self.state
         self.engine = MockEcu(
             "engine",
@@ -68,6 +72,41 @@ class SimVehicle:
         )
         bus.add_node(self.engine)
         bus.add_node(self.transmission)
+
+    def _broadcast(self, broadcaster: Broadcaster, offset: float = 0.0) -> None:
+        self._broadcasters.append(broadcaster)
+        self._bus.add_broadcaster(broadcaster, offset=offset)
+
+    @property
+    def key_is_off(self) -> bool:
+        return not any(broadcaster.enabled for broadcaster in self._broadcasters)
+
+    def key_off(self) -> None:
+        """The key turned off: every broadcast stops, so the bus goes quiet. (The mock ECUs still answer.)"""
+        for broadcaster in self._broadcasters:
+            broadcaster.enabled = False
+
+    def key_on(self) -> None:
+        """The key turned on: the broadcasts resume, on their original schedule."""
+        for broadcaster in self._broadcasters:
+            broadcaster.enabled = True
+
+    def add_background_traffic(self, frames_per_second: int) -> None:
+        """More broadcast IDs at 100 Hz each, for a bus as busy as the throughput tests need.
+
+        FICTIONAL, like the rest: IDs from 0x300 up, never a diagnostic ID, each frame's data changing.
+        """
+        count = frames_per_second // 100
+        if count > BACKGROUND_IDS:
+            raise ValueError(f"at most {BACKGROUND_IDS * 100} frames a second of background traffic")
+        for index in range(count):
+
+            def payload(time: float, index: int = index) -> bytes:
+                return int(time * 1000).to_bytes(6, "big") + bytes([index & 0xFF, index >> 8])
+
+            self._broadcast(
+                Broadcaster(BACKGROUND_FIRST_ID + index, 0.010, payload), offset=0.001 + 0.0001 * (index % 16)
+            )
 
     def _steering(self, _time: float) -> bytes:
         raw = self.state.steering_raw & 0x7FF

@@ -257,6 +257,13 @@ What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr
 ## 4. Capture and storage
 
 - **Reader thread** per channel, owned by the safety core. It pushes to subscribers in order: raw recorder → kill-switch monitor → gate response matcher → ISO-TP/KWP conversation tracker → live decoder.
+- **`lasto drive` (Phase 2, passive, `operations/drive.py`):** one run is one process holding one channel open, listen-only, in armed mode.
+  - **Sessions:** the first frame starts a session. It ends after 60 s without a frame (key off), at its last frame, and the next frame starts a new one.
+  - **Loop:** on the main thread, it reads the channel every 10 ms and hands each frame to the recorder. Once a second it indexes the audit log, copies the channel's audit events (listen-only rechecks, distrust, reopen, refusals) into the events table, writes the live feed, and checks for the stop file. A channel status while no session is open is a run event.
+  - **Stopping:** Ctrl+C, Ctrl+Break, the stop file (`capture.stop` in the data folder), the time limit, or the safety core giving up on the channel all take one path: close the session at its last frame, close the channel, index the rest of the audit log, and end the run with the reason. Ctrl+C and Ctrl+Break are caught as stop requests, and the previous handlers are put back afterwards.
+  - **Startup:** the capture lock, then recovery, then the run's own audit file (`audit/<UTC time>-pid<pid>-<random>.jsonl`, always a new file), the run row with the safety configuration snapshot, and the channel. What the channel reported when it opened (adapter, PCAN-Basic version, firmware) is recorded on the run from its `session_opened` audit record.
+  - **Simulator:** the default, on its own clock, as fast as the capture can go: `--seconds` is simulated seconds (60 by default). On the truck, `--seconds` is an optional time limit, and Windows is kept from idle sleep.
+  - **Throughput:** the simulator records 2,000 frames a second about 30 times faster than real time on the desktop, simulator overhead included.
 - **Raw log:** candump text (`(1727380000.123456) can0 7E0#0201000000000000`), written as one complete zstd frame (checksum on) per second of traffic, then flush and `fsync`. A new segment file starts at every session start and every hour, and the app never appends to a file that might end in a torn frame. The reader decodes frame by frame and drops a truncated or corrupt tail. A skippable zstd frame before each data frame holds a sequence number, the first and last timestamps, and the frame count, so `zstd -d` and `can-utils` still work.
 - **SQLite:** WAL mode with `synchronous=FULL` and one batched commit per second.
   - Two databases in the data folder (§14.3): `capture.sqlite`, written only by capture processes, and `workbench.sqlite` for what the GUI and the CLI's analysis write (vehicles, notes, tags, and later mapping work). Each carries its own `application_id` and schema version; lasto refuses another kind of database, or a newer one, and readers open read-only.
@@ -289,6 +296,11 @@ What pure Python can't block at runtime (`object.__setattr__` or `type.__setattr
   - a steering angle stuck at 1150.875°
   - K-line ECUs behind `FakeStnPort`
   - a simulated Creader that holds conversations for mapping tests
+- **Scenarios (Phase 2):**
+  - a key switch: key off silences every broadcast, and key on resumes them on their original schedule
+  - actions scheduled at a bus time among the frames (`SimBus.call_at`): a key switch, an unplug, Ctrl+C, a stop file
+  - background traffic at 100 Hz per ID from 0x300 up, never a diagnostic ID, for the 2,000 frames a second check
+  - an unplugged adapter hears nothing
 - **Labeling:** every broadcast ID and local ID is labeled fictional until a real capture replaces it.
 - **Violation recorder:** any frame written while listen-only is on, any frame on an ID other than 0x7DF and the approved 0x7E0 (the oracle is exactly as strict as the policy, kept by hand), and any denied service or STN command is recorded even if the code under test catches the exception. A pytest plugin fails the run at session end if anything was recorded.
 

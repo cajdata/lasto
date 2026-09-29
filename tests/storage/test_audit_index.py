@@ -51,11 +51,11 @@ def test_complete_lines_are_indexed_as_the_log_grows(conn, root, run):
     path = root.audit_dir / "run.jsonl"
     path.write_bytes(record("session_opened") + record("status", 1)[:10])
     index = AuditIndex(conn, run, path)
-    assert index.catch_up() == 1  # the second line is still being written
+    assert [line.event for line in index.catch_up()] == ["session_opened"]  # the second is still being written
     with open(path, "ab") as file:
         file.write(record("status", 1)[10:] + record("session_closed", 2))
-    assert index.catch_up() == 2
-    assert index.catch_up() == 0
+    assert [(line.line, line.event) for line in index.catch_up()] == [(2, "status"), (3, "session_closed")]
+    assert index.catch_up() == []
     assert indexed(conn) == [
         (1, "2026-09-26T18:00:00+00:00", "session_opened"),
         (2, "2026-09-26T18:00:01+00:00", "status"),
@@ -71,7 +71,7 @@ def test_a_new_index_picks_up_where_the_last_one_stopped(conn, root, run):
     AuditIndex(conn, run, path).catch_up()
     with open(path, "ab") as file:
         file.write(record("c", 2))
-    assert AuditIndex(conn, run, path).catch_up() == 1
+    assert len(AuditIndex(conn, run, path).catch_up()) == 1
     assert [event for _, _, event in indexed(conn)] == ["a", "b", "c"]
 
 
@@ -91,11 +91,11 @@ def test_a_line_that_is_not_an_audit_record_is_indexed_as_unreadable(conn, root,
     """The index still matches the file line for line, and the damage is there to see."""
     path = root.audit_dir / "run.jsonl"
     path.write_bytes(record("a") + line + b"\n" + record("b", 1))
-    assert AuditIndex(conn, run, path).catch_up() == 3
+    assert len(AuditIndex(conn, run, path).catch_up()) == 3
     assert indexed(conn)[1] == (2, "", capture_db.UNREADABLE)
     assert [event for _, _, event in indexed(conn)][2] == "b"
 
 
 def test_a_missing_log_has_nothing_to_index(conn, root, run):
-    assert AuditIndex(conn, run, root.audit_dir / "run.jsonl").catch_up() == 0
+    assert AuditIndex(conn, run, root.audit_dir / "run.jsonl").catch_up() == []
     assert indexed(conn) == []

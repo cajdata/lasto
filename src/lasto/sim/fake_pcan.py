@@ -45,7 +45,7 @@ class FakeChannelState:
         self.rx: deque[tuple[int, int, int, bytes, float]] = deque()
 
     def receive(self, time: float, can_id: int, data: bytes) -> None:
-        if self.initialized:
+        if self.initialized and not self.unplugged:  # an unplugged adapter hears nothing
             self.rx.append((OK, pc.PCAN_MESSAGE_STANDARD, can_id, data, time))
 
 

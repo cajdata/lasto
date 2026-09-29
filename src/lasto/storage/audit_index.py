@@ -49,14 +49,14 @@ class AuditIndex:
         self._line = 0  # lines read so far
         self._indexed = capture_db.audit_lines_indexed(conn, run_id)
 
-    def catch_up(self) -> int:
-        """Index every complete line added since the last call. Returns how many were indexed."""
+    def catch_up(self) -> list[AuditLine]:
+        """Index every complete line added since the last call. Returns the lines indexed."""
         try:
             with open(self._path, "rb") as file:
                 file.seek(self._offset)
                 data = file.read()
         except FileNotFoundError:
-            return 0
+            return []
         complete = data[: data.rfind(b"\n") + 1]
         line = self._line
         lines = []
@@ -68,4 +68,4 @@ class AuditIndex:
         self._line = line
         self._offset += len(complete)
         self._indexed = max(self._indexed, line)
-        return len(lines)
+        return lines
