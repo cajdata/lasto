@@ -12,11 +12,17 @@ caller says it is, checks the kill switch, holds request frames to the hard
 ceiling (rule 6: at most 20 in any second, across every caller; on real
 hardware measured with SystemClock), and writes the audit record before the
 frame goes out. So even a
-direct call can only send what the policy allows, no faster than the
-ceiling. The gate adds the checks that need state: flow control only for a
-first frame that is waiting for it, the interlocks, and the per-purpose rates
-and back-off. Flow control frames don't count toward the ceiling; the gate
-sends at most one per first frame.
+direct call can only send what the policy allows, and no request faster than
+the ceiling.
+
+What a direct call can still do: send the canonical flow control frame on an
+approved ECU's request ID when no first frame is waiting for it, and as often
+as it is called. Flow control frames don't count toward the ceiling, and
+whether one answers a waiting first frame is checked only by the gate, which
+sends at most one per first frame. That is why only the gate calls the
+Writer (proved from the source, and watched at runtime, in the tests). The
+gate also adds the other checks that need state: the interlocks, and the
+per-purpose rates and back-off.
 """
 
 from __future__ import annotations
