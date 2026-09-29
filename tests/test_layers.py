@@ -79,6 +79,23 @@ def test_storage_is_hardware_free_and_below_services():
     assert sorted(name for name in reached if name.split(".")[0] in HARDWARE_LIBRARIES) == []
 
 
+def test_records_stand_alone():
+    """The plain frame and bus-event types import nothing from lasto, so every layer can use them."""
+    assert "lasto.records" in sources()
+    reached = reach({"lasto.records"})
+    assert sorted(name for name in reached if _is(name, "lasto") and name != "lasto.records") == []
+
+
+def test_only_capture_converts_from_the_safety_cores_frames():
+    """Storage, decoding, mapping, and the GUI use lasto.records; only capture touches the core's types (§14.4)."""
+    users = {
+        name
+        for name, tree in sources().items()
+        if not _is(name, "lasto.safety") and "lasto.safety.frames" in module_imports(tree)
+    }
+    assert users and all(_is(name, "lasto.capture") for name in users), sorted(users)
+
+
 def test_only_operations_open_safety_core_sessions():
     """The session openers live in lasto.safety.session; outside the core, only operations may reach them."""
     openers = {
