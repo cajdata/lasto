@@ -3,10 +3,17 @@
 The binding looks up only the functions in READONLY_FUNCTIONS, each by a
 name written out in bind_readonly, never a computed one. It never looks up
 CAN_Write (or the FD and XL variants), CAN_Reset (can hard-reset the
-controller), or CAN_FilterMessages (resets the controller), and it keeps no
-reference to the DLL after binding. Code holding a ReadOnlyPcan or a
-PcanChannel therefore has no path to a transmit function. The one CAN_Write
-lookup is in pcan_active.py, which only a polled session uses.
+controller), or CAN_FilterMessages (resets the controller).
+
+It keeps no reference of its own to the DLL object after binding, and a
+ctypes function doesn't refer back to its DLL. But ctypes caches every
+function looked up on a DLL object as an attribute of that object, so the
+object pcan_active.py binds from carries CAN_Write once a polled session has
+looked it up, and the DLL itself stays loaded in the process. So the
+guarantee is about code paths: nothing here, and nothing reachable from a
+ReadOnlyPcan or a PcanChannel, names or calls CAN_Write, which the structural
+and reachability tests check. The one CAN_Write lookup is in pcan_active.py,
+which only a polled session uses.
 """
 
 from __future__ import annotations
