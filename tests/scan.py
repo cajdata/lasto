@@ -247,7 +247,55 @@ def deliberate_routes(module: str, tree: ast.AST) -> list[tuple[str, str]]:
                 and not (isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"})
             ):
                 found.append((f"private attribute .{node.attr}", line))
+    found += [(route, f"{module}:{line} (through {through})") for route, through, line in reexported_routes(tree, names)]
     return found
+
+
+# Modules also followed through re-exports (review finding L11): the banned ones, and serial, which only
+# safety/stn_port.py may import, and only directly.
+REEXPORT_WATCHED = BANNED_MODULES | {"serial"}
+
+
+def _is_lasto(module: str) -> bool:
+    return module == "lasto" or module.startswith("lasto.")
+
+
+def _landing(target: Target) -> str | None:
+    """The watched module a resolved name lands in or on (ctypes itself, or ctypes.CDLL), if any."""
+    root = target[1].split(".")[0]
+    return root if root in REEXPORT_WATCHED else None
+
+
+def reexported_routes(tree: ast.AST, names: dict[str, tuple[str, ...]]) -> list[tuple[str, str, int]]:
+    """(watched module, the lasto module it came through, line) for every imported name or attribute chain that
+    reaches a banned module, or serial, through a lasto module's own import of it (review finding L11).
+
+    `from lasto.operations.keep_awake import ctypes`, `keep_awake.ctypes.WinDLL`, and
+    `from lasto.safety.hotkey import wintypes` all reach ctypes without an import of ctypes, which is all the
+    direct check sees. A direct import, or a chain from one (`ctypes.CDLL`), is left to that check.
+    """
+    found: dict[tuple[str, int], str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0 and _is_lasto(node.module):
+            for alias in node.names:
+                landed = _landing(resolve_member(node.module, alias.name))
+                if landed is not None:
+                    found.setdefault((landed, node.lineno), node.module)
+        elif isinstance(node, ast.Attribute):
+            chain = attribute_chain(node)
+            if not chain or chain[0] not in names:
+                continue
+            target = resolve_binding(names[chain[0]])
+            for attr in chain[1:]:
+                if target[0] != "module" or not _is_lasto(target[1]):
+                    break
+                through = target[1]
+                target = resolve_member(through, attr)
+                landed = _landing(target)
+                if landed is not None:
+                    found.setdefault((landed, node.lineno), through)
+                    break
+    return [(route, through, line) for (route, line), through in found.items()]
 
 
 # ---- changes to the safety core (finding #2) ----
