@@ -141,7 +141,8 @@ CREATE TABLE id_seconds (
 # - sessions: base_hw_us and base_utc_us are the session's time base (its first frame's hardware
 #   timestamp and the UTC it arrived at), which its segments' candump timestamps come from.
 # - seconds: where each second of traffic is (its two zstd frames in a segment file). second counts
-#   whole seconds from the session's first frame.
+#   whole seconds from the session's first frame, and only moves forward: the recorder puts a frame
+#   stamped back into a second already written into the next one.
 # - audit: an index of the run's JSON Lines audit log, which stays the record of truth (rule 11).
 #   record is the whole line.
 # - id_seconds: each ID's rollup for one second, which per-ID stats, charts, and the broadcast

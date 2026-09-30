@@ -135,6 +135,32 @@ def test_the_database_knows_a_segment_before_its_file_exists(conn, root, run):
     assert recorder.left_open and recorder.frames_not_written == 8
 
 
+def test_a_frame_stamped_back_into_a_written_second_goes_into_the_next_one(conn, root, run):
+    """Review finding L9: second 0 is written once the bus goes quiet; then frames stamped in it, or before
+    the session began, arrive. A second is never numbered twice, so they start second 1."""
+    clock = FakeClock()
+    recorder = start(conn, root, run, clock, frames_for(0)[0])
+    for frame in frames_for(0):
+        recorder.add(frame)
+    clock.advance(FLUSH_AFTER)
+    recorder.flush_due()
+    recorder.add(Frame(HW0 + 500_000, 0x025, bytes(8)))  # stamped inside second 0, after it was written
+    recorder.add(Frame(HW0 - 2_000_000, 0x0B4, bytes(8)))  # stamped before the session's first frame
+    recorder.close("stopped")
+    assert recorder.error is None and not recorder.left_open
+    assert conn.execute("SELECT second, frames FROM seconds ORDER BY second").fetchall() == [(0, 4), (1, 2)]
+    assert conn.execute("SELECT frames FROM sessions").fetchone() == (6,)
+
+
+def test_a_frame_stamped_back_while_its_second_is_open_stays_in_it(conn, root, run):
+    clock = FakeClock()
+    recorder = start(conn, root, run, clock, frames_for(0)[0])
+    for frame in frames_for(0) + frames_for(1)[:1] + frames_for(0)[:1] + frames_for(1)[1:]:
+        recorder.add(frame)
+    recorder.close("stopped")
+    assert conn.execute("SELECT second, frames FROM seconds ORDER BY second").fetchall() == [(0, 4), (1, 5)]
+
+
 def test_the_time_base_and_anchors(conn, root, run):
     clock = FakeClock()
     recorder = start(conn, root, run, clock, frames_for(0)[0], anchor_every=10.0)

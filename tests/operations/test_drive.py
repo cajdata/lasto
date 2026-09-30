@@ -387,6 +387,20 @@ def test_a_channel_event_that_cannot_be_copied_stops_the_run_and_stays_in_the_au
     assert "listen_only_rechecked" in events
 
 
+def test_a_hardware_timestamp_that_steps_back_is_recorded_not_fatal(root, sim, on_bus, lines, reader):
+    """Review finding L9: after a quiet spell has written the last second, a frame stamped seconds earlier
+    arrives (as a timestamp might after a replug). It goes into the next second, and the capture goes on."""
+
+    def stamped_earlier() -> None:
+        sim.dll.channel(HANDLE).rx.append((pc.PCAN_ERROR_OK, pc.PCAN_MESSAGE_STANDARD, 0x0B4, bytes(8), 1001.5))
+
+    sim.bus.call_at(1003.0005, sim.vehicle.key_off)
+    sim.bus.call_at(1006.0005, stamped_earlier)
+    result = run(root, sim, lines, seconds=10.0)
+    assert result.end_reason == "time_limit"
+    assert sessions(reader())[0][3] == len(on_bus) + 1
+
+
 def test_the_simulator_needs_a_time_limit(root, sim, lines):
     with pytest.raises(ValueError, match="seconds"):
         drive(root, simulated(sim), seconds=None, report=lines.append)

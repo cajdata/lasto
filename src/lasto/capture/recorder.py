@@ -18,7 +18,10 @@ Storage failures (review finding L8): nothing the recorder was given is dropped.
   what reached disk. What reached neither is counted in frames_not_written.
 
 Time:
-- A second is a whole second of hardware time from the session's first frame.
+- A second is a whole second of hardware time from the session's first frame, and seconds only move
+  forward (review finding L9). A frame stamped at or before a second already sealed, as a timestamp
+  that steps back after a replug might be, goes into the next second instead of numbering one twice.
+  One stamped back while its second is still open stays in it.
 - Candump timestamps come from the session's time base: that first frame's hardware timestamp, and
   the UTC it arrived at.
 - A clock anchor (hardware timestamp, host UTC, host monotonic) is recorded every minute, for drift.
@@ -90,6 +93,7 @@ class Recorder:
         self._last_anchor = clock.monotonic()
         self._open: _Second | None = None  # the second being collected
         self._ready: list[_Second] = []  # seconds sealed but not committed, oldest first
+        self._floor = 0  # the lowest number a new second may take: one past the last one sealed
         self._events: list[tuple[str, BusEvent]] = []  # bus events not yet recorded, with their host UTC
         self._last: dict[tuple[int, bool], LastSeen] = {}
         self._segment_seq = 0
@@ -173,7 +177,7 @@ class Recorder:
             self._events.append((self._clock.utc_now().isoformat(), record))
             self._write_events()
             return
-        second = max(0, (record.hw_us - self._base.hw_us) // 1_000_000)
+        second = max(self._floor, (record.hw_us - self._base.hw_us) // 1_000_000)
         current = self._open
         if current is not None and second > current.second:
             self._seal()
@@ -236,7 +240,10 @@ class Recorder:
             self.error = exc
 
     def _seal(self) -> None:
-        self._ready.append(self._open)  # type: ignore[arg-type]
+        sealed = self._open
+        assert sealed is not None  # only called with a second open
+        self._ready.append(sealed)
+        self._floor = sealed.second + 1
         self._open = None
 
     def _write_ready(self) -> None:
