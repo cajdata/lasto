@@ -4,12 +4,14 @@ Blocks shell commands that could reach real vehicle hardware: the --live flag
 (and abbreviations argparse might accept), PCAN channel names, COM ports,
 serial devices, and inline code that opens PCAN or serial directly.
 
-Asks before any shell command that names a safety core path, so a shell edit
-can't route around the ask rule on Edit(src/lasto/safety/**).
+Asks before any shell command that names a safety core path, or
+operations/keep_awake.py (the one ctypes use outside the core, review finding
+L10), so a shell edit can't route around the ask rules on Edit.
 
 Asks before launching a subagent or workflow whose instructions mention
-hardware or the safety core. Subagents don't run this project's hooks or read
-CLAUDE.md, and CLAUDE.md says that work isn't delegated.
+hardware, the safety core, or keep_awake.py. Subagents don't run this
+project's hooks or read CLAUDE.md, and CLAUDE.md says that work isn't
+delegated.
 
 Fails closed: if the hook input can't be parsed, the tool call is blocked.
 Standard library only, so it runs without the project environment.
@@ -43,6 +45,10 @@ BLOCK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 
 SAFETY_CORE_PATH = re.compile(r"src[\\/]+lasto[\\/]+safety", re.IGNORECASE)
 SAFETY_CORE_ANY = re.compile(r"src[\\/]+lasto[\\/]+safety|\blasto\.safety\b|\bsafety core\b", re.IGNORECASE)
+KEEP_AWAKE_PATH = re.compile(r"src[\\/]+lasto[\\/]+operations[\\/]+keep_awake", re.IGNORECASE)
+KEEP_AWAKE_ANY = re.compile(
+    r"src[\\/]+lasto[\\/]+operations[\\/]+keep_awake|\blasto\.operations\.keep_awake\b|\bkeep_awake\.py\b", re.IGNORECASE
+)
 
 
 def collect_strings(value: object) -> list[str]:
@@ -71,6 +77,8 @@ def decide(event: dict) -> tuple[str, str] | None:
         hits = [what for pattern, what in BLOCK_PATTERNS if pattern.search(text)]
         if SAFETY_CORE_ANY.search(text):
             hits.append("the safety core")
+        if KEEP_AWAKE_ANY.search(text):
+            hits.append("keep_awake.py (ctypes outside the safety core)")
         if hits:
             return (
                 "ask",
@@ -93,6 +101,12 @@ def decide(event: dict) -> tuple[str, str] | None:
             "ask",
             "lasto hardware guard: this shell command names a safety core path "
             "(src/lasto/safety). Safety core changes need the user's approval.",
+        )
+    if KEEP_AWAKE_PATH.search(text):
+        return (
+            "ask",
+            "lasto hardware guard: this shell command names src/lasto/operations/keep_awake.py, the one ctypes "
+            "use outside the safety core. Changes to it need the user's approval.",
         )
     return None
 
