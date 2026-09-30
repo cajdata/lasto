@@ -127,10 +127,12 @@ def test_the_database_knows_a_segment_before_its_file_exists(conn, root, run):
     recorder = start(conn, root, run, clock, frames_for(0)[0])
     [(folder,)] = conn.execute("SELECT folder FROM sessions").fetchall()
     root.absolute(f"{folder}/seg-0001.candump.zst").write_bytes(b"")  # creating the file fails
-    with pytest.raises(FileExistsError):
-        for frame in frames_for(0) + frames_for(1):
-            recorder.add(frame)
+    for frame in frames_for(0) + frames_for(1):
+        recorder.add(frame)
+    assert isinstance(recorder.error, FileExistsError)  # kept and reported, never raised (review finding L8)
     assert conn.execute("SELECT seq, path FROM segments").fetchall() == [(1, f"{folder}/seg-0001.candump.zst")]
+    recorder.close("stopped")
+    assert recorder.left_open and recorder.frames_not_written == 8
 
 
 def test_the_time_base_and_anchors(conn, root, run):

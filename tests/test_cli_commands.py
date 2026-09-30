@@ -88,11 +88,12 @@ def test_a_second_capture_is_refused(data, capsys):
     assert "another capture is running" in capsys.readouterr().err
 
 
-def test_a_run_that_lost_its_channel_exits_with_an_error(data, monkeypatch):
-    def lost(root, source, *, seconds, report):
-        return DriveResult("run", ("session",), 12, "channel_lost", Recovery((), ()))
+@pytest.mark.parametrize("reason", ["channel_lost", "storage_error"])
+def test_a_run_that_lost_its_channel_or_its_storage_exits_with_an_error(data, monkeypatch, reason):
+    def stopped(root, source, *, seconds, report):
+        return DriveResult("run", ("session",), 12, reason, Recovery((), ()))
 
-    monkeypatch.setattr(drive_operation, "drive", lost)
+    monkeypatch.setattr(drive_operation, "drive", stopped)
     assert run("drive", "--seconds", "3", "--data", data) == 1
 
 

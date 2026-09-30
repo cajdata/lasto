@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 
 import pytest
 import zstandard
@@ -119,6 +120,94 @@ def test_a_segment_over_a_stream_leaves_it_open():
     segment.write_second(0, second(1_000_000_000))
     segment.close()
     assert not buffer.closed
+
+
+class FailingStream(io.BytesIO):
+    """A segment's file whose writes fail on demand: partway through a block, or taking nothing at all."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_writes = 0
+        self.takes_nothing = False
+        self.cut_fails = False
+
+    def write(self, data) -> int:
+        if self.takes_nothing:
+            return 0
+        if self.fail_writes:
+            self.fail_writes -= 1
+            super().write(bytes(data[: len(data) // 2]))  # half the block reaches the file
+            raise OSError(28, "No space left on device")
+        return super().write(data)
+
+    def truncate(self, size=None) -> int:
+        if self.cut_fails:
+            raise OSError(5, "Input/output error")
+        return super().truncate(size)
+
+
+def test_a_write_that_fails_partway_is_cut_back_off_the_file():
+    """So the file still ends with a whole second, and the same second can be written again (review finding L8)."""
+    stream = FailingStream()
+    segment = SegmentFile(stream, BASE)
+    first = segment.write_second(0, second(1_000_000_000))
+    before = stream.getvalue()
+    stream.fail_writes = 1
+    with pytest.raises(OSError, match="No space"):
+        segment.write_second(1, second(1_001_000_000))
+    assert stream.getvalue() == before  # the half-written second is gone
+    retried = segment.write_second(1, second(1_001_000_000))
+    assert retried[0] == first[1]  # where the failed one would have gone
+    seconds, good_length = read_segment(stream.getvalue(), BASE)
+    assert [block.seq for block in seconds] == [0, 1] and good_length == len(stream.getvalue())
+
+
+def test_a_failed_fsync_is_cut_back_too(tmp_path, monkeypatch):
+    path = tmp_path / "seg.candump.zst"
+    segment = SegmentFile(path, BASE)
+    first = segment.write_second(0, second(1_000_000_000))
+    real_fsync, calls = os.fsync, []
+
+    def fsync_fails_once(fd: int) -> None:
+        calls.append(fd)
+        if len(calls) == 1:
+            raise OSError(5, "Input/output error")
+        real_fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fsync_fails_once)
+        with pytest.raises(OSError, match="Input/output"):
+            segment.write_second(1, second(1_001_000_000))
+        assert path.stat().st_size == first[1]  # the unsynced second is cut back off, and the cut synced
+    segment.write_second(1, second(1_001_000_000))
+    segment.close()
+    assert [block.seq for block in read_segment(path, BASE)[0]] == [0, 1]
+
+
+def test_a_segment_that_cannot_be_cut_back_writes_nothing_more():
+    """Whatever follows a torn second can't be read, so nothing is written after one."""
+    stream = FailingStream()
+    segment = SegmentFile(stream, BASE)
+    segment.write_second(0, second(1_000_000_000))
+    stream.fail_writes, stream.cut_fails = 1, True
+    with pytest.raises(OSError, match="No space"):
+        segment.write_second(1, second(1_001_000_000))
+    torn = stream.getvalue()
+    with pytest.raises(OSError, match="can't take another second"):
+        segment.write_second(2, second(1_002_000_000))
+    assert stream.getvalue() == torn
+    assert [block.seq for block in read_segment(torn, BASE)[0]] == [0]
+
+
+def test_a_file_that_takes_no_bytes_is_a_failed_write():
+    stream = FailingStream()
+    segment = SegmentFile(stream, BASE)
+    stream.takes_nothing = True
+    with pytest.raises(OSError, match="took no bytes"):
+        segment.write_second(0, second(1_000_000_000))
+    stream.takes_nothing = False
+    segment.write_second(0, second(1_000_000_000))
+    assert [block.seq for block in read_segment(stream.getvalue(), BASE)[0]] == [0]
 
 
 def test_one_second_can_be_read_by_its_place(tmp_path):

@@ -11,6 +11,9 @@ reads.
 
 Durability:
 - The writer fsyncs after every second, and it never opens a file that already exists.
+- A write that fails is cut back off the file, so the file still ends with a whole second and the
+  same second can be written again (review finding L8). If even the cut fails, the file takes no more
+  seconds: anything after a torn one couldn't be read.
 - The reader stops at the first truncated or corrupt frame, so a crash costs at most the second
   being written.
 
@@ -121,27 +124,55 @@ class SegmentFile:
     """One segment file being written, a second at a time, each fsynced before write_second returns."""
 
     def __init__(self, target: Path | BinaryIO, base: TimeBase) -> None:
-        """A path opens a new file (never one that exists); a binary stream is written as it is (tests)."""
+        """A path opens a new file (never one that exists); a binary stream is written as it is (tests).
+
+        The file is unbuffered, so a failed write leaves nothing waiting in a buffer to reach the file later.
+        """
         self._owned = isinstance(target, str | os.PathLike)
-        self._file: BinaryIO = open(target, "xb") if self._owned else target  # type: ignore[assignment,arg-type]
+        self._file: BinaryIO = open(target, "xb", buffering=0) if self._owned else target  # type: ignore[assignment,arg-type]
         self._base = base
         self._compressor = zstandard.ZstdCompressor(level=3, write_checksum=True, write_content_size=True)
-        self._offset = 0
+        self._offset = 0  # where the last whole second ends
+        self._torn = False  # a failed write couldn't be cut back
 
     def write_second(self, seq: int, frames: Sequence[Frame]) -> tuple[int, int]:
         """Write one second's frames, in order. Returns where it went: (byte offset, byte length)."""
         if not frames:
             raise ValueError("a second in a segment holds at least one frame")
+        if self._torn:
+            raise OSError("this segment ends in a torn second, so it can't take another second")
         text = "".join(candump_line(frame, self._base) for frame in frames).encode("ascii")
         data = self._compressor.compress(text)
         index = _INDEX.pack(_TAG, FORMAT_VERSION, seq, frames[0].hw_us, frames[-1].hw_us, len(frames), len(data))
         block = _HEADER.pack(SKIPPABLE_MAGIC, len(index)) + index + data
-        self._file.write(block)
-        self._file.flush()
-        if self._owned:
-            os.fsync(self._file.fileno())
+        try:
+            self._write_all(block)
+            self._file.flush()
+            if self._owned:
+                os.fsync(self._file.fileno())
+        except BaseException:
+            self._cut_back()
+            raise
         offset, self._offset = self._offset, self._offset + len(block)
         return offset, len(block)
+
+    def _write_all(self, block: bytes) -> None:
+        view = memoryview(block)
+        while view:
+            written = self._file.write(view)
+            if not written:
+                raise OSError("the segment file took no bytes")
+            view = view[written:]
+
+    def _cut_back(self) -> None:
+        """Cut a failed write off the file, so it ends with its last whole second again."""
+        try:
+            self._file.seek(self._offset)
+            self._file.truncate()
+            if self._owned:
+                os.fsync(self._file.fileno())
+        except Exception:
+            self._torn = True
 
     def close(self) -> None:
         if self._owned:

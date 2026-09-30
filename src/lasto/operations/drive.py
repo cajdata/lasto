@@ -3,9 +3,13 @@
 One run is one process holding one channel open, listen-only, for as long as it runs:
 - A session starts with the first frame. It ends after 60 s without one (the key turned off), and the
   next frame starts a new session (§0).
-- The run stops on Ctrl+C, Ctrl+Break, the stop file in the data folder, the time limit, or when the
-  safety core gives up on the channel. Every one takes the same path: close the session, close the
-  channel, index the audit log, and end the run.
+- The run stops on Ctrl+C, Ctrl+Break, the stop file in the data folder, the time limit, a storage
+  failure, or when the safety core gives up on the channel. Every one takes the same path: read the
+  channel once more, close the session, close the channel, index the audit log, and end the run.
+- A storage failure never loses a drained frame silently, and never keeps the channel from closing
+  (review finding L8). The recorder keeps what it was given and tries once more as the session
+  closes; a session with anything still uncommitted is left open for the next capture's recovery.
+  The failure and what it cost are recorded as a storage_error run event.
 - Before it opens the channel, it takes the capture lock and recovers whatever an interrupted capture
   left open.
 - Once a second it indexes the audit log, writes the live feed, and checks for the stop file.
@@ -243,13 +247,19 @@ class _Capture:
         self.live = LiveFeed(root.live_db, on_change=self._live_feed_changed)
         self.recorder: Recorder | None = None
         self.sessions: list[str] = []
-        self.total = 0
+        self.total = 0  # frames read from the channel
         self.session_errors = 0
         self.last_frame_at = 0.0
         self.tick_frames = 0
         self.tick_started = self.clock.monotonic()
         self.frames_per_second = 0
         self.bus: str | None = None
+        # Storage failures (L8): the first one, and what it cost.
+        self.storage_error: Exception | None = None
+        self.left_open: list[str] = []
+        self.frames_not_written = 0
+        self.frames_not_indexed = 0
+        self.events_not_written = 0
 
     def run(self, auditor: Auditor, stop: _Stop, seconds: float | None) -> str:
         """Open the channel, capture until something stops it, and close everything. Returns why it stopped."""
@@ -265,37 +275,90 @@ class _Capture:
         try:
             self._describe()
             reason = self._loop(session, stop, seconds)
+            self.report(f"Stopping ({reason}).")
+            if not session.ended:
+                self._take(to_records(session.pump()), self.clock.monotonic())  # what arrived since the last read
         finally:
             try:
                 if self.recorder is not None:
-                    self.recorder.close(reason)
-                    self.recorder = None
+                    recorder, self.recorder = self.recorder, None
+                    self._close(recorder, reason)
             finally:
                 session.close()
+                if self.storage_error is not None:
+                    reason = "storage_error"
                 self._finish(reason)
         return reason
 
     def _finish(self, reason: str) -> None:
         try:
-            self._mirror(self.audit.catch_up())
+            self._store(lambda: self._mirror(self.audit.catch_up()))
             self.live.publish(self._status("stopped"))
         finally:
             self.live.close()
-            capture_db.end_run(self.conn, self.run_id, ended_utc=self.clock.utc_now().isoformat(), end_reason=reason)
+            if self.storage_error is not None:
+                self._record_storage_error(self.storage_error)
+            try:
+                capture_db.end_run(self.conn, self.run_id, ended_utc=self.clock.utc_now().isoformat(), end_reason=reason)
+            except Exception as exc:
+                self.report(f"The run couldn't be ended in the capture database ({exc!r}); the next capture ends it.")
+
+    def _store(self, write: Callable[[], object]) -> bool:
+        """One of the capture's own database writes. A failure stops the run; it never raises."""
+        try:
+            write()
+        except Exception as exc:
+            self._storage_failed(exc)
+            return False
+        return True
+
+    def _storage_failed(self, error: Exception) -> None:
+        if self.storage_error is None:
+            self.storage_error = error
+            self.report(f"Storage failed ({error!r}). Stopping the capture.")
+
+    def _record_storage_error(self, error: Exception) -> None:
+        detail: dict[str, object] = {
+            "error": f"{type(error).__name__}: {error}",
+            "sessions_left_open": self.left_open,
+            "frames_not_written": self.frames_not_written,
+            "frames_not_indexed": self.frames_not_indexed,
+            "events_not_written": self.events_not_written,
+        }
+        try:
+            capture_db.add_event(
+                self.conn,
+                run_id=self.run_id,
+                session_key=None,
+                host_utc=self.clock.utc_now().isoformat(),
+                hw_us=None,
+                kind="storage_error",
+                detail=detail,
+            )
+        except Exception as exc:
+            self.report(f"The storage error couldn't be recorded in the capture database either ({exc!r}).")
+        self.report(
+            f"Storage error: {detail['error']}. Sessions left open for the next capture's recovery:"
+            f" {len(self.left_open)}. Frames on disk that it will index: {self.frames_not_indexed:,}."
+            f" Frames that couldn't be written: {self.frames_not_written:,}."
+        )
 
     def _describe(self) -> None:
         """Record what the channel reported when it opened, from its session_opened audit record."""
-        lines = self.audit.catch_up()
+        lines: list[AuditLine] = []
+        self._store(lambda: lines.extend(self.audit.catch_up()))
         for line in lines:
             if line.event == "session_opened":
                 opened = json.loads(line.record)
                 hardware, api_version = str(opened.get("hardware", "")), str(opened.get("api_version", ""))
-                capture_db.describe_run(
-                    self.conn,
-                    self.run_id,
-                    hardware=hardware,
-                    api_version=api_version,
-                    channel_version=str(opened.get("channel_version", "")),
+                self._store(
+                    lambda: capture_db.describe_run(
+                        self.conn,
+                        self.run_id,
+                        hardware=hardware,
+                        api_version=api_version,
+                        channel_version=str(opened.get("channel_version", "")),
+                    )
                 )
                 self.report(
                     f"Run {self.run_id}: listen-only confirmed on {self.source.channel}"
@@ -323,6 +386,8 @@ class _Capture:
             if now >= next_progress:
                 next_progress += PROGRESS
                 self._progress(now - start)
+            if self.storage_error is not None:
+                return "storage_error"
             if stop.reason is not None:
                 return stop.reason
             if deadline is not None and now >= deadline:
@@ -332,10 +397,11 @@ class _Capture:
     def _take(self, records: list[Record], now: float) -> None:
         for record in records:
             if isinstance(record, Frame):
-                if self.recorder is None:
-                    self._start_session(record)
-                self.recorder.add(record)  # type: ignore[union-attr]
                 self.total += 1
+                if self.recorder is None and (self.storage_error is not None or not self._start_session(record)):
+                    self.frames_not_written += 1  # no session could take it
+                    continue
+                self.recorder.add(record)  # type: ignore[union-attr]
                 self.tick_frames += 1
                 self.session_errors += record.error
                 self.last_frame_at = now
@@ -343,42 +409,64 @@ class _Capture:
                 self._bus_event(record)
         if self.recorder is not None:
             self.recorder.flush_due()
+            if self.recorder.error is not None:
+                self._storage_failed(self.recorder.error)
 
-    def _start_session(self, first: Frame) -> None:
-        self.recorder = Recorder.start(
-            self.conn, self.root, run_id=self.run_id, vehicle_id=self.vehicle_id, first=first, clock=self.clock
-        )
+    def _start_session(self, first: Frame) -> bool:
+        try:
+            self.recorder = Recorder.start(
+                self.conn, self.root, run_id=self.run_id, vehicle_id=self.vehicle_id, first=first, clock=self.clock
+            )
+        except Exception as exc:
+            self._storage_failed(exc)
+            return False
         self.sessions.append(self.recorder.session_id)
         self.session_errors = 0
         self.report(f"Session {self.recorder.session_id} started.")
+        return True
+
+    def _close(self, recorder: Recorder, reason: str) -> None:
+        """Close a session. After a storage failure this is its one more try; it may leave the session open."""
+        recorder.close(reason)
+        self.frames_not_written += recorder.frames_not_written
+        self.frames_not_indexed += recorder.frames_not_indexed
+        self.events_not_written += recorder.events_not_written
+        if recorder.error is not None:
+            self._storage_failed(recorder.error)
+        if recorder.left_open:
+            self.left_open.append(recorder.session_id)
+            self.report(f"Session {recorder.session_id} is left open; the next capture recovers it.")
 
     def _bus_event(self, event: BusEvent) -> None:
         self.bus = f"0x{event.status:05X}"
         if self.recorder is not None:
             self.recorder.add(event)
             return
-        capture_db.add_event(
-            self.conn,
-            run_id=self.run_id,
-            session_key=None,
-            host_utc=self.clock.utc_now().isoformat(),
-            hw_us=event.hw_us,
-            kind=event.kind,
-            detail={"status": self.bus},
-        )
+        if self.storage_error is not None or not self._store(
+            lambda: capture_db.add_event(
+                self.conn,
+                run_id=self.run_id,
+                session_key=None,
+                host_utc=self.clock.utc_now().isoformat(),
+                hw_us=event.hw_us,
+                kind=event.kind,
+                detail={"status": self.bus},
+            )
+        ):
+            self.events_not_written += 1
 
     def _check_silence(self, now: float) -> None:
         if self.recorder is None or now - self.last_frame_at < self.silence:
             return
         recorder, self.recorder = self.recorder, None
-        recorder.close("bus_silent")
+        self._close(recorder, "bus_silent")
         self.report(
             f"Session {recorder.session_id} ended after {self.silence:.0f} s without traffic: {recorder.frames:,} frames."
             " Waiting for traffic."
         )
 
     def _tick(self, now: float) -> None:
-        self._mirror(self.audit.catch_up())
+        self._store(lambda: self._mirror(self.audit.catch_up()))
         elapsed = now - self.tick_started
         self.frames_per_second = round(self.tick_frames / elapsed) if elapsed > 0 else 0
         self.tick_frames, self.tick_started = 0, now
@@ -394,15 +482,19 @@ class _Capture:
             if line.event not in MIRRORED:
                 continue
             detail = {key: value for key, value in json.loads(line.record).items() if key not in ("event", "utc", "mono")}
-            capture_db.add_event(
-                self.conn,
-                run_id=self.run_id,
-                session_key=None if self.recorder is None else self.recorder.session_key,
-                host_utc=line.utc,
-                hw_us=None,
-                kind=line.event,
-                detail=detail,
+            written = self._store(
+                lambda: capture_db.add_event(
+                    self.conn,
+                    run_id=self.run_id,
+                    session_key=None if self.recorder is None else self.recorder.session_key,
+                    host_utc=line.utc,
+                    hw_us=None,
+                    kind=line.event,
+                    detail=detail,
+                )
             )
+            if not written:
+                return  # the audit table and the audit log itself still hold it
 
     def _status(self, state: str) -> LiveStatus:
         recorder = self.recorder if state != "stopped" else None
@@ -423,13 +515,15 @@ class _Capture:
 
     def _live_feed_changed(self, error: str | None) -> None:
         kind, detail = ("live_feed_failed", {"error": error}) if error is not None else ("live_feed_restored", {})
-        capture_db.add_event(
-            self.conn,
-            run_id=self.run_id,
-            session_key=None,
-            host_utc=self.clock.utc_now().isoformat(),
-            hw_us=None,
-            kind=kind,
-            detail=detail,
+        self._store(
+            lambda: capture_db.add_event(
+                self.conn,
+                run_id=self.run_id,
+                session_key=None,
+                host_utc=self.clock.utc_now().isoformat(),
+                hw_us=None,
+                kind=kind,
+                detail=detail,
+            )
         )
         self.report("The live feed can't be written; capture goes on." if error else "The live feed is written again.")

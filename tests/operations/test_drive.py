@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 import signal
+import sqlite3
 import threading
 import time
 
 import pytest
 
+from lasto.capture.recovery import recover
 from lasto.operations.drive import DriveResult, drive, simulated, truck
 from lasto.operations.keep_awake import ES_CONTINUOUS, ES_SYSTEM_REQUIRED, KeepAwake
 from lasto.safety import pcan_constants as pc
@@ -260,6 +262,129 @@ def test_the_truck_is_the_real_driver_on_the_system_clock():
     source = truck("PCAN_USBBUS1")
     assert source.live and source.library is None and source.interface == "pcan"
     assert type(source.clock) is SystemClock
+
+
+def failing_from(real, first_failing_call: int, last_failing_call: int | None = None):
+    """A storage call that fails from its nth call on (or only up to a last one), like a disk that fills or hiccups."""
+    calls = []
+
+    def stand_in(*args, **kwargs):
+        calls.append(1)
+        if len(calls) >= first_failing_call and (last_failing_call is None or len(calls) <= last_failing_call):
+            raise sqlite3.OperationalError("disk I/O error")
+        return real(*args, **kwargs)
+
+    return stand_in
+
+
+def storage_errors(conn) -> list[dict]:
+    return [json.loads(detail) for (detail,) in conn.execute("SELECT detail FROM events WHERE kind = 'storage_error'")]
+
+
+def test_a_storage_error_stops_the_run_and_loses_no_drained_frame(root, sim, on_bus, lines, reader, monkeypatch):
+    """Review finding L8: the database fails from the fourth second on. Everything drained reaches the segment,
+    the session is left open, and the next capture's recovery indexes all of it."""
+    monkeypatch.setattr(capture_db, "record_second", failing_from(capture_db.record_second, 4))
+    result = run(root, sim, lines, seconds=10.0)
+    assert result.end_reason == "storage_error" and sim.clock.monotonic() < 1006.0
+    assert result.frames == len(on_bus)
+    conn = reader()
+    [(session, state, *_)] = sessions(conn)
+    assert state == "open"
+    [error] = storage_errors(conn)
+    assert error["sessions_left_open"] == [session] and error["frames_not_written"] == 0
+    assert error["frames_not_indexed"] > 0 and "disk I/O error" in error["error"]
+    assert conn.execute("SELECT end_reason FROM runs").fetchone() == ("storage_error",)
+    assert any(line.startswith("Storage failed") for line in lines)
+    monkeypatch.undo()
+    writer = capture_db.open_capture(root)
+    try:
+        [recovered] = recover(writer, root, now_utc="2026-09-26T19:00:00+00:00").sessions
+    finally:
+        writer.close()
+    assert recovered.seconds_indexed > 0
+    assert sessions(reader())[0][1:4] == ("recovered", "interrupted", len(on_bus))  # every frame the bus carried
+
+
+def test_a_storage_error_that_passes_is_retried_before_the_session_closes(root, sim, on_bus, lines, reader, monkeypatch):
+    monkeypatch.setattr(capture_db, "record_second", failing_from(capture_db.record_second, 4, 4))
+    result = run(root, sim, lines, seconds=10.0)
+    assert result.end_reason == "storage_error"  # the run still stops: storage failed once
+    conn = reader()
+    assert sessions(conn)[0][1:4] == ("closed", "storage_error", len(on_bus))
+    [error] = storage_errors(conn)
+    assert error["sessions_left_open"] == [] and error["frames_not_written"] == 0
+
+
+def test_the_channel_is_read_once_more_before_it_closes(root, sim, on_bus, reader):
+    def report(line: str) -> None:
+        if line.startswith("Stopping"):
+            sim.dll.inject_frame(HANDLE, 0x123, b"\x01\x02")  # arrives after the loop's last read
+
+    sim.bus.call_at(1003.0005, root.stop_file.touch)
+    drive(root, simulated(sim), seconds=10.0, report=report)
+    assert sessions(reader())[0][3] == len(on_bus) + 1
+
+
+def test_a_storage_error_while_waiting_for_traffic_stops_the_run(root, sim, lines, reader, monkeypatch):
+    real = capture_db.add_event
+
+    def add_event(conn, **fields):
+        if fields["kind"] == "status":
+            raise sqlite3.OperationalError("disk I/O error")
+        return real(conn, **fields)
+
+    monkeypatch.setattr(capture_db, "add_event", add_event)
+    sim.vehicle.key_off()
+    sim.bus.call_at(1002.0005, lambda: sim.dll.inject_status(HANDLE, pc.PCAN_ERROR_BUSLIGHT))
+    result = run(root, sim, lines, seconds=10.0)
+    assert result.end_reason == "storage_error" and sim.clock.monotonic() < 1003.0
+    [error] = storage_errors(reader())
+    assert error["sessions_left_open"] == [] and error["events_not_written"] == 1
+
+
+def test_frames_for_a_session_that_could_not_start_are_counted(root, sim, on_bus, lines, reader, monkeypatch):
+    monkeypatch.setattr(capture_db, "open_session", failing_from(capture_db.open_session, 1))
+    result = run(root, sim, lines, seconds=10.0)
+    assert result.end_reason == "storage_error" and result.sessions == ()
+    [error] = storage_errors(reader())
+    assert error["frames_not_written"] == len(on_bus) == result.frames
+
+
+def test_a_run_that_cannot_be_ended_is_left_for_the_next_capture(root, sim, lines, reader, monkeypatch):
+    monkeypatch.setattr(capture_db, "end_run", failing_from(capture_db.end_run, 1))
+    result = run(root, sim, lines, seconds=2.0)
+    assert result.end_reason == "time_limit"  # the capture itself went fine
+    assert any("couldn't be ended" in line for line in lines)
+    assert reader().execute("SELECT ended_utc FROM runs").fetchone() == (None,)
+    monkeypatch.undo()
+    assert run(root, sim, lines, seconds=1.0).recovery.runs == (result.run_id,)
+
+
+def test_a_storage_error_that_cannot_be_recorded_is_still_reported(root, sim, lines, monkeypatch):
+    monkeypatch.setattr(capture_db, "add_event", failing_from(capture_db.add_event, 1))
+    sim.vehicle.key_off()
+    sim.bus.call_at(1002.0005, lambda: sim.dll.inject_status(HANDLE, pc.PCAN_ERROR_BUSLIGHT))
+    assert run(root, sim, lines, seconds=10.0).end_reason == "storage_error"
+    assert any("couldn't be recorded in the capture database either" in line for line in lines)
+    assert any(line.startswith("Storage error: OperationalError: disk I/O error") for line in lines)
+
+
+def test_a_channel_event_that_cannot_be_copied_stops_the_run_and_stays_in_the_audit_log(
+    root, sim, lines, reader, monkeypatch
+):
+    real = capture_db.add_event
+
+    def add_event(conn, **fields):
+        if fields["kind"] == "listen_only_rechecked":
+            raise sqlite3.OperationalError("disk I/O error")
+        return real(conn, **fields)
+
+    monkeypatch.setattr(capture_db, "add_event", add_event)
+    sim.bus.call_at(1002.0005, lambda: sim.dll.inject_status(HANDLE, pc.PCAN_ERROR_OK))  # the controller (re)activated
+    assert run(root, sim, lines, seconds=10.0).end_reason == "storage_error"
+    events = [event for (event,) in reader().execute("SELECT event FROM audit")]
+    assert "listen_only_rechecked" in events
 
 
 def test_the_simulator_needs_a_time_limit(root, sim, lines):

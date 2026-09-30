@@ -167,7 +167,7 @@ def _drive(args: argparse.Namespace) -> int:
         result = capture.drive(root, source, seconds=seconds, report=print)
     except capture.CANNOT_START as exc:
         return _fail(str(exc))
-    return 1 if result.end_reason == "channel_lost" else 0
+    return 1 if result.end_reason in ("channel_lost", "storage_error") else 0
 
 
 # ---- log ----
