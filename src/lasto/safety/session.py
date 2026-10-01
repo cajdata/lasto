@@ -121,6 +121,20 @@ class PassiveSession(metaclass=SealedType):
         return items
 
     def _distrust(self, reason: str, status: int | None) -> None:
+        """Close the channel and reopen it from scratch, or end the session.
+
+        An audit record that can't be written (a full disk) stops the session instead: whatever channel it
+        holds is closed, nothing is reopened on top of a failing log, and the failure is raised. So a channel
+        that changed under the session is never left running because its reason couldn't be written.
+        """
+        try:
+            self._close_and_reopen(reason, status)
+        except BaseException:
+            self._channel.close()
+            self._stop_unrecorded("the audit log failed while the channel was distrusted")
+            raise
+
+    def _close_and_reopen(self, reason: str, status: int | None) -> None:
         self._auditor.event(
             "passive_channel_distrusted",
             channel=self._channel_name,
@@ -155,16 +169,27 @@ class PassiveSession(metaclass=SealedType):
 
     def _end(self, reason: str) -> None:
         self._end_reason = reason
-        self._auditor.event("session_ended", mode="passive", reason=reason)
+        try:
+            self._auditor.event("session_ended", mode="passive", reason=reason)
+        finally:
+            REFUSALS.detach(self._auditor)
+
+    def _stop_unrecorded(self, reason: str) -> None:
+        """End the session without writing to the audit log, which just failed."""
+        if self._end_reason is None:
+            self._end_reason = reason
         REFUSALS.detach(self._auditor)
 
     def close(self) -> None:
+        """Close the channel, then record it. The log is let go even if that record can't be written."""
         if self.ended:
             return
         uninitialized = self._channel.close()
         self._end_reason = "closed"
-        self._auditor.event("session_closed", mode="passive", channel_uninitialized=uninitialized)
-        REFUSALS.detach(self._auditor)
+        try:
+            self._auditor.event("session_closed", mode="passive", channel_uninitialized=uninitialized)
+        finally:
+            REFUSALS.detach(self._auditor)
 
 
 def open_passive_session(
