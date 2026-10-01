@@ -50,6 +50,11 @@ ASK = [
     ("Task", {"prompt": "Run lasto drive --live and report"}),
     ("Workflow", {"script": "agent('open PCAN_USBBUS1 and read frames')"}),
     ("Workflow", {"script": "agent('check lasto.safety.policy')"}),
+    # keep_awake.py, the one ctypes use outside the safety core (review finding L10).
+    ("Bash", {"command": "sed -i 's/a/b/' src/lasto/operations/keep_awake.py"}),
+    ("PowerShell", {"command": "Set-Content src\\lasto\\operations\\keep_awake.py 'x'"}),
+    ("Agent", {"prompt": "Tidy src/lasto/operations/keep_awake.py"}),
+    ("Workflow", {"script": "agent('add a function to lasto.operations.keep_awake')"}),
 ]
 
 ALLOW = [

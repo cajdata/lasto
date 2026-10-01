@@ -8,9 +8,9 @@ import subprocess
 import sys
 
 import pytest
-from helpers import CHANNEL, HANDLE, GateHarness, events, open_polled
+from helpers import CHANNEL, HANDLE, GateHarness, events, open_polled, records_in
 
-from lasto.safety import isotp, pcan_dll
+from lasto.safety import audit, isotp, pcan_dll
 from lasto.safety import pcan_constants as pc
 from lasto.safety import requests as rq
 from lasto.safety import stn_policy
@@ -395,6 +395,108 @@ except ValueError:
 def test_a_process_that_exits_with_refusals_held_reports_them():
     result = subprocess.run([sys.executable, "-c", HELD_AT_EXIT], capture_output=True, text=True, check=True)
     assert "1 audit records" in result.stderr and "pid_count" in result.stderr
+
+
+# ---- held records on disk (Phase 2, step B2) ----
+
+
+def test_held_records_go_to_disk_as_they_are_held(clock, tmp_path):
+    log = RefusalLog()
+    log.hold_on_disk(tmp_path / "held.jsonl")
+    _record(log, "a")
+    log.event("kill_switch", cause="hotkey")
+    on_disk = records_in(tmp_path / "held.jsonl")
+    assert [(r["kind"], r.get("reason")) for r in on_disk] == [("rejected", "a"), ("kill_switch", None)]
+    assert all("held_since" in r for r in on_disk)
+    log.attach(Auditor(MemoryAuditSink(), clock))
+    _record(log, "b")  # an audit log took it, so it wasn't held
+    assert len(records_in(tmp_path / "held.jsonl")) == 2
+    log.reset()
+
+
+def test_a_record_no_audit_log_could_take_goes_to_disk(clock, tmp_path):
+    log = RefusalLog()
+    log.hold_on_disk(tmp_path / "held.jsonl")
+    log.attach(Auditor(FailingSink(), clock))
+    with pytest.raises(OSError):
+        _record(log, "a")
+    assert [r["reason"] for r in records_in(tmp_path / "held.jsonl")] == ["a"]
+    log.reset()
+
+
+def test_the_held_records_file_is_set_once(clock, tmp_path):
+    sink = attached(clock)
+    log = RefusalLog()
+    log.hold_on_disk(tmp_path / "held.jsonl")
+    with pytest.raises(SafetyViolation) as refused:
+        log.hold_on_disk(tmp_path / "elsewhere.jsonl")
+    assert refused.value.reason == "held_records_file_already_set"
+    assert [(r["reason"], r["transport"]) for r in events(sink, "rejected")] == [("held_records_file_already_set", "core")]
+    assert not (tmp_path / "elsewhere.jsonl").exists()
+    log.reset()
+
+
+def test_a_failed_disk_write_keeps_the_record_held_and_says_so(clock, tmp_path):
+    log = RefusalLog()
+    log.hold_on_disk(tmp_path / "held.jsonl")
+    log._held_file.close()  # the disk goes away under it
+    _record(log, "a")
+    report = io.StringIO()
+    log.report_held(report)
+    assert "1 audit records were never written to an audit log" in report.getvalue()
+    assert f"1 of them couldn't be written to {tmp_path / 'held.jsonl'}" in report.getvalue()
+    good = MemoryAuditSink()
+    log.attach(Auditor(good, clock))
+    assert [r["reason"] for r in good.records] == ["a"]  # still held in memory, for the next audit log
+    log.reset()
+
+
+def test_the_exit_report_says_where_the_held_records_are(tmp_path):
+    log = RefusalLog()
+    log.hold_on_disk(tmp_path / "held.jsonl")
+    _record(log, "a")
+    report = io.StringIO()
+    log.report_held(report)
+    assert f"they are also in {tmp_path / 'held.jsonl'}" in report.getvalue()
+    log.reset()
+
+
+def test_reset_closes_the_held_records_file_for_the_next_test(tmp_path):
+    log = RefusalLog()
+    log.hold_on_disk(tmp_path / "first.jsonl")
+    log.reset()
+    log.hold_on_disk(tmp_path / "second.jsonl")  # allowed again after a reset (between tests)
+    _record(log, "a")
+    assert records_in(tmp_path / "first.jsonl") == [] and len(records_in(tmp_path / "second.jsonl")) == 1
+    log.reset()
+
+
+def test_the_public_function_sets_the_process_refusal_log(tmp_path):
+    audit.hold_on_disk(tmp_path / "held.jsonl")  # the test plugin's reset closes it after the test
+    with pytest.raises(ValueError):
+        rq.read_pid([], purpose=P)  # nothing attached: held
+    assert [r["reason"] for r in records_in(tmp_path / "held.jsonl")] == ["pid_count"]
+
+
+HELD_THEN_CRASH = """
+import os, sys
+from lasto.safety import audit, requests
+
+audit.hold_on_disk(sys.argv[1])
+try:
+    requests.read_pid([], purpose=requests.Purpose.LOGGING)  # refused with no session open: held
+except ValueError:
+    pass
+os._exit(1)  # a crash: no exit handlers, no stderr report
+"""
+
+
+def test_a_held_record_survives_a_crash(tmp_path):
+    """The point of the file: records held in memory are lost when the process dies before it can report them."""
+    path = tmp_path / "held.jsonl"
+    result = subprocess.run([sys.executable, "-c", HELD_THEN_CRASH, str(path)], capture_output=True, text=True)
+    assert result.returncode == 1 and result.stderr == ""
+    assert [r["reason"] for r in records_in(path)] == ["pid_count"]
 
 
 def test_refuse_still_raises_when_the_audit_log_fails(clock):

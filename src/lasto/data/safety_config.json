@@ -1,0 +1,185 @@
+{
+  "about": "The safety core's configuration in this build, for reading only. Changing any of it is a safety core change, and tests/test_safety_config.py proves this file matches the code.",
+  "can": {
+    "functional_request_id": "0x7DF",
+    "approved_ecus": [
+      {
+        "name": "engine",
+        "kind": "engine",
+        "request_id": "0x7E0",
+        "response_id": "0x7E8",
+        "ext_address": null,
+        "evidence": "Project spec: the engine ECU answers on 11-bit CAN at 0x7E0 (ISO 15765-4). 2005 GX470 manual: the ECM uses ISO 15765-4."
+      }
+    ],
+    "obd_services": [
+      "0x01",
+      "0x02",
+      "0x03",
+      "0x06",
+      "0x07",
+      "0x09",
+      "0x0A"
+    ],
+    "manufacturer_read_services": [
+      "0x13",
+      "0x17",
+      "0x18",
+      "0x19",
+      "0x1A",
+      "0x21",
+      "0x22"
+    ],
+    "never_allowed_services": [
+      "0x04",
+      "0x08",
+      "0x10",
+      "0x11",
+      "0x14",
+      "0x23",
+      "0x27",
+      "0x28",
+      "0x2C",
+      "0x2E",
+      "0x2F",
+      "0x30",
+      "0x31",
+      "0x34",
+      "0x35",
+      "0x36",
+      "0x37",
+      "0x38",
+      "0x3B",
+      "0x3D",
+      "0x3E",
+      "0x85"
+    ],
+    "sensitive_ecu_kinds": [
+      "immobilizer",
+      "srs"
+    ],
+    "sensitive_ecu_services": [
+      "0x03",
+      "0x07",
+      "0x0A",
+      "0x13",
+      "0x17",
+      "0x18",
+      "0x19"
+    ],
+    "interlock_probe_pids": [
+      "0x0C",
+      "0x0D",
+      "0x42"
+    ],
+    "padding_byte": "0x00",
+    "max_request_payload_bytes": 7
+  },
+  "rates": {
+    "hard_ceiling_requests_per_second": 20.0,
+    "requests_per_second_by_purpose": {
+      "discovery": 5.0,
+      "identify": 5.0,
+      "interlock_probe": 2.0,
+      "logging": 20.0,
+      "snapshot": 5.0
+    },
+    "busy_backoff_start_seconds": 0.2,
+    "busy_backoff_max_seconds": 5.0
+  },
+  "kill_switch": {
+    "consecutive_negative_responses": 3,
+    "negative_responses_in_window": 10,
+    "negative_response_window_seconds": 30.0,
+    "consecutive_timeouts": 5,
+    "discovery_not_supported_codes": [
+      "0x11",
+      "0x12",
+      "0x31"
+    ],
+    "discovery_not_supported_limit": 300,
+    "discovery_not_supported_window_seconds": 60.0
+  },
+  "interlocks": {
+    "speed_max_age_seconds": {
+      "broadcast": 0.5,
+      "poll": 1.0
+    },
+    "rpm_max_age_seconds": 2.0,
+    "voltage_max_age_seconds": 2.0,
+    "min_engine_off_volts": 12.0,
+    "parked_only_purposes": [
+      "discovery",
+      "identify",
+      "snapshot"
+    ]
+  },
+  "polled_session": {
+    "listen_window_seconds": 2.0
+  },
+  "stn": {
+    "exact_commands": [
+      "ATCAF0",
+      "ATCAF1",
+      "ATCS",
+      "ATD0",
+      "ATD1",
+      "ATE0",
+      "ATH1",
+      "ATL0",
+      "ATM0",
+      "ATPC",
+      "ATPPS",
+      "ATRV",
+      "ATS0",
+      "ATSW00",
+      "STCMM0",
+      "STCMM2",
+      "STDI",
+      "STDIX",
+      "STFAC",
+      "STFPC",
+      "STI",
+      "STIX",
+      "STM",
+      "STMA",
+      "STMFR",
+      "STP21",
+      "STP23",
+      "STP31",
+      "STP33",
+      "STPBRR",
+      "STPC",
+      "STPPMC",
+      "STPR",
+      "STPRS",
+      "STSN",
+      "STVR",
+      "STVR0",
+      "STVR1",
+      "STVR2",
+      "STVR3",
+      "STVRX"
+    ],
+    "pattern_commands": [
+      "STFPA[0-9A-F]{3,8},[0-9A-F]{3,8}"
+    ],
+    "reset_commands": [
+      "ATWS",
+      "ATZ"
+    ],
+    "monitor_commands": [
+      "STM",
+      "STMA"
+    ],
+    "can_monitor_protocols": [
+      "31",
+      "33"
+    ],
+    "kline_monitor_protocols": [
+      "21",
+      "23"
+    ],
+    "silent_monitor_parameter": "0x21"
+  }
+}

@@ -43,7 +43,7 @@ PUBLIC_API = {
         "SafetyError", "SafetyViolation", "KillSwitchTripped", "PassiveModeUnconfirmed", "InterfaceError", "AdapterError",
     },
     "lasto.safety.frames": {"CanFrame", "ErrorFrame", "StatusMessage", "ReadError", "Received"},
-    "lasto.safety.audit": {"Auditor", "AuditSink", "JsonlAuditSink", "MemoryAuditSink"},
+    "lasto.safety.audit": {"Auditor", "AuditSink", "JsonlAuditSink", "MemoryAuditSink", "hold_on_disk"},
     "lasto.safety.clock": {"Clock", "SystemClock"},
     "lasto.safety.exchange": {"Exchange", "ExchangeState"},
     "lasto.safety.stn_port": {"StnAdapter", "open_adapter"},
@@ -60,6 +60,7 @@ EXEMPTIONS = {
     ("ctypes", "lasto.safety.pcan_dll"): "the read-only binding of PCANBasic.dll",
     ("ctypes", "lasto.safety.pcan_active"): "the one CAN_Write binding and its message buffer",
     ("ctypes", "lasto.safety.hotkey"): "user32/kernel32 calls for the Ctrl+Alt+K kill-switch hotkey",
+    ("ctypes", "lasto.operations.keep_awake"): "kernel32 SetThreadExecutionState, so Windows doesn't sleep during a capture",
     ("ctypes", "lasto.sim.pytest_plugin"): "the test hardware firewall wraps ctypes.CDLL.__init__",
     ("sys.modules", "lasto.sim.pytest_plugin"): "the test hardware firewall replaces pyserial with a stub",
     ("change ctypes.CDLL.__init__", "lasto.sim.pytest_plugin"): "the test hardware firewall wraps ctypes.CDLL.__init__",
@@ -203,6 +204,63 @@ def test_the_scanner_follows_reexports_and_attribute_chains(snippet, flagged):
 )
 def test_every_deliberate_route_is_caught(snippet):
     assert deliberate_routes("lasto.probe", ast.parse(snippet))
+
+
+@pytest.mark.parametrize(
+    ("snippet", "route", "through"),
+    [
+        # Review finding L11: a banned module reached through a lasto module that imports it.
+        ("from lasto.operations.keep_awake import ctypes", "ctypes", "lasto.operations.keep_awake"),
+        ("from lasto.safety.pcan_dll import ctypes", "ctypes", "lasto.safety.pcan_dll"),
+        ("from lasto.safety.hotkey import wintypes", "ctypes", "lasto.safety.hotkey"),  # a part of ctypes
+        ("import lasto.operations.keep_awake as ka\nka.ctypes.WinDLL('kernel32')", "ctypes", "lasto.operations.keep_awake"),
+        ("from lasto.operations import keep_awake\nkeep_awake.ctypes", "ctypes", "lasto.operations.keep_awake"),
+        ("import lasto\nlasto.safety.pcan_dll.ctypes.CDLL", "ctypes", "lasto.safety.pcan_dll"),
+        ("def later():\n    from lasto.sim.pytest_plugin import ctypes\n    return ctypes", "ctypes", "lasto.sim.pytest_plugin"),
+    ],
+)
+def test_a_banned_module_reached_through_a_reexport_is_caught(snippet, route, through):
+    found = deliberate_routes("lasto.probe", ast.parse(snippet))
+    assert [name for name, _ in found] == [route]
+    assert f"through {through}" in found[0][1]
+
+
+@pytest.mark.parametrize(
+    ("probe", "snippet", "route"),
+    [
+        ("import serial", "from lasto.probe_binding import serial", "serial"),
+        ("import serial.tools.list_ports", "import lasto.probe_binding as p\np.serial.Serial('x')", "serial"),
+        ("from serial import Serial", "from lasto.probe_binding import Serial", "serial"),
+        ("import pickle", "from lasto.probe_binding import pickle", "pickle"),
+        ("from gc import get_referents", "from lasto.probe_binding import get_referents", "gc"),
+    ],
+)
+def test_serial_and_every_banned_module_are_caught_through_a_reexport(monkeypatch, probe, snippet, route):
+    """serial isn't banned outright (safety/stn_port.py opens the STN link with it), but reaching it through
+    another module's import is."""
+    import scan
+
+    real = scan.sources()
+    monkeypatch.setattr(scan, "sources", lambda: {**real, "lasto.probe_binding": ast.parse(probe)})
+    scan._top_level.cache_clear()  # it caches each module's top level by name, and every probe shares one
+    try:
+        assert [name for name, _ in deliberate_routes("lasto.probe", ast.parse(snippet))] == [route]
+    finally:
+        scan._top_level.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "from lasto.operations.keep_awake import KeepAwake",  # defined there, though its module imports ctypes
+        "from lasto.safety.pcan_constants import TPCANMsg",
+        "from lasto.safety import pcan_constants as pc\npc.PCAN_ERROR_OK",
+        "import lasto.operations.keep_awake as ka\nka.KeepAwake(None).start",
+        "from lasto.safety.stn_port import open_adapter",  # stn_port imports serial only inside a function
+    ],
+)
+def test_names_defined_in_a_module_that_imports_a_banned_one_are_not_flagged(snippet):
+    assert deliberate_routes("lasto.probe", ast.parse(snippet)) == []
 
 
 @pytest.mark.parametrize(

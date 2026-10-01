@@ -19,12 +19,13 @@ class Node(Protocol):
 
 
 class Broadcaster:
-    """A periodic frame, like the ones the truck's ECUs broadcast."""
+    """A periodic frame, like the ones the truck's ECUs broadcast. While disabled it stays silent, on schedule."""
 
     def __init__(self, can_id: int, period: float, payload: Callable[[float], bytes]) -> None:
         self.can_id = can_id
         self.period = period
         self.payload = payload
+        self.enabled = True
 
 
 @dataclass(order=True)
@@ -35,6 +36,7 @@ class _Scheduled:
     data: bytes = field(compare=False)
     source: object = field(compare=False)
     broadcaster: Broadcaster | None = field(default=None, compare=False)
+    action: Callable[[], None] | None = field(default=None, compare=False)
 
 
 class SimBus:
@@ -70,6 +72,10 @@ class SimBus:
         """Schedule a frame at an absolute bus time (nodes answering a frame use the frame's time)."""
         self._push(time, can_id, data, source)
 
+    def call_at(self, time: float, action: Callable[[], None]) -> None:
+        """Run a scenario action at an absolute bus time, in order among the frames (a key switch, a stop request)."""
+        heapq.heappush(self._queue, _Scheduled(time, next(self._seq), 0, b"", None, action=action))
+
     def awaiting_flow_control(self) -> frozenset[int]:
         """Request IDs of ECUs that have sent a first frame and are waiting for flow control."""
         return frozenset(
@@ -83,10 +89,15 @@ class SimBus:
         now = self.clock.monotonic()
         while self._queue and self._queue[0].time <= now:
             item = heapq.heappop(self._queue)
+            if item.action is not None:
+                item.action()
+                continue
             data = item.data
             if item.broadcaster is not None:
-                data = item.broadcaster.payload(item.time)
                 self._push(item.time + item.broadcaster.period, item.can_id, b"", item.source, item.broadcaster)
+                if not item.broadcaster.enabled:
+                    continue
+                data = item.broadcaster.payload(item.time)
             self._emit(item.time, item.can_id, data, item.source)
 
     def transmit(self, can_id: int, data: bytes, source: object) -> None:

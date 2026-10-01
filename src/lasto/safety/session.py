@@ -18,7 +18,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from lasto.safety._frozen import SealedType, freeze
-from lasto.safety.audit import REFUSALS, Auditor, refuse
+from lasto.safety.audit import REFUSALS, Auditor, refuse, require_durable
 from lasto.safety.clock import Clock, require_system_clock
 from lasto.safety.errors import InterfaceError, PassiveModeUnconfirmed, SafetyViolation
 from lasto.safety.exchange import Exchange, ExchangeState
@@ -183,6 +183,7 @@ def open_passive_session(
     try:
         if library is None:
             require_system_clock(clock, request=f"open a passive session on {channel_name}")
+            require_durable(auditor, request=f"open a passive session on {channel_name}")  # finding L5
         pcan = load_readonly(library)
         channel = open_passive(channel_name, pcan=pcan)
     except BaseException as exc:
@@ -314,6 +315,8 @@ def open_polled_session(
                 transport="pcan",
                 request=f"open a polled session on {channel_name}",
             )
+        if library is None:
+            require_durable(auditor, request=f"open a polled session on {channel_name}")  # finding L5
         broadcast = frozenset(broadcast_ids)
         channel, writer = open_active(channel_name, auditor=auditor, clock=clock, library=library, broadcast_ids=broadcast)
         reader = Reader(channel, clock, trips_kill_switch=True)

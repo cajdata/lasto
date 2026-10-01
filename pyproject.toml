@@ -19,6 +19,10 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
+# Each dependency arrives in the phase that first needs it, pinned exactly (docs/architecture.md §10).
+dependencies = [
+    "zstandard==0.25.0",  # Phase 2: raw capture segments, one checksummed zstd frame per second
+]
 
 [project.urls]
 Homepage = "https://lasto.dev"
@@ -49,17 +53,17 @@ exclude = ["/site"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
-# The safety core must stay at 100% branch coverage; the test command enforces it.
+# Coverage is measured on all of lasto. tests/conftest.py fails the run below each package's gate
+# (tests/coverage_gates.py): 100% branch on the safety core, 90% on capture and storage.
 addopts = [
     "-ra",
     "--strict-markers",
     # Hardware firewall and simulator violation check; loaded before any test module.
     "-p", "lasto.sim.pytest_plugin",
     "-p", "pytester",
-    "--cov=lasto.safety",
+    "--cov=lasto",
     "--cov-branch",
     "--cov-report=term-missing:skip-covered",
-    "--cov-fail-under=100",
 ]
 
 [tool.coverage.run]

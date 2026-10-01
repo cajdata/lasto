@@ -37,7 +37,7 @@ from typing import Any
 from lasto.safety import pcan_constants as pc
 from lasto.safety import policy
 from lasto.safety._frozen import SealedType, freeze
-from lasto.safety.audit import Auditor, refuse
+from lasto.safety.audit import Auditor, refuse, require_durable
 from lasto.safety.clock import Clock, SystemClock, require_system_clock
 from lasto.safety.errors import SafetyViolation
 from lasto.safety.killswitch import KILL_SWITCH
@@ -207,6 +207,7 @@ def open_active(
     handle = pc.channel_handle(channel_name)
     if library is None:
         require_system_clock(clock, request=f"open {channel_name} in normal mode")
+        require_durable(auditor, request=f"open {channel_name} in normal mode")  # finding L5
     source: Any = load_library() if library is None else library
     functions = bind_readonly(source)
     pcan = ReadOnlyPcan(functions)

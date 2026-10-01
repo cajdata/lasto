@@ -5,7 +5,8 @@
   the gate calls it once in _transmit, and no other safety module names a writer.
 - The passive path imports nothing that can transmit and names no write function.
 - Only safety/stn_port.py opens a serial port, and no literal in src/ names a serial device path.
-- Only the hardware bindings use ctypes.
+- Only the hardware bindings use ctypes, and operations/keep_awake.py, which may bind one kernel32
+  function, SetThreadExecutionState, and nothing else (review finding L10).
 - Only the session module imports the transmit binding and the gate.
 - Every argument parser disables option abbreviation, so nothing shorter than --live can enable it.
 - No eval/exec anywhere, no subprocesses in the safety core.
@@ -91,6 +92,45 @@ def closure(module: str) -> set[str]:
         seen.add(current)
         todo.extend(name for name in imports(sources()[current]) if name.startswith("lasto"))
     return seen
+
+
+def _in_the_core(name: str) -> bool:
+    return name == "lasto.safety" or name.startswith("lasto.safety.")
+
+
+def lasto_imports_outside_the_core(module: str, tree: ast.Module) -> list[str]:
+    """For a safety module, every lasto module it imports that isn't part of the safety core.
+
+    The safety core is self-contained: settings, storage, services, and the rest of lasto never feed it,
+    so nothing a user can edit, and nothing a future phase adds outside the core, can change what it
+    allows (docs/architecture.md §14.8). Imports inside functions and TYPE_CHECKING blocks count too.
+    """
+    if not _in_the_core(module):
+        return []
+    return sorted(name for name in imports(tree) if (name == "lasto" or name.startswith("lasto.")) and not _in_the_core(name))
+
+
+@pytest.mark.parametrize(
+    ("module", "snippet", "flagged"),
+    [
+        ("lasto.safety.probe", "from lasto import config", True),
+        ("lasto.safety.probe", "import lasto.storage.db", True),
+        ("lasto.safety.probe", "from lasto.records import Frame", True),
+        ("lasto.safety.probe", "def limits():\n    from lasto.services import settings", True),
+        ("lasto.safety.probe", "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from lasto.storage import db", True),
+        ("lasto.safety.probe", "import lasto", True),
+        ("lasto.safety.probe", "from lasto.safety import audit\nimport lasto.safety.policy\nimport json", False),
+        ("lasto.storage.db", "from lasto import config", False),  # outside the core, other rules apply
+    ],
+)
+def test_the_self_contained_core_check(module, snippet, flagged):
+    assert bool(lasto_imports_outside_the_core(module, ast.parse(snippet))) is flagged
+
+
+def test_the_safety_core_imports_nothing_from_lasto_outside_itself():
+    found = {name: outside for name, tree in sources().items() if (outside := lasto_imports_outside_the_core(name, tree))}
+    assert sum(_in_the_core(name) for name in sources()) >= 25
+    assert found == {}
 
 
 def test_the_scan_sees_the_code():
@@ -428,10 +468,106 @@ def test_ctypes_only_in_the_hardware_bindings():
         "lasto.safety.pcan_dll",
         "lasto.safety.pcan_active",
         "lasto.safety.hotkey",
+        "lasto.operations.keep_awake",  # kernel32 SetThreadExecutionState only; loads no hardware driver
         "lasto.sim.pytest_plugin",  # the test firewall
     }
     users = {name for name, tree in sources().items() if any(i == "ctypes" or i.startswith("ctypes.") for i in imports(tree))}
     assert users <= allowed
+
+
+KEEP_AWAKE = "lasto.operations.keep_awake"
+KEEP_AWAKE_VALID = """
+from __future__ import annotations
+import ctypes
+def bind():
+    function = ctypes.WinDLL("kernel32").SetThreadExecutionState
+    function.argtypes = [ctypes.c_uint32]
+    function.restype = ctypes.c_uint32
+    return function
+"""
+
+
+KEEP_AWAKE_IMPORTS = {"__future__", "ctypes", "threading", "collections.abc", "types"}
+KEEP_AWAKE_CTYPES = {"WinDLL", "c_uint32"}  # the library loader, and the argument and result type
+
+
+def keep_awake_problems(tree: ast.Module) -> list[str]:
+    """Review finding L10: what would take keep_awake.py past its one kernel32 function.
+
+    - It imports only what it needs, so no other route to Windows (msvcrt, _winapi, os, the PCAN
+      bindings) comes in, and it imports ctypes under its own name only.
+    - From ctypes it takes only WinDLL and c_uint32, and never hands ctypes on as a value.
+    - It calls WinDLL exactly once, as WinDLL("kernel32"), and takes SetThreadExecutionState straight off
+      that call, so no library object is kept to take anything else from.
+    """
+    problems = []
+    parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    loads = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in KEEP_AWAKE_IMPORTS:
+                    problems.append(f"imports {alias.name}")
+                elif alias.asname is not None:
+                    problems.append(f"imports {alias.name} as {alias.asname}")
+        elif isinstance(node, ast.ImportFrom):
+            if node.level or node.module not in KEEP_AWAKE_IMPORTS or node.module == "ctypes":
+                problems.append(f"imports from {node.module}")
+        elif isinstance(node, ast.Name) and node.id == "ctypes":
+            parent = parents.get(id(node))
+            if not (isinstance(parent, ast.Attribute) and parent.value is node):
+                problems.append("uses ctypes as a value")
+            elif parent.attr not in KEEP_AWAKE_CTYPES:
+                problems.append(f"takes ctypes.{parent.attr}")
+            elif parent.attr == "WinDLL":
+                loads.append(parent)
+    if len(loads) != 1:
+        problems.append(f"calls WinDLL {len(loads)} times")
+    for load in loads:
+        call = parents.get(id(load))
+        if not (isinstance(call, ast.Call) and call.func is load):
+            problems.append("takes WinDLL without calling it")
+            continue
+        argument = call.args[0] if len(call.args) == 1 else None
+        if call.keywords or not (isinstance(argument, ast.Constant) and argument.value == "kernel32"):
+            problems.append("loads something other than WinDLL('kernel32')")
+        taken = parents.get(id(call))
+        if not (isinstance(taken, ast.Attribute) and taken.value is call and taken.attr == "SetThreadExecutionState"):
+            problems.append("takes something other than SetThreadExecutionState from kernel32")
+    return problems
+
+
+def test_keep_awake_binds_one_kernel32_function_and_nothing_else():
+    """Review finding L10: keep_awake.py's ctypes exemption covers SetThreadExecutionState and nothing more."""
+    assert keep_awake_problems(sources()[KEEP_AWAKE]) == []
+    assert keep_awake_problems(ast.parse(KEEP_AWAKE_VALID)) == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        # Another kernel32 function: CreateFileW and WriteFile would reach a COM port the serial guard can't see.
+        "\ndef more():\n    return ctypes.WinDLL('kernel32').CreateFileW",
+        "\ndef more():\n    return ctypes.WinDLL('kernel32').SetThreadExecutionState",  # a second binding
+        "\ndef more():\n    library = ctypes.WinDLL('kernel32')\n    return library.WriteFile",  # a library kept to take more from
+        "\ndef more():\n    return ctypes.WinDLL('user32').SetThreadExecutionState",  # another library
+        "\ndef more(name):\n    return ctypes.WinDLL(name).SetThreadExecutionState",  # a library named at run time
+        "\ndef more():\n    return ctypes.WinDLL('kernel32', use_last_error=True).SetThreadExecutionState",
+        "\ndef more():\n    return getattr(ctypes.WinDLL('kernel32'), 'Set' + 'ThreadExecutionState')",
+        "\ndef more():\n    return ctypes.CDLL('kernel32')",  # any other part of ctypes
+        "\ndef more():\n    return ctypes.windll.kernel32.SetThreadExecutionState",
+        "\ndef more():\n    return ctypes.cast",
+        "\nlibrary = ctypes",  # ctypes handed on as a value
+        "\nimport ctypes as c",  # under another name, which the attribute check wouldn't follow
+        "\nfrom ctypes import WinDLL",
+        "\nimport msvcrt",  # any other route to Windows
+        "\nimport _winapi",
+        "\nimport os",
+        "\nfrom lasto.safety import pcan_dll",
+    ],
+)
+def test_the_keep_awake_check_catches(change):
+    assert keep_awake_problems(ast.parse(KEEP_AWAKE_VALID + change)) != []
 
 
 def test_every_argument_parser_disables_abbreviation():
