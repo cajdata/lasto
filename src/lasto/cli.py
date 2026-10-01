@@ -19,7 +19,7 @@ import argparse
 import math
 import re
 import sys
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from lasto import __version__
@@ -48,7 +48,10 @@ HARDWARE_COMMANDS = frozenset({"drive", "map", "snapshot", "identify", "discover
 # Commands whose process must never import the safety core (docs/architecture.md §14.4).
 SAFETY_CORE_FREE_COMMANDS = frozenset({"gui"})
 SIMULATED_SECONDS = 60.0
+MAX_CAN_ID = 0x1FFFFFFF  # 29 bits, an extended ID
+MAX_STANDARD_ID = 0x7FF
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _CHANNEL = re.compile(r"PCAN_USBBUS([1-9]|1[0-6])")
 _PORT = re.compile(r"COM[1-9][0-9]{0,2}")
 
@@ -61,6 +64,25 @@ def _seconds(text: str) -> float:
     if not math.isfinite(value) or value <= 0:
         raise argparse.ArgumentTypeError(f"seconds must be more than 0, not {text!r}")
     return value
+
+
+def _offset(text: str) -> float:
+    """Seconds into a session: 0 or more."""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number of seconds: {text!r}") from None
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError(f"seconds into a session are 0 or more, not {text!r}")
+    return value
+
+
+def _can_id(text: str) -> int:
+    """A CAN ID in hex, with or without 0x: 025, 0x7E8, 18DAF110."""
+    digits = text[2:] if text.lower().startswith("0x") else text
+    if not re.fullmatch(r"[0-9A-Fa-f]{1,8}", digits) or int(digits, 16) > MAX_CAN_ID:
+        raise argparse.ArgumentTypeError(f"not a CAN ID in hex (up to 1FFFFFFF): {text!r}")
+    return int(digits, 16)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -90,6 +112,11 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "log":
             sub.add_argument("session", nargs="?", help="a session: its ID, its first characters, or 'last'")
             sub.add_argument("--bus", action="store_true", help="every CAN ID in the session, and which bits changed")
+            sub.add_argument(
+                "--id", type=_can_id, metavar="HEX", help="one CAN ID's raw frames over time, such as 025 (read-only)"
+            )
+            sub.add_argument("--from", dest="start", type=_offset, metavar="S", help="with --id: from this many seconds in")
+            sub.add_argument("--to", dest="end", type=_offset, metavar="S", help="with --id: up to this many seconds in")
     return parser
 
 
@@ -104,6 +131,17 @@ def _check_hardware_arguments(parser: argparse.ArgumentParser, args: argparse.Na
         parser.error(f"--channel must be PCAN_USBBUS1 to PCAN_USBBUS16, not {args.channel!r}")
     if args.port and not _PORT.fullmatch(args.port):
         parser.error(f"--port must look like COM5, not {args.port!r}")
+
+
+def _check_log_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.id is None:
+        if args.start is not None or args.end is not None:
+            parser.error("--from and --to choose part of an --id view; give --id too")
+        return
+    if args.bus:
+        parser.error("--id and --bus are separate views; give one of them")
+    if args.start is not None and args.end is not None and args.end < args.start:
+        parser.error("--to can't come before --from")
 
 
 def _check_drive_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -123,6 +161,8 @@ def main(argv: list[str] | None = None) -> int:
         _check_hardware_arguments(parser, args)
     if args.command == "drive":
         _check_drive_arguments(parser, args)
+    if args.command == "log":
+        _check_log_arguments(parser, args)
     return _dispatch(args)
 
 
@@ -210,6 +250,8 @@ def _log(args: argparse.Namespace) -> int:
             f" Last heartbeat {_when(running.heartbeat_utc)} UTC."
         )
     try:
+        if args.id is not None:
+            return _show_trace(root, args.session or "last", args.id, start=args.start, end=args.end)
         if args.session is None and not args.bus:
             return _list_sessions(root)
         return _show_session(root, args.session or "last", bus=args.bus)
@@ -259,6 +301,41 @@ def _show_session(root: DataRoot, which: str, *, bus: bool) -> int:
     print(f"Audit log of run {run.id}:")
     for entry in detail.audit:
         print(f"  {_when(entry.utc) if entry.utc else '?':19}  {entry.event}  {_fields(entry.record)}")
+    return 0
+
+
+def _id_text(can_id: int) -> str:
+    return f"{can_id:03X}" if can_id <= MAX_STANDARD_ID else f"{can_id:08X}"
+
+
+def _time_of_day(utc_us: int) -> str:
+    """A UTC time from whole microseconds, exactly (a float epoch would lose the last digits)."""
+    return (_EPOCH + timedelta(microseconds=utc_us)).strftime("%H:%M:%S.%f")
+
+
+def _show_trace(root: DataRoot, which: str, can_id: int, *, start: float | None, end: float | None) -> int:
+    from lasto.services import sessions
+
+    trace = sessions.id_trace(root, which, can_id, start_s=start, end_s=end)
+    name = _id_text(can_id)
+    span = "" if start is None and end is None else f" between {start or 0:g} s and {'the end' if end is None else f'{end:g} s'}"
+    if not trace.frames:
+        print(f"No frames with ID {name} in session {trace.session.id}{span}.")
+    else:
+        first, last = trace.frames[0].time_s, trace.frames[-1].time_s
+        print(
+            f"ID {name} in session {trace.session.id}: {len(trace.frames):,} frames, {first:.3f} s to {last:.3f} s"
+            " after its first frame, by the adapter's clock"
+        )
+        print(f"  {'Time s':>12}  {'UTC':15}  {'DLC':>3}  Data")
+        for frame in trace.frames:
+            data = "R" if frame.rtr else " ".join(f"{byte:02X}" for byte in frame.data)
+            print(f"  {frame.time_s:12.6f}  {_time_of_day(frame.utc_us)}  {len(frame.data):>3}  {data}")
+    if trace.unreadable_seconds:
+        count = len(trace.unreadable_seconds)
+        seconds = ", ".join(str(second) for second in trace.unreadable_seconds)
+        what = "1 second" if count == 1 else f"{count} seconds"
+        print(f"Missing: {what} of the session couldn't be read from its segment (second {seconds}).")
     return 0
 
 

@@ -2,7 +2,7 @@
 
 Everything here reads the capture database read-only, in short queries, and reaches no hardware. Per-ID
 statistics for a session are computed from its per-second rollups (id_seconds), without reading raw
-frames.
+frames. One ID's raw frames (id_trace) are read from the segments, only for the seconds that hold it.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from lasto.storage import capture_db
 from lasto.storage.capture_lock import capture_running
 from lasto.storage.live_db import LiveStatus, read_live
 from lasto.storage.root import DataRoot
+from lasto.storage.segments import SegmentDamaged, TimeBase, read_second_at
 
 _ID_TEXT = re.compile(r"[0-9a-f-]{1,36}")
 
@@ -99,6 +100,28 @@ class IdStats:
     dlc_min: int
     dlc_max: int
     changed_bits: bytes  # 8 bytes: a bit set for every data bit that changed during the session
+
+
+@dataclass(frozen=True)
+class IdFrame:
+    """One frame of one ID, as its segment holds it."""
+
+    time_s: float  # seconds from the session's first frame, by the hardware clock
+    utc_us: int  # its UTC, through the session's time base
+    can_id: int
+    extended: bool
+    rtr: bool
+    data: bytes
+
+
+@dataclass(frozen=True)
+class IdTrace:
+    """One ID's raw frames in a session, in the order they arrived."""
+
+    session: SessionSummary
+    can_id: int
+    frames: tuple[IdFrame, ...]
+    unreadable_seconds: tuple[int, ...]  # seconds whose segment data is missing or damaged
 
 
 @contextmanager
@@ -230,6 +253,52 @@ def bus_stats(root: DataRoot, which: str) -> list[IdStats]:
             )
         )
     return stats
+
+
+def id_trace(
+    root: DataRoot, which: str, can_id: int, *, start_s: float | None = None, end_s: float | None = None
+) -> IdTrace:
+    """Every frame of one CAN ID in a session, raw, read from its segments.
+
+    Only the seconds the per-second rollups say hold the ID are read, from the second `start_s` falls in
+    to the last whose first frame of the ID is no later than `end_s`. Error frames are left out, even when
+    their error type is the same number. A second that can't be read is reported, and the rest still are.
+    """
+    with _reading(root) as conn:
+        summary = _find(conn, which)
+        assert conn is not None  # for the type checker: _find refuses None
+        key, base_hw_us, base_utc_us = conn.execute(
+            "SELECT key, base_hw_us, base_utc_us FROM sessions WHERE id = ?", (summary.id,)
+        ).fetchone()
+        first_second = 0 if start_s is None else int(start_s)
+        last_hw_us = None if end_s is None else base_hw_us + round(end_s * 1_000_000)
+        places = conn.execute(
+            "SELECT s.second, g.path, s.byte_offset, s.byte_length FROM seconds s"
+            " JOIN segments g ON g.session = s.session AND g.seq = s.segment_seq"
+            " WHERE s.session = ?1 AND s.second >= ?2 AND s.second IN"
+            " (SELECT second FROM id_seconds WHERE session = ?1 AND can_id = ?3 AND (?4 IS NULL OR first_hw_us <= ?4))"
+            " ORDER BY s.second",
+            (key, first_second, can_id, last_hw_us),
+        ).fetchall()
+    base = TimeBase(base_hw_us, base_utc_us)
+    frames: list[IdFrame] = []
+    unreadable: list[int] = []
+    for second, path, offset, length in places:
+        try:
+            block = read_second_at(root.absolute(path), offset, length, base)
+        except (OSError, SegmentDamaged):
+            unreadable.append(second)
+            continue
+        for frame in block.frames:
+            if frame.error or frame.can_id != can_id:
+                continue
+            time_s = (frame.hw_us - base_hw_us) / 1_000_000
+            if (start_s is not None and time_s < start_s) or (end_s is not None and time_s > end_s):
+                continue
+            frames.append(
+                IdFrame(time_s, base.utc_us_of(frame.hw_us), frame.can_id, frame.extended, frame.rtr, frame.data)
+            )
+    return IdTrace(summary, can_id, tuple(frames), tuple(unreadable))
 
 
 def running_capture(root: DataRoot) -> LiveStatus | None:

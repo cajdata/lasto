@@ -16,6 +16,7 @@ from lasto.safety import pcan_constants as pc
 from lasto.safety.errors import InterfaceError
 from lasto.services import sessions
 from lasto.sim.vehicle import build_sim
+from lasto.storage import capture_db
 from lasto.storage.capture_lock import CaptureLock
 from lasto.storage.live_db import LiveStatus
 from lasto.storage.root import DataRoot
@@ -153,6 +154,82 @@ def test_a_field_with_line_breaks_prints_on_one_line():
         "channel_version=PCAN_USB 5.1.3.20113 (KMDF 1.15, x64) Copyright (C) 1995-2026 by PEAK-System Technik GmbH,"
         " Darmstadt mode=passive"
     )
+
+
+def frame_lines(out: str) -> list[str]:
+    """The lines of an --id trace that are frames: they start with a time."""
+    return [line for line in out.splitlines() if line.strip()[:1].isdigit()]
+
+
+def test_log_prints_one_ids_raw_bytes_over_time(data, capsys):
+    sim = build_sim()
+
+    def fifty() -> None:
+        sim.vehicle.state.speed_kph = 50.0
+
+    sim.bus.call_at(1002.0005, fifty)
+    drive_operation.drive(DataRoot(data), drive_operation.simulated(sim), seconds=4.0, report=lambda line: None)
+    assert run("log", "last", "--id", "0B4", "--data", data) == 0
+    out = capsys.readouterr().out
+    assert "ID 0B4 in session" in out
+    frames = frame_lines(out)
+    [stats] = [one for one in sessions.bus_stats(DataRoot(data), "last") if one.can_id == 0x0B4]
+    assert len(frames) == stats.frames >= 200  # every one: 50 a second for 4 s
+    assert frames[0].split() == ["0.004000", "18:00:00.004000", "8", "00", "00", "00", "00", "00", "00", "00", "00"]
+    assert frames[-1].split()[3:] == ["00", "00", "00", "00", "00", "13", "88", "00"]  # 50 km/h
+
+
+def test_log_prints_a_time_range_of_one_id(data, capsys):
+    run("drive", "--seconds", "5", "--data", data)
+    capsys.readouterr()
+    assert run("log", "--id", "0x0b4", "--from", "1", "--to", "2", "--data", data) == 0  # the last session
+    frames = frame_lines(capsys.readouterr().out)
+    assert len(frames) == 50 and all(1.0 <= float(line.split()[0]) <= 2.0 for line in frames)
+
+
+def test_log_says_which_seconds_of_an_id_could_not_be_read(data, capsys):
+    run("drive", "--seconds", "3", "--data", data)
+    root = DataRoot(data)
+    conn = capture_db.read_capture(root)
+    try:
+        [(path,)] = conn.execute("SELECT path FROM segments").fetchall()
+        offset, length = conn.execute("SELECT byte_offset, byte_length FROM seconds WHERE second = 1").fetchone()
+    finally:
+        conn.close()
+    damaged = bytearray(root.absolute(path).read_bytes())
+    damaged[offset + length - 2] ^= 0xFF
+    root.absolute(path).write_bytes(bytes(damaged))
+    capsys.readouterr()
+    assert run("log", "last", "--id", "025", "--data", data) == 0
+    out = capsys.readouterr().out
+    assert "Missing: 1 second of the session couldn't be read from its segment (second 1)." in out
+    assert frame_lines(out)  # the other seconds still print
+
+
+def test_log_says_when_an_id_never_appeared(data, capsys):
+    run("drive", "--seconds", "2", "--data", data)
+    capsys.readouterr()
+    assert run("log", "last", "--id", "7E8", "--data", data) == 0
+    assert "No frames with ID 7E8 in session" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--id", "zz"],
+        ["--id", "20000000"],  # more than 29 bits
+        ["--id", ""],
+        ["--from", "1"],  # a time range needs --id
+        ["--id", "025", "--to", "-1"],
+        ["--id", "025", "--from", "5", "--to", "2"],
+        ["--id", "025", "--bus"],
+        ["--id", "025", "--fro", "1"],  # no abbreviations
+    ],
+)
+def test_log_refuses_a_bad_id_or_range(data, argv):
+    with pytest.raises(SystemExit) as exited:
+        run("log", "last", *argv, "--data", data)
+    assert exited.value.code == 2
 
 
 def test_log_of_a_session_that_is_not_there(data, capsys):

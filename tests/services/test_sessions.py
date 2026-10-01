@@ -5,10 +5,12 @@ from __future__ import annotations
 import pytest
 
 from lasto.operations.drive import DriveResult, drive, simulated
+from lasto.safety import pcan_constants as pc
 from lasto.services.sessions import (
     SessionNotFound,
     bus_stats,
     find_session,
+    id_trace,
     list_sessions,
     running_capture,
     session_detail,
@@ -122,6 +124,77 @@ def test_the_detail_of_a_session(root):
     assert [entry.event for entry in detail.audit] == ["session_opened", "session_closed"]
     assert detail.audit[0].record["listen_only_confirmed"] is True
     assert detail.run_events == ()
+
+
+def test_one_ids_raw_frames_over_time(root):
+    def speed_up(sim) -> None:
+        def fifty() -> None:
+            sim.vehicle.state.speed_kph = 50.0
+
+        sim.bus.call_at(1002.0005, fifty)
+
+    result = capture(root, 4.0, speed_up)
+    trace = id_trace(root, "last", VEHICLE_SPEED_ID)
+    [stats] = [one for one in bus_stats(root, "last") if one.can_id == VEHICLE_SPEED_ID]
+    assert trace.session.id == result.sessions[0] and trace.unreadable_seconds == ()
+    assert len(trace.frames) == stats.frames  # every one, from the segments
+    times = [frame.time_s for frame in trace.frames]
+    assert times == sorted(times) and times[0] == pytest.approx(0.004)
+    assert trace.frames[0].utc_us == 1_790_445_600_004_000  # 2026-09-26T18:00:00.004Z, the session's time base plus 4 ms
+    before = {frame.data for frame in trace.frames if frame.time_s < 2.0}
+    after = {frame.data for frame in trace.frames if frame.time_s > 2.0}
+    assert before == {bytes(8)} and after == {bytes([0, 0, 0, 0, 0, 0x13, 0x88, 0])}  # 50 km/h is 5000 = 0x1388
+    assert all(not frame.extended and not frame.rtr for frame in trace.frames)
+
+
+def test_a_time_range_of_one_ids_frames(root):
+    capture(root, 5.0)
+    trace = id_trace(root, "last", STEERING_ANGLE_ID, start_s=1.0, end_s=2.0)
+    assert all(1.0 <= frame.time_s <= 2.0 for frame in trace.frames)
+    assert abs(len(trace.frames) - 101) <= 1  # 100 a second, both ends counted
+
+
+def test_an_id_the_session_never_saw_has_no_frames(root):
+    capture(root, 2.0)
+    assert id_trace(root, "last", 0x7E8).frames == ()
+
+
+def test_error_frames_and_extended_frames_are_told_apart(root):
+    def extras(sim) -> None:
+        handle = pc.USB_CHANNELS[1]
+        sim.bus.call_at(1001.0005, lambda: sim.dll.inject_error_frame(handle, error_type=STEERING_ANGLE_ID))
+        sim.bus.call_at(
+            1001.5005,
+            lambda: sim.dll.inject_frame(handle, 0x18DAF110, b"\x02\x10\x03", msgtype=pc.PCAN_MESSAGE_EXTENDED),
+        )
+
+    capture(root, 3.0, extras)
+    steering = id_trace(root, "last", STEERING_ANGLE_ID)
+    assert all(len(frame.data) == 8 for frame in steering.frames)  # the 2-byte error frame isn't among them
+    [extended] = id_trace(root, "last", 0x18DAF110).frames
+    assert extended.extended and extended.data == b"\x02\x10\x03"
+
+
+def test_a_damaged_second_is_reported_and_the_rest_still_read(root):
+    capture(root, 4.0)
+    conn = capture_db.read_capture(root)
+    try:
+        [(path,)] = conn.execute("SELECT path FROM segments").fetchall()
+        offset, length = conn.execute("SELECT byte_offset, byte_length FROM seconds WHERE second = 1").fetchone()
+    finally:
+        conn.close()
+    segment = root.absolute(path)
+    damaged = bytearray(segment.read_bytes())
+    damaged[offset + length - 2] ^= 0xFF  # inside second 1's checksummed data
+    segment.write_bytes(bytes(damaged))
+    trace = id_trace(root, "last", STEERING_ANGLE_ID)
+    assert trace.unreadable_seconds == (1,)
+    assert trace.frames and all(not 1.0 <= frame.time_s < 2.0 for frame in trace.frames)
+
+
+def test_a_trace_of_a_session_that_is_not_there(root):
+    with pytest.raises(SessionNotFound):
+        id_trace(root, "last", STEERING_ANGLE_ID)
 
 
 @pytest.mark.parametrize("text", ["not json", "[1, 2]"])
