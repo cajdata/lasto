@@ -140,6 +140,21 @@ def test_log_shows_the_events_of_a_session_and_its_run(data, capsys):
     assert "Run events, while no session was open:" in out and "status  status=0x00008" in out
 
 
+def test_a_field_with_line_breaks_prints_on_one_line():
+    """PCAN-Basic's channel version has line breaks and PEAK's copyright in it (step D's first live run)."""
+    record = {
+        "event": "session_opened",
+        "utc": "2026-10-01T00:27:36+00:00",
+        "mono": 1.0,
+        "channel_version": "PCAN_USB 5.1.3.20113\n(KMDF 1.15, x64)\r\nCopyright (C) 1995-2026 by\nPEAK-System Technik GmbH, Darmstadt",
+        "mode": "passive",
+    }
+    assert cli._fields(record) == (
+        "channel_version=PCAN_USB 5.1.3.20113 (KMDF 1.15, x64) Copyright (C) 1995-2026 by PEAK-System Technik GmbH,"
+        " Darmstadt mode=passive"
+    )
+
+
 def test_log_of_a_session_that_is_not_there(data, capsys):
     run("drive", "--seconds", "2", "--data", data)
     assert run("log", "zzz", "--data", data) == 1

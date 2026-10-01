@@ -187,7 +187,11 @@ def _mb(stored_bytes: int) -> str:
 
 
 def _fields(record: dict[str, object]) -> str:
-    return " ".join(f"{key}={value}" for key, value in record.items() if key not in ("event", "utc", "mono"))
+    """A record's fields as key=value on one line: line breaks inside a value (PCAN-Basic's channel version has
+    them) become single spaces."""
+    return " ".join(
+        f"{key}={' '.join(str(value).split())}" for key, value in record.items() if key not in ("event", "utc", "mono")
+    )
 
 
 def _log(args: argparse.Namespace) -> int:
