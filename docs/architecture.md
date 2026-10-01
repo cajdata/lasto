@@ -6,7 +6,7 @@ Status: **Phase 0 approved 2026-09-26. Phase 1 approved 2026-09-28,** with an in
 
 - **Machines:** Claude runs on the desktop, which never has the PCAN or MX+ attached. The truck laptop (i7-8550U with SSE4.2 and AVX2, 16 GB RAM, Windows 11 25H2) is the only machine that touches hardware. It has internet at home for setup and updates and runs offline in the truck.
 - **Hardware:**
-  - PCAN-USB IPEH-002022 (opto-decoupled, SJA1000 controller), with PCAN-Basic ≥ 4.7.0 and not 5.0.0 (version to be reported).
+  - PCAN-USB IPEH-002022 (opto-decoupled, SJA1000 controller), with PCAN-Basic ≥ 4.7.0 and not 5.0.0. Tested at the truck in Phase 2 with PCAN-Basic 5.1.0.1194, from PEAK Device Driver Setup 5.1.3.
   - A 3-way 16-pin splitter so the Creader, PCAN, and MX+ connect at once.
   - No bench bus yet; parts list in §12.
 - **Phase order:**
@@ -319,7 +319,7 @@ This section describes what Phase 2 built. Later phases add to it where it says 
 | 420, 423, 4C1, 4C3, 4C6, 4C7 | about 1 Hz | 8 or 1 | Never change: probably status or keep-alive frames |
 
 **0x025, the steering angle sensor (provisional).** The owner's analysis of session e20aa986, read with `lasto log SESSION --id 025` and decoded with the layout other Toyotas use:
-- **Angle:** signed 12 bits in byte 0's low nibble and byte 1, 1.5° per bit, positive to the left. It followed the owner's timeline exactly: +555° at full left lock, −565.5° at full right, and about −9° with the wheels straight.
+- **Angle:** signed 12 bits, 1.5° per bit, positive to the left. Byte 0's low nibble holds the angle's top 4 bits, and byte 1 its low 8 bits. It followed the owner's timeline exactly: +555° at full left lock, −565.5° at full right, and about −9° with the wheels straight.
 - **Byte 0, bit 4:** set only for about 0.14 s after power-up and for the last 25 ms before power-down.
 - **Bytes 2–3:** a constant `0F F9`.
 - **Bytes 4–6:** near 0x80 at rest; they move only while the wheel turns.
