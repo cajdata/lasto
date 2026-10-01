@@ -60,5 +60,8 @@ def refuse_serial_device_opens(event: str, args: tuple[object, ...]) -> None:
         )
 
 
+# Guard v2 (Phase 3) lets a process write only to its data folder, so from here on Python writes no .pyc files.
+# Install with `uv sync --locked --compile-bytecode`, so startup stays fast without them.
+sys.dont_write_bytecode = True
 sys.addaudithook(refuse_serial_device_opens)
 freeze(__name__)

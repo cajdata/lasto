@@ -61,6 +61,7 @@ EXEMPTIONS = {
     ("ctypes", "lasto.safety.pcan_active"): "the one CAN_Write binding and its message buffer",
     ("ctypes", "lasto.safety.hotkey"): "user32/kernel32 calls for the Ctrl+Alt+K kill-switch hotkey",
     ("ctypes", "lasto.operations.keep_awake"): "kernel32 SetThreadExecutionState, so Windows doesn't sleep during a capture",
+    ("change sys.dont_write_bytecode", "lasto.safety.serial_guard"): "no .pyc writes once the guard installs, so a process writes only to its data folder",
     ("ctypes", "lasto.sim.pytest_plugin"): "the test hardware firewall wraps ctypes.CDLL.__init__",
     ("sys.modules", "lasto.sim.pytest_plugin"): "the test hardware firewall replaces pyserial with a stub",
     ("change ctypes.CDLL.__init__", "lasto.sim.pytest_plugin"): "the test hardware firewall wraps ctypes.CDLL.__init__",

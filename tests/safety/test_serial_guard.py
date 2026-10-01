@@ -13,7 +13,10 @@ hooks end to end, each in a subprocess.
 
 from __future__ import annotations
 
+import os
 import pathlib
+import subprocess
+import sys
 
 import pytest
 from helpers import events
@@ -89,6 +92,15 @@ def test_the_hook_passes_everything_else(auditor, sink):
     serial_guard.refuse_serial_device_opens("open", (3, "rb", 0))
     serial_guard.refuse_serial_device_opens("os.listdir", ("COM5",))  # not an open
     assert events(sink, "rejected") == []
+
+
+def test_importing_the_safety_core_stops_bytecode_writes():
+    """Guard v2 (Phase 3) lets a process write only to its data folder, so Python must not write .pyc files
+    after the guard installs. Install with `uv sync --locked --compile-bytecode` to keep startup fast."""
+    probe = "import sys; print(sys.dont_write_bytecode); import lasto.safety; print(sys.dont_write_bytecode)"
+    environment = {name: value for name, value in os.environ.items() if name != "PYTHONDONTWRITEBYTECODE"}
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True, env=environment)
+    assert done.stdout.split() == ["False", "True"]
 
 
 def test_ordinary_files_still_open(tmp_path):

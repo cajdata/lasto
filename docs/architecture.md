@@ -441,7 +441,7 @@ Each dependency arrives in the phase that first needs it, pinned exactly with ha
 - python-can for bus access (§3.1).
 - can-isotp: requests are always single-frame and the receive side is small, so a minimal ISO-TP inside the safety core is easier to prove than wrapping a library that transmits on its own.
 
-**Tooling:** uv 0.12.19 manages `.venv` from `uv.lock`, which pins every dependency, transitive ones included, with sha256 hashes. `.python-version` pins Python 3.13. `uv sync --locked` builds the environment, and `uv run pytest` runs the tests.
+**Tooling:** uv 0.12.19 manages `.venv` from `uv.lock`, which pins every dependency, transitive ones included, with sha256 hashes. `.python-version` pins Python 3.13. `uv sync --locked --compile-bytecode` builds the environment, and `uv run pytest` runs the tests. Compile the bytecode at install: once the safety core is imported, Python writes no `.pyc` files (guard v2 lets a process write only to its data folder), so without it every run would compile its imports again.
 
 Offline install on the truck laptop:
 1. `uv export` a hashed requirements file.
