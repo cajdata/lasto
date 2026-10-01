@@ -16,9 +16,11 @@ import time
 import pytest
 
 from lasto.capture.recovery import recover
+from lasto.operations import drive as drive_module
 from lasto.operations.drive import DriveResult, drive, simulated, truck
 from lasto.operations.keep_awake import ES_CONTINUOUS, ES_SYSTEM_REQUIRED, KeepAwake
 from lasto.safety import pcan_constants as pc
+from lasto.safety.audit import JsonlAuditSink
 from lasto.safety.clock import SystemClock
 from lasto.safety.errors import InterfaceError
 from lasto.services import safety_config
@@ -424,6 +426,73 @@ def test_a_disk_check_that_fails_never_stops_the_capture(root, sim, on_bus, line
     result = run(root, sim, lines, seconds=2.0)
     assert result.end_reason == "time_limit" and result.frames == len(on_bus)
     assert any(line.startswith("Warning: couldn't check the disk space") for line in lines)
+
+
+class AuditDiskFills:
+    """The run's audit log, on a disk that fills when `full` is set: from then on every record fails to write."""
+
+    full = False
+
+    def __init__(self, path) -> None:
+        self.inner = JsonlAuditSink(path)
+
+    def write(self, record) -> None:
+        if AuditDiskFills.full:
+            raise OSError(28, "No space left on device")
+        self.inner.write(record)
+
+    def close(self) -> None:
+        self.inner.close()
+
+
+@pytest.fixture
+def audit_disk(monkeypatch):
+    """The drive's audit log on a disk the test can fill (the website session's claim check, 2026-10-01)."""
+    AuditDiskFills.full = False
+    monkeypatch.setattr(drive_module, "JsonlAuditSink", AuditDiskFills)
+    yield AuditDiskFills
+    AuditDiskFills.full = False
+
+
+def test_an_audit_log_that_cannot_record_the_close_still_ends_the_run(root, sim, on_bus, lines, reader, audit_disk):
+    """Before: the failed session_closed write raised out of drive, so the run was never ended or counted."""
+
+    def fill() -> None:
+        audit_disk.full = True
+
+    sim.bus.call_at(1003.0005, fill)
+    result = run(root, sim, lines, seconds=5.0)  # returns: nothing raised to the command line
+    assert result.end_reason == "storage_error" and result.frames == len(on_bus)
+    assert not sim.dll.channel(HANDLE).initialized  # the channel closed
+    conn = reader()
+    assert conn.execute("SELECT end_reason FROM runs").fetchone() == ("storage_error",)
+    [(detail,)] = conn.execute("SELECT detail FROM events WHERE kind = 'storage_error'").fetchall()
+    assert "No space left on device" in json.loads(detail)["error"]
+    assert sessions(conn)[0][1:4] == ("closed", "time_limit", len(on_bus))  # the capture itself was whole
+    assert any(line.startswith("Stopped (storage_error)") for line in lines)
+
+
+def test_an_audit_log_that_fails_mid_capture_stops_the_run_cleanly(root, sim, on_bus, lines, reader, audit_disk):
+    def fill_then_reactivate() -> None:
+        audit_disk.full = True
+        sim.dll.inject_status(HANDLE, pc.PCAN_ERROR_OK)  # the re-check this sets off must be recorded, and can't be
+
+    sim.bus.call_at(1003.0005, fill_then_reactivate)
+    result = run(root, sim, lines, seconds=10.0)
+    assert result.end_reason == "storage_error" and sim.clock.monotonic() < 1004.0
+    assert not sim.dll.channel(HANDLE).initialized
+    assert reader().execute("SELECT end_reason FROM runs").fetchone() == ("storage_error",)
+
+
+def test_a_distrusted_channel_with_a_full_audit_disk_is_closed_and_the_run_ends(root, sim, lines, reader, audit_disk):
+    def fill_and_drop_listen_only() -> None:
+        audit_disk.full = True
+        sim.dll.channel(HANDLE).listen_only = pc.PCAN_PARAMETER_OFF
+
+    sim.bus.call_at(1003.0005, fill_and_drop_listen_only)
+    result = run(root, sim, lines, seconds=10.0)
+    assert result.end_reason == "storage_error" and sim.clock.monotonic() < 1004.0
+    assert not sim.dll.channel(HANDLE).initialized and sim.dll.calls.count("CAN_Initialize") == 1  # not reopened
 
 
 def test_the_simulator_needs_a_time_limit(root, sim, lines):

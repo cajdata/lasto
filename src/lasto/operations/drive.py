@@ -279,18 +279,30 @@ class _Capture:
             reason = self._loop(session, stop, seconds)
             self.report(f"Stopping ({reason}).")
             if not session.ended:
-                self._take(to_records(session.pump()), self.clock.monotonic())  # what arrived since the last read
+                self._take(self._pump(session), self.clock.monotonic())  # what arrived since the last read
         finally:
             try:
                 if self.recorder is not None:
                     recorder, self.recorder = self.recorder, None
                     self._close(recorder, reason)
             finally:
-                session.close()
+                try:
+                    session.close()
+                except OSError as exc:  # the channel closed first; only the audit record of it failed
+                    self._storage_failed(exc)
                 if self.storage_error is not None:
                     reason = "storage_error"
                 self._finish(reason)
         return reason
+
+    def _pump(self, session: PassiveSession) -> list[Record]:
+        """Read the channel. An audit log the safety core can't write to (a full disk) is a storage failure: the
+        core has already closed any channel it stopped trusting, and the run stops."""
+        try:
+            return to_records(session.pump())
+        except OSError as exc:
+            self._storage_failed(exc)
+            return []
 
     def _check_disk(self) -> None:
         """How much room the capture has, and a warning (never a refusal) if it's short or over budget."""
@@ -397,7 +409,7 @@ class _Capture:
         next_tick = start + TICK
         next_progress = start + PROGRESS
         while True:
-            records = to_records(session.pump())
+            records = self._pump(session)
             now = self.clock.monotonic()
             self._take(records, now)
             if session.ended:
