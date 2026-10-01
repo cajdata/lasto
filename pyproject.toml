@@ -61,6 +61,9 @@ addopts = [
     # Hardware firewall and simulator violation check; loaded before any test module.
     "-p", "lasto.sim.pytest_plugin",
     "-p", "pytester",
+    # pytest's logging plugin opens the null device for writing, and guard v2 lets a test run write only in its
+    # own folders. lasto logs nothing through logging, so the plugin has nothing to capture.
+    "-p", "no:logging",
     "--cov=lasto",
     "--cov-branch",
     "--cov-report=term-missing:skip-covered",

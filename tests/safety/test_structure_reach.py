@@ -47,6 +47,7 @@ PUBLIC_API = {
     "lasto.safety.clock": {"Clock", "SystemClock"},
     "lasto.safety.exchange": {"Exchange", "ExchangeState"},
     "lasto.safety.stn_port": {"StnAdapter", "open_adapter"},
+    "lasto.safety.serial_guard": {"allow_writes_in"},  # guard v2: a process registers its data folder (Phase 3)
 }  # fmt: skip
 
 # The simulator stands in for PCANBasic.dll, so it speaks the DLL's constants and structures.

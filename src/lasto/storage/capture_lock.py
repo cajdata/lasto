@@ -72,9 +72,10 @@ class CaptureLock:
 
 
 def capture_running(root: DataRoot) -> bool:
-    """Whether a capture process holds the data folder's capture lock. Creates nothing."""
+    """Whether a capture process holds the data folder's capture lock. Creates nothing, and writes nothing: the
+    probe opens the lock file read-only (enough to try the lock), so a reader needs no folder to write in."""
     try:
-        fd = os.open(root.lock_file, os.O_RDWR | os.O_BINARY)
+        fd = os.open(root.lock_file, os.O_RDONLY | os.O_BINARY)
     except FileNotFoundError:
         return False
     try:

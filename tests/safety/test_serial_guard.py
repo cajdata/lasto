@@ -72,11 +72,18 @@ def test_ordinary_paths_are_not(path):
     assert not serial_guard.is_serial_device_path(path)
 
 
-@pytest.mark.parametrize("event", ["open", "_winapi.CreateFile"])
-def test_the_hook_refuses_and_audits_opening_a_serial_device(event, auditor, sink):
+READS = {
+    "open": (DEVICE_PATH, "r", os.O_RDONLY | os.O_BINARY | os.O_NOINHERIT),
+    "_winapi.CreateFile": (DEVICE_PATH, 0x80000000, 0, 3, 0),  # GENERIC_READ, OPEN_EXISTING
+}
+
+
+@pytest.mark.parametrize("event", sorted(READS))
+def test_a_read_that_names_a_serial_device_is_refused_and_audited(event, auditor, sink):
+    """The backstop for reads. A write is refused before this, by guard v2 (test_write_guard.py)."""
     REFUSALS.attach(auditor)
     with pytest.raises(SafetyViolation) as caught:
-        serial_guard.refuse_serial_device_opens(event, (DEVICE_PATH, "r+b", 0))
+        serial_guard.guard_event(event, READS[event])
     assert caught.value.reason == "serial_port_outside_stn_port"
     [refusal] = events(sink, "rejected")
     assert (refusal["reason"], refusal["transport"], refusal["request"]) == (
@@ -86,11 +93,11 @@ def test_the_hook_refuses_and_audits_opening_a_serial_device(event, auditor, sin
     )
 
 
-def test_the_hook_passes_everything_else(auditor, sink):
+def test_the_hook_passes_ordinary_reads(auditor, sink):
     REFUSALS.attach(auditor)
-    serial_guard.refuse_serial_device_opens("open", ("audit.jsonl", "a", 0))
-    serial_guard.refuse_serial_device_opens("open", (3, "rb", 0))
-    serial_guard.refuse_serial_device_opens("os.listdir", ("COM5",))  # not an open
+    serial_guard.guard_event("open", ("audit.jsonl", "r", os.O_RDONLY))
+    serial_guard.guard_event("open", (3, "rb", os.O_RDONLY | os.O_BINARY))
+    serial_guard.guard_event("os.listdir", ("COM5",))  # not an open
     assert events(sink, "rejected") == []
 
 

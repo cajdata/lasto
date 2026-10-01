@@ -40,6 +40,7 @@ from lasto.records import BusEvent, Frame, Record
 from lasto.safety.audit import Auditor, JsonlAuditSink, hold_on_disk
 from lasto.safety.clock import Clock, SystemClock
 from lasto.safety.errors import InterfaceError, SafetyError
+from lasto.safety.serial_guard import allow_writes_in
 from lasto.safety.session import PassiveSession, open_passive_session
 from lasto.services.safety_config import snapshot_text
 from lasto.sim.vehicle import Sim, build_sim
@@ -65,11 +66,14 @@ _SIGNALS = {signal.SIGINT: "ctrl_c", signal.SIGBREAK: "ctrl_break"}
 CANNOT_START = (CaptureRunning, SafetyError, InterfaceError)
 
 
-def hold_refusals(root: DataRoot) -> None:
-    """Once per process, before anything else: refusals recorded while no audit log is attached also go to
-    `audit/held.jsonl` in the data folder, fsynced as they're held, so a crash can't lose one the file took. One
-    it couldn't take (a full disk) stays in memory, counted, and is reported at exit."""
+def use_data_folder(root: DataRoot) -> None:
+    """Once per process, before anything else writes:
+    - this process may write only inside the data folder (guard v2, lasto.safety.serial_guard);
+    - refusals recorded while no audit log is attached also go to `audit/held.jsonl` there, fsynced as they're
+      held, so a crash can't lose one the file took. One it couldn't take (a full disk) stays in memory,
+      counted, and is reported at exit."""
     root.ensure()
+    allow_writes_in(root.path)
     hold_on_disk(root.audit_dir / "held.jsonl")
 
 
@@ -122,7 +126,8 @@ def drive(
     if not source.live and seconds is None:
         raise ValueError("a simulated drive needs a time limit in seconds")
     root.ensure()
-    awake = keep_awake if keep_awake is not None else (KeepAwake() if source.live else None)
+    allow_writes_in(root.path)  # guard v2: the data folder is where this process writes (the same folder again is fine)
+    awake =keep_awake if keep_awake is not None else (KeepAwake() if source.live else None)
     with CaptureLock.take(root):
         conn = capture_db.open_capture(root)
         try:

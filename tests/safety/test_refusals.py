@@ -481,7 +481,9 @@ def test_the_public_function_sets_the_process_refusal_log(tmp_path):
 HELD_THEN_CRASH = """
 import os, sys
 from lasto.safety import audit, requests
+from lasto.safety.serial_guard import allow_writes_in
 
+allow_writes_in(os.path.dirname(sys.argv[1]))  # guard v2: the folder this process writes in, as lasto's commands do
 audit.hold_on_disk(sys.argv[1])
 try:
     requests.read_pid([], purpose=requests.Purpose.LOGGING)  # refused with no session open: held

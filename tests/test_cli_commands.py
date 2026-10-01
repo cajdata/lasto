@@ -42,7 +42,7 @@ def asked(monkeypatch) -> list[tuple]:
 
     monkeypatch.setattr(drive_operation, "drive", fake_drive)
     monkeypatch.setattr(drive_operation, "truck", lambda channel: ("truck", channel))
-    monkeypatch.setattr(drive_operation, "hold_refusals", lambda root: calls.append(("held", root.path)))
+    monkeypatch.setattr(drive_operation, "use_data_folder", lambda root: calls.append(("held", root.path)))
     return calls
 
 

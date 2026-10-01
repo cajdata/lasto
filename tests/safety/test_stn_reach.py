@@ -89,6 +89,7 @@ attempts = [
     lambda: os.open("COM250", os.O_RDWR),
     lambda: pathlib.Path("COM250").write_bytes(b"0100\r"),
     lambda: _winapi.CreateFile(r"\\.\COM250", 0xC0000000, 0, 0, 3, 0, 0),
+    lambda: open("COM250", "rb", buffering=0),  # read-only: no write, but it still names a serial port
 ]
 for attempt in attempts:
     try:
@@ -108,22 +109,26 @@ def run(setup: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_the_safety_core_refuses_serial_opens_anywhere_in_the_process():
-    """A process that has imported the safety core, with no test firewall."""
+    """A process that has imported the safety core, with no test firewall. Guard v2 refuses every write-capable
+    open outside the data folder, which this process never registered; a read that names a port meets the
+    name check, the backstop for reads."""
     done = run("import lasto.safety\nfrom lasto.safety.errors import SafetyViolation as REFUSED\n")
     assert done.stdout.splitlines() == [
-        *["SafetyViolation serial_port_outside_stn_port"] * 4,
+        *["SafetyViolation write_outside_the_data_folder"] * 4,
+        "SafetyViolation serial_port_outside_stn_port",
         "pipe not refused",
         "safety core loaded",
     ], done.stderr
     assert "backstop" not in done.stderr
-    assert done.stderr.count('"reason": "serial_port_outside_stn_port"') == 4  # held, then reported at exit
+    assert done.stderr.count('"reason": "write_outside_the_data_folder"') == 4  # held, then reported at exit
+    assert done.stderr.count('"reason": "serial_port_outside_stn_port"') == 1
 
 
 def test_the_test_firewall_refuses_serial_opens_on_its_own():
     """The firewall's own check, written separately from the safety core's, in a process that never loads the core."""
     done = run("import lasto.sim.pytest_plugin\nfrom lasto.sim.pytest_plugin import HardwareFirewallError as REFUSED\n")
     assert done.stdout.splitlines() == [
-        *["HardwareFirewallError -"] * 4,
+        *["HardwareFirewallError -"] * 5,  # reads and writes alike: the firewall's check is by name
         "pipe not refused",
         "safety core not loaded",  # pytest loads the plugin before coverage starts; it must not import the core
     ], done.stderr

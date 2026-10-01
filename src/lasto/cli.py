@@ -193,7 +193,7 @@ def _drive(args: argparse.Namespace) -> int:
         root = data_root(args.data)
     except ValueError as exc:
         return _fail(str(exc))
-    capture.hold_refusals(root)
+    capture.use_data_folder(root)
     if args.live:
         source = capture.truck(args.channel)
         seconds = args.seconds
