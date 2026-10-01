@@ -129,7 +129,9 @@ class RefusalLog(metaclass=SealedType):
       write fails, the rest stay held and the auditor isn't attached;
     - anything still held when the process exits is reported on stderr;
     - once hold_on_disk() names a file, every record is also appended to it,
-      and fsynced, the moment it is held, so a crash can't lose it.
+      and fsynced, the moment it is held, so a crash can't lose one the file
+      took. One the file couldn't take (a full disk) stays held in memory, is
+      counted, and is reported at exit, but a crash before then loses it.
     """
 
     __slots__ = ("_attached", "_backlog", "_backlog_limit", "_dropped", "_held_file", "_held_path", "_held_unwritten", "_lock")
@@ -280,7 +282,8 @@ atexit.register(REFUSALS.report_held)
 
 def hold_on_disk(path: str | os.PathLike[str]) -> None:
     """Keep every record held while no audit log is attached in this file too, appended and fsynced as it is
-    held, so a crash can't lose it. Called once per process, at startup; a second call is refused."""
+    held, so a crash can't lose one the file took. One it couldn't take stays held in memory, counted, and is
+    reported at exit. Called once per process, at startup; a second call is refused."""
     REFUSALS.hold_on_disk(path)
 
 
