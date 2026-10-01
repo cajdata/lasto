@@ -23,7 +23,7 @@ from lasto.safety.clock import SystemClock
 from lasto.safety.errors import InterfaceError
 from lasto.services import safety_config
 from lasto.sim.vehicle import Sim
-from lasto.storage import capture_db
+from lasto.storage import capture_db, retention
 from lasto.storage.capture_lock import CaptureLock, CaptureRunning, capture_running
 from lasto.storage.live_db import read_live
 from lasto.storage.root import DataRoot
@@ -399,6 +399,31 @@ def test_a_hardware_timestamp_that_steps_back_is_recorded_not_fatal(root, sim, o
     result = run(root, sim, lines, seconds=10.0)
     assert result.end_reason == "time_limit"
     assert sessions(reader())[0][3] == len(on_bus) + 1
+
+
+def test_a_capture_says_how_much_room_it_has_when_it_starts(root, sim, lines):
+    run(root, sim, lines, seconds=1.0)
+    assert any("GB free on the data folder's disk" in line and "20 GB budget" in line for line in lines)
+
+
+def test_a_nearly_full_disk_is_a_warning_at_start_and_the_capture_goes_on(root, sim, on_bus, lines, reader, monkeypatch):
+    low = retention.DiskCheck(free_bytes=retention.GIB, used_bytes=0, warnings=("only 1.0 GB free",))
+    monkeypatch.setattr(retention, "check_disk", lambda root: low)
+    result = run(root, sim, lines, seconds=3.0)
+    assert result.end_reason == "time_limit" and result.frames == len(on_bus) > 0
+    assert "Warning: only 1.0 GB free." in lines
+    [(detail,)] = reader().execute("SELECT detail FROM events WHERE kind = 'disk_warning'").fetchall()
+    assert json.loads(detail) == {"free_bytes": retention.GIB, "used_bytes": 0, "warning": "only 1.0 GB free"}
+
+
+def test_a_disk_check_that_fails_never_stops_the_capture(root, sim, on_bus, lines, monkeypatch):
+    def fails(root):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(retention, "check_disk", fails)
+    result = run(root, sim, lines, seconds=2.0)
+    assert result.end_reason == "time_limit" and result.frames == len(on_bus)
+    assert any(line.startswith("Warning: couldn't check the disk space") for line in lines)
 
 
 def test_the_simulator_needs_a_time_limit(root, sim, lines):

@@ -10,8 +10,9 @@ One run is one process holding one channel open, listen-only, for as long as it 
   (review finding L8). The recorder keeps what it was given and tries once more as the session
   closes; a session with anything still uncommitted is left open for the next capture's recovery.
   The failure and what it cost are recorded as a storage_error run event.
-- Before it opens the channel, it takes the capture lock and recovers whatever an interrupted capture
-  left open.
+- Before it opens the channel, it takes the capture lock, recovers whatever an interrupted capture left
+  open, and says how much disk it has: a warning below 2 GB free or over the data folder's 20 GB
+  budget, never a refusal (lasto.storage.retention).
 - Once a second it indexes the audit log, writes the live feed, and checks for the stop file.
 
 It runs on the main thread, which holds the Ctrl+C and Ctrl+Break handlers, and, on the truck, the
@@ -42,7 +43,7 @@ from lasto.safety.errors import InterfaceError, SafetyError
 from lasto.safety.session import PassiveSession, open_passive_session
 from lasto.services.safety_config import snapshot_text
 from lasto.sim.vehicle import Sim, build_sim
-from lasto.storage import capture_db, workbench_db
+from lasto.storage import capture_db, retention, workbench_db
 from lasto.storage.audit_index import AuditIndex
 from lasto.storage.capture_db import AuditLine
 from lasto.storage.capture_lock import CaptureLock, CaptureRunning
@@ -264,6 +265,7 @@ class _Capture:
     def run(self, auditor: Auditor, stop: _Stop, seconds: float | None) -> str:
         """Open the channel, capture until something stops it, and close everything. Returns why it stopped."""
         reason = "error"
+        self._check_disk()
         try:
             session = open_passive_session(
                 self.source.channel, auditor=auditor, clock=self.clock, library=self.source.library
@@ -289,6 +291,29 @@ class _Capture:
                     reason = "storage_error"
                 self._finish(reason)
         return reason
+
+    def _check_disk(self) -> None:
+        """How much room the capture has, and a warning (never a refusal) if it's short or over budget."""
+        try:
+            check = retention.check_disk(self.root)
+        except OSError as exc:
+            self.report(f"Warning: couldn't check the disk space ({exc!r}); the capture goes on.")
+            return
+        self.report(check.summary())
+        for warning in check.warnings:
+            self.report(f"Warning: {warning}.")
+            detail: dict[str, object] = {"warning": warning, "free_bytes": check.free_bytes, "used_bytes": check.used_bytes}
+            self._store(
+                lambda: capture_db.add_event(
+                    self.conn,
+                    run_id=self.run_id,
+                    session_key=None,
+                    host_utc=self.clock.utc_now().isoformat(),
+                    hw_us=None,
+                    kind="disk_warning",
+                    detail=detail,
+                )
+            )
 
     def _finish(self, reason: str) -> None:
         try:
