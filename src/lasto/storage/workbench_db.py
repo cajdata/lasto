@@ -1,6 +1,7 @@
-"""The workbench database: what the GUI and the CLI's analysis write, never a capture.
+"""The workbench database: what the GUI and the CLI's analysis write.
 
-Keeping it apart from the capture database means a capture and an edit never wait on one writer
+A capture writes one thing here: the default vehicle, a 2006 GX470, on its first run. Otherwise, keeping
+it apart from the capture database means a capture and an edit never wait on one writer
 (docs/architecture.md §14.3). It refers to sessions by UUID; SQLite can't enforce a key across two
 files, so the services that join them check.
 """

@@ -67,7 +67,8 @@ CANNOT_START = (CaptureRunning, SafetyError, InterfaceError)
 
 def hold_refusals(root: DataRoot) -> None:
     """Once per process, before anything else: refusals recorded while no audit log is attached also go to
-    `audit/held.jsonl` in the data folder, fsynced as they're held, so a crash can't lose them."""
+    `audit/held.jsonl` in the data folder, fsynced as they're held, so a crash can't lose one the file took. One
+    it couldn't take (a full disk) stays in memory, counted, and is reported at exit."""
     root.ensure()
     hold_on_disk(root.audit_dir / "held.jsonl")
 

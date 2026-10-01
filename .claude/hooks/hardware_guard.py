@@ -5,8 +5,9 @@ Blocks shell commands that could reach real vehicle hardware: the --live flag
 serial devices, and inline code that opens PCAN or serial directly.
 
 Asks before any shell command that names a safety core path, or
-operations/keep_awake.py (the one ctypes use outside the core, review finding
-L10), so a shell edit can't route around the ask rules on Edit.
+operations/keep_awake.py (ctypes outside the core, review finding L10; the
+test plugin's firewall is the only other such use), so a shell edit can't
+route around the ask rules on Edit.
 
 Asks before launching a subagent or workflow whose instructions mention
 hardware, the safety core, or keep_awake.py. Subagents don't run this
@@ -105,8 +106,8 @@ def decide(event: dict) -> tuple[str, str] | None:
     if KEEP_AWAKE_PATH.search(text):
         return (
             "ask",
-            "lasto hardware guard: this shell command names src/lasto/operations/keep_awake.py, the one ctypes "
-            "use outside the safety core. Changes to it need the user's approval.",
+            "lasto hardware guard: this shell command names src/lasto/operations/keep_awake.py, which uses ctypes "
+            "outside the safety core. Changes to it need the user's approval.",
         )
     return None
 

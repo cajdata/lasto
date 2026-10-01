@@ -8,8 +8,9 @@ thread holds the request, and ES_CONTINUOUS alone clears it.
   Windows power settings say. That stays your choice.
 - A refusal is reported, and never stops the capture.
 
-This is the one use of ctypes outside the safety core, an approved exemption in the structural tests.
-It binds this one kernel32 function, and loads nothing else.
+Outside the safety core, ctypes is used only here and in the test plugin's hardware firewall
+(lasto.sim.pytest_plugin), each an approved exemption in the structural tests. This module binds
+this one kernel32 function, and loads nothing else.
 """
 
 from __future__ import annotations

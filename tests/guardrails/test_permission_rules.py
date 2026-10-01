@@ -17,7 +17,7 @@ def test_live_hardware_is_denied_in_the_shell():
 
 
 def test_edits_that_need_the_owners_approval():
-    """The safety core, the guardrails, and keep_awake.py, the one ctypes use outside the core (review finding L10)."""
+    """The safety core, the guardrails, and keep_awake.py, which uses ctypes outside the core (review finding L10)."""
     assert {
         "Edit(/src/lasto/safety/**)",
         "Edit(/src/lasto/operations/keep_awake.py)",
