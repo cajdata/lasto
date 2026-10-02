@@ -6,10 +6,14 @@ replaced with a stand-in first, so no test ever reaches a driver: it checks only
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 from lasto import cli
 from lasto.capture.recovery import Recovery
+from lasto.operations import data_folder
 from lasto.operations import drive as drive_operation
 from lasto.operations.drive import DriveResult
 from lasto.safety import pcan_constants as pc
@@ -42,7 +46,7 @@ def asked(monkeypatch) -> list[tuple]:
 
     monkeypatch.setattr(drive_operation, "drive", fake_drive)
     monkeypatch.setattr(drive_operation, "truck", lambda channel: ("truck", channel))
-    monkeypatch.setattr(drive_operation, "use_data_folder", lambda root: calls.append(("held", root.path)))
+    monkeypatch.setattr(data_folder, "use_data_folder", lambda root: calls.append(("held", root.path)))
     return calls
 
 
@@ -102,6 +106,29 @@ def test_a_run_that_lost_its_channel_or_its_storage_exits_with_an_error(data, mo
 def test_a_data_folder_that_names_a_device_is_refused(command, capsys):
     assert run(command, "--data", "NUL") == 1
     assert "names a device" in capsys.readouterr().err
+
+
+def lasto_command(*argv: str) -> subprocess.CompletedProcess[str]:
+    """lasto in a process of its own, outside the test run: guard v2 with no test allowances."""
+    return subprocess.run([sys.executable, "-m", "lasto", *argv], capture_output=True, text=True, timeout=120)
+
+
+def test_drive_then_log_in_processes_of_their_own(tmp_path):
+    """Each command registers its data folder before it writes or reads, so both work under the strict guard."""
+    data = str(tmp_path / "data")
+    driven = lasto_command("drive", "--seconds", "2", "--data", data)
+    assert driven.returncode == 0, driven.stderr
+    assert "Stopped (time_limit): 1 session" in driven.stdout
+    logged = lasto_command("log", "last", "--data", data)
+    assert logged.returncode == 0, logged.stderr
+    assert "listen_only_confirmed=True" in logged.stdout
+
+
+def test_log_of_a_data_folder_that_does_not_exist_creates_nothing(tmp_path):
+    missing = tmp_path / "nothing-here"
+    logged = lasto_command("log", "--data", str(missing))
+    assert logged.returncode == 0, logged.stderr
+    assert "No sessions captured yet" in logged.stdout and not missing.exists()
 
 
 def test_log_before_any_capture(data, capsys):

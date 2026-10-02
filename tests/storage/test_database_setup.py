@@ -36,6 +36,22 @@ def tables(conn: sqlite3.Connection) -> set[str]:
     return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 
 
+@pytest.mark.parametrize("statement", ["ATTACH DATABASE '{path}' AS other", "VACUUM INTO '{path}'"])
+@pytest.mark.parametrize("kind", ["writer", "reader"])
+def test_lastos_connections_refuse_to_attach_another_file(writer, reader, tmp_path, statement, kind):
+    """ATTACH and VACUUM INTO open another file inside SQLite, where the safety core's guard can't see it, so
+    every connection lasto opens refuses both (SQLite reports both as SQLITE_ATTACH)."""
+    conn = writer()
+    conn.execute("CREATE TABLE t (x)")
+    if kind == "reader":
+        conn = reader()
+    target = tmp_path / "other.sqlite"
+    with pytest.raises(sqlite3.DatabaseError, match="not authorized|authorization denied"):
+        conn.execute(statement.format(path=target))
+    assert not target.exists()
+    assert conn.execute("SELECT count(*) FROM t").fetchone() == (0,)  # everything else still works
+
+
 def test_a_writer_connection(writer):
     conn = writer()
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"

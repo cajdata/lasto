@@ -157,6 +157,9 @@ BANNED_ATTRIBUTES = {
     # getattr and method calls by a name held in a string, and any dotted name resolved to its object.
     "attrgetter", "methodcaller", "resolve_name",
 }  # fmt: skip
+# Outside the safety core only (guard v2, Phase 3): replacing an SQLite connection's authorizer, which in lasto's own
+# connections refuses ATTACH and VACUUM INTO, and loading SQLite extensions, which are native code.
+BANNED_OUTSIDE_THE_CORE = {"set_authorizer", "enable_load_extension", "load_extension"}
 
 
 def _inside_an_import(node: ast.AST, names: dict[str, tuple[str, ...]]) -> bool:
@@ -239,6 +242,8 @@ def deliberate_routes(module: str, tree: ast.AST) -> list[tuple[str, str]]:
             if chain and len(chain) == 2 and chain[1] == "modules" and names.get(chain[0]) == ("module", "sys"):
                 found.append(("sys.modules", line))  # once, at sys.modules itself, not again for sys.modules.pop
             if node.attr in BANNED_DUNDERS or node.attr in BANNED_ATTRIBUTES:
+                found.append((node.attr, line))
+            elif outside_safety and node.attr in BANNED_OUTSIDE_THE_CORE:
                 found.append((node.attr, line))
             elif (
                 outside_safety

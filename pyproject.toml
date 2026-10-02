@@ -71,6 +71,8 @@ addopts = [
 
 [tool.coverage.run]
 branch = true
+# Inside .pytest_cache, one of the folders a test run may write in (guard v2): coverage's data file is SQLite.
+data_file = ".pytest_cache/.coverage"
 
 [tool.coverage.report]
 show_missing = true

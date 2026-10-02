@@ -63,6 +63,7 @@ EXEMPTIONS = {
     ("ctypes", "lasto.safety.hotkey"): "user32/kernel32 calls for the Ctrl+Alt+K kill-switch hotkey",
     ("ctypes", "lasto.operations.keep_awake"): "kernel32 SetThreadExecutionState, so Windows doesn't sleep during a capture",
     ("change sys.dont_write_bytecode", "lasto.safety.serial_guard"): "no .pyc writes once the guard installs, so a process writes only to its data folder",
+    ("set_authorizer", "lasto.storage.database"): "every connection lasto opens refuses ATTACH and VACUUM INTO, which open files the guard can't see",
     ("ctypes", "lasto.sim.pytest_plugin"): "the test hardware firewall wraps ctypes.CDLL.__init__",
     ("sys.modules", "lasto.sim.pytest_plugin"): "the test hardware firewall replaces pyserial with a stub",
     ("change ctypes.CDLL.__init__", "lasto.sim.pytest_plugin"): "the test hardware firewall wraps ctypes.CDLL.__init__",
@@ -202,6 +203,10 @@ def test_the_scanner_follows_reexports_and_attribute_chains(snippet, flagged):
         "import pkgutil\npkgutil.resolve_name('lasto.safety.pcan_active:open_active')",
         "from pkgutil import resolve_name",
         "from sys import settrace",  # any banned attribute, imported by name
+        # SQLite: replacing lasto's authorizer (which refuses ATTACH), or loading native code (guard v2, Phase 3).
+        "conn.set_authorizer(None)",
+        "conn.enable_load_extension(True)",
+        "conn.load_extension('C:/x/ext.dll')",
     ],
 )
 def test_every_deliberate_route_is_caught(snippet):

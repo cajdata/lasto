@@ -186,6 +186,7 @@ def _fail(message: str) -> int:
 
 
 def _drive(args: argparse.Namespace) -> int:
+    from lasto.operations import data_folder
     from lasto.operations import drive as capture
     from lasto.services.data import data_root
 
@@ -193,7 +194,7 @@ def _drive(args: argparse.Namespace) -> int:
         root = data_root(args.data)
     except ValueError as exc:
         return _fail(str(exc))
-    capture.use_data_folder(root)
+    data_folder.use_data_folder(root)
     if args.live:
         source = capture.truck(args.channel)
         seconds = args.seconds
@@ -235,6 +236,7 @@ def _fields(record: dict[str, object]) -> str:
 
 
 def _log(args: argparse.Namespace) -> int:
+    from lasto.operations import data_folder
     from lasto.services import sessions
     from lasto.services.data import data_root
 
@@ -242,6 +244,7 @@ def _log(args: argparse.Namespace) -> int:
         root = data_root(args.data)
     except ValueError as exc:
         return _fail(str(exc))
+    data_folder.read_data_folder(root)
     running = sessions.running_capture(root)
     if running is not None:
         print(

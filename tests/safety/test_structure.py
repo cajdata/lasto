@@ -570,6 +570,50 @@ def test_the_keep_awake_check_catches(change):
     assert keep_awake_problems(ast.parse(KEEP_AWAKE_VALID + change)) != []
 
 
+_SQL_OPENS_ANOTHER_FILE = re.compile(r"(?i)\battach\s+(database\s+)?['\"?:]|\bvacuum\s+into\b")
+
+
+def sql_opens_another_file(value: str | bytes) -> bool:
+    """SQL that makes SQLite open a second file itself: ATTACH DATABASE, or VACUUM INTO."""
+    text = value.decode("latin-1") if isinstance(value, bytes) else value
+    return _SQL_OPENS_ANOTHER_FILE.search(text) is not None
+
+
+@pytest.mark.parametrize(
+    ("literal", "flagged"),
+    [
+        ("ATTACH DATABASE 'x.sqlite' AS x", True),
+        ("attach 'x.sqlite' as x", True),
+        ("ATTACH ? AS other", True),
+        ("ATTACH :name AS other", True),
+        ("VACUUM INTO 'copy.sqlite'", True),
+        ("vacuum  into ?", True),
+        ("REFUSALS.attach(auditor)", False),
+        ("attach the audit log first", False),
+        ("VACUUM", False),
+    ],
+)
+def test_the_sql_check(literal, flagged):
+    assert sql_opens_another_file(literal) is flagged
+
+
+def test_no_sql_in_src_opens_another_database_file():
+    """Guard v2 (Phase 3): SQLite opens an ATTACHed or VACUUM INTO file itself, where the safety core's audit hook
+    can't see it. lasto's own connections refuse both at runtime (lasto.storage.database); no literal asks."""
+    found = []
+    for name, tree in sources().items():
+        skip = docstrings(tree)
+        found += [
+            f"{name}: {node.value!r}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str | bytes)
+            and id(node) not in skip
+            and sql_opens_another_file(node.value)
+        ]
+    assert found == []
+
+
 def test_every_argument_parser_disables_abbreviation():
     parsers = 0
     for name, tree in sources().items():

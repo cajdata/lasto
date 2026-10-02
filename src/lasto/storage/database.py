@@ -48,11 +48,19 @@ class Schema:
         return len(self.migrations)
 
 
+def _no_other_files(action: int, *_details: object) -> int:
+    """The authorizer on every connection lasto opens. ATTACH and VACUUM INTO (both SQLITE_ATTACH to SQLite) open a
+    second file inside SQLite, where the safety core's guard can't see it, so both are refused."""
+    return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_ATTACH else sqlite3.SQLITE_OK
+
+
 def connect(path: Path, *, synchronous: str) -> sqlite3.Connection:
-    """The writer's connection: WAL, the chosen synchronous level, foreign keys on, explicit transactions."""
+    """The writer's connection: WAL, the chosen synchronous level, foreign keys on, explicit transactions, and no
+    ATTACH or VACUUM INTO."""
     if synchronous not in SYNCHRONOUS:
         raise ValueError(f"synchronous must be FULL or NORMAL, not {synchronous!r}")
     conn = sqlite3.connect(path, isolation_level=None, timeout=BUSY_TIMEOUT_MS / 1000)
+    conn.set_authorizer(_no_other_files)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(f"PRAGMA synchronous = {synchronous}")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -66,6 +74,7 @@ def connect_read_only(path: Path) -> sqlite3.Connection:
     if not path.is_file():
         raise FileNotFoundError(path)
     conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, isolation_level=None, timeout=BUSY_TIMEOUT_MS / 1000)
+    conn.set_authorizer(_no_other_files)
     conn.execute("PRAGMA query_only = ON")
     return conn
 

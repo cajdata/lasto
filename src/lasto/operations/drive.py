@@ -37,7 +37,7 @@ from lasto.capture.recorder import Recorder
 from lasto.capture.recovery import Recovery, recover
 from lasto.operations.keep_awake import KeepAwake
 from lasto.records import BusEvent, Frame, Record
-from lasto.safety.audit import Auditor, JsonlAuditSink, hold_on_disk
+from lasto.safety.audit import Auditor, JsonlAuditSink
 from lasto.safety.clock import Clock, SystemClock
 from lasto.safety.errors import InterfaceError, SafetyError
 from lasto.safety.serial_guard import allow_writes_in
@@ -64,17 +64,6 @@ MIRRORED = frozenset({
 _SIGNALS = {signal.SIGINT: "ctrl_c", signal.SIGBREAK: "ctrl_break"}
 # What stops a capture from starting, for the CLI to report: another capture, or the safety core refusing the channel.
 CANNOT_START = (CaptureRunning, SafetyError, InterfaceError)
-
-
-def use_data_folder(root: DataRoot) -> None:
-    """Once per process, before anything else writes:
-    - this process may write only inside the data folder (guard v2, lasto.safety.serial_guard);
-    - refusals recorded while no audit log is attached also go to `audit/held.jsonl` there, fsynced as they're
-      held, so a crash can't lose one the file took. One it couldn't take (a full disk) stays in memory,
-      counted, and is reported at exit."""
-    root.ensure()
-    allow_writes_in(root.path)
-    hold_on_disk(root.audit_dir / "held.jsonl")
 
 
 @dataclass(frozen=True)

@@ -18,7 +18,6 @@ from dataclasses import astuple, dataclass
 from pathlib import Path
 
 from lasto.storage.database import (
-    DatabaseError,
     Schema,
     connect,
     connect_read_only,
@@ -87,7 +86,7 @@ class LiveFeed:
                     connect(self._path, synchronous="NORMAL"), lambda conn: migrate(conn, SCHEMA)
                 )
             self._conn.execute(f"INSERT OR REPLACE INTO status VALUES (1, {', '.join('?' * 12)})", astuple(status))
-        except (sqlite3.Error, DatabaseError, OSError) as exc:
+        except Exception as exc:  # SQLite, the disk, or the safety core's guard refusing the file: never stops a capture
             self._drop()
             if not self._failing:
                 self._failing = True

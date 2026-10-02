@@ -244,12 +244,13 @@ def test_a_channel_that_refuses_to_open_ends_the_run_with_why(root, sim, lines, 
 
 def test_a_live_feed_that_cannot_be_written_never_stops_the_capture(root, sim, on_bus, lines, reader):
     root.ensure()
-    root.live_db.mkdir()  # SQLite can't open a folder
+    root.live_db.mkdir()  # a folder where the file should be: guard v2 refuses to open it, as not a regular file
     result = run(root, sim, lines, seconds=3.0)
-    assert result.frames == len(on_bus)
+    assert result.frames == len(on_bus) and result.end_reason == "time_limit"
     conn = reader()
-    [(kind, detail)] = conn.execute("SELECT kind, detail FROM events").fetchall()
-    assert kind == "live_feed_failed" and "OperationalError" in detail
+    rows = dict(conn.execute("SELECT kind, detail FROM events").fetchall())
+    assert set(rows) == {"live_feed_failed", "rejected"}  # the guard's refusal, copied from the audit log
+    assert "SafetyViolation" in rows["live_feed_failed"] and "not a regular file" in rows["rejected"]
     assert any("live feed can't be written" in line for line in lines)
 
 

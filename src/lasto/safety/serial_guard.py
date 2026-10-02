@@ -16,6 +16,12 @@ path forms got past it. So this guard turns the check around, to a short allow l
 - An open counts as a read only if its flags or access bits are all read-only ones; anything else is a
   write. Reads stay open everywhere (imports read files), since a read-only handle can't send the
   adapter anything. The old name check stays as a backstop for reads that name a serial device.
+- SQLite opens its files itself. Its connect event names the database, a path or a file: URI, which must
+  pass the same check in any mode (SQLite may create it), so a reader registers its data folder too. Only
+  an in-memory database opens no file. Loading an SQLite extension, native code, is refused. ATTACH and
+  VACUUM INTO open a second file with no event at all, and the guard can't put an authorizer on a new
+  connection (Python raises the connect/handle event before the connection is initialized), so lasto's own
+  connections refuse both (lasto.storage.database) and the scanner bans that SQL in src/.
 - pyserial opens the adapter's port with CreateFileW through ctypes, which raises no open event, so the
   STN link is unaffected. Where ctypes may be used is checked separately.
 
@@ -24,11 +30,13 @@ From here on, Python writes no .pyc files (the data folder is the only place thi
 
 from __future__ import annotations
 
+import nturl2path
 import os
 import re
 import stat
 import sys
 import threading
+from urllib import parse
 
 from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import refuse
@@ -194,6 +202,30 @@ def allow_writes_in(folder: object) -> None:
     GUARD.allow(folder, more_than_one=hardware_firewall_installed())
 
 
+def sqlite_problem(database: object, roots: tuple[str, ...]) -> str | None:
+    """Why sqlite3.connect may not open `database`, or None if it may.
+
+    SQLite opens its files itself, so the connect event is the only place to check one. Any mode counts,
+    since SQLite may create the file: a path or a file: URI must pass write_problem(). Only an in-memory
+    database opens no file. SQLite's own temporary file ("") isn't one lasto ever needs.
+    """
+    text = _as_text(database)
+    if text is None:
+        return "not a path"
+    if text == ":memory:":
+        return None
+    if text[:5].lower() == "file:":
+        uri = parse.urlsplit(text)
+        if uri.path == ":memory:" or parse.parse_qs(uri.query).get("mode") == ["memory"]:
+            return None
+        if uri.netloc.lower() not in ("", "localhost"):
+            return "not a local file"
+        text = nturl2path.url2pathname(uri.path)
+    if not text:
+        return "SQLite's own temporary file"
+    return write_problem(text, roots)
+
+
 def _opens_for_writing(mode: object, flags: object) -> bool:
     if isinstance(flags, int):
         return bool(flags & ~_READ_FLAGS)
@@ -241,6 +273,20 @@ def guard_event(event: str, args: tuple[object, ...]) -> None:
             _check_write(event, target)
         else:
             _check_read(event, target)
+    elif event == "sqlite3.connect":
+        problem = sqlite_problem(args[0], GUARD.roots)
+        if problem is not None:
+            refuse(
+                SafetyViolation("write_outside_the_data_folder", f"{event} {args[0]!r}: {problem}"),
+                transport="core",
+                request=f"{event} {args[0]!r}",
+            )
+    elif event == "sqlite3.load_extension" or (event == "sqlite3.enable_load_extension" and args[1]):
+        refuse(
+            SafetyViolation("sqlite_extension_refused", "SQLite extensions are native code the guard can't check"),
+            transport="core",
+            request=event,
+        )
 
 
 # The data folder is the only place this process may write, so from here on Python writes no .pyc files.
