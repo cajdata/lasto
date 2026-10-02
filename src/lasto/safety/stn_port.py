@@ -111,7 +111,7 @@ class StnAdapter(metaclass=SealedType):
       and nothing retries it.
     """
 
-    __slots__ = ("_auditor", "_closed", "_configured", "_monitoring", "_port", "_rx", "_unknown")
+    __slots__ = ("_auditor", "_closed", "_configured", "_monitoring", "_port", "_released", "_rx", "_unknown")
 
     def __init__(self, port: SerialPort, auditor: Auditor) -> None:
         self._port = port
@@ -119,6 +119,7 @@ class StnAdapter(metaclass=SealedType):
         self._configured = False
         self._monitoring = False
         self._closed = False
+        self._released = False  # close() has run
         self._unknown = ""  # why the adapter's state is unknown, once it is
         self._rx = bytearray()
         REFUSALS.attach(auditor)
@@ -330,9 +331,20 @@ class StnAdapter(metaclass=SealedType):
         return lines
 
     def close(self) -> None:
-        self._closed = True
-        self._port.close()
-        REFUSALS.detach(self._auditor)
+        """Stop a running monitor, so the adapter is left idle at a prompt, then close the port and let the audit log
+        go, even if the stop fails. Closing again does nothing, so it can't take a shared audit log from another."""
+        if self._released:
+            return
+        self._released = True
+        try:
+            if self._monitoring and not self._closed and not self._unknown:
+                self.stop_monitor()
+        finally:
+            self._closed = True
+            self._monitoring = False
+            with contextlib.suppress(OSError):
+                self._port.close()
+            REFUSALS.detach(self._auditor)
 
 
 freeze(__name__)

@@ -420,6 +420,85 @@ def test_a_dropped_link_is_reported_even_if_closing_the_port_fails(auditor, sink
     assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_link_lost"]
 
 
+# ---- closing (Phase 3, A8: the L3 bug in stn_port) ----
+
+
+def test_closing_stops_a_running_monitor_first(auditor, sink):
+    """Otherwise the adapter keeps monitoring, and its output stops the next open from settling."""
+    stn, port = ready(auditor)
+    stn.start_can_monitor()
+    stn.close()
+    assert port.written.endswith(b"\x08") and not port.monitoring and port.closed
+    assert events(sink, "adapter_command")[-1]["command"] == "<backspace: stop monitoring>"
+
+
+def test_closing_twice_does_nothing(auditor, sink):
+    """Two adapters can share an audit log; a second close must not take it from the other."""
+    first, _ = adapter(auditor)
+    second, _ = adapter(auditor)
+    first.close()
+    first.close()
+    assert _still_attached(sink)
+    second.close()
+    assert not _still_attached(sink)
+
+
+def test_closing_after_the_link_dropped_lets_the_log_go(auditor, sink):
+    port = DropsTheLink()
+    stn = StnAdapter(port, auditor)
+    stn.reset()
+    stn.start_can_monitor()
+    port.dropped = True
+    with pytest.raises(AdapterError):
+        stn.read_monitor_line()
+    stn.close()
+    assert not _still_attached(sink)
+    assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_link_lost"]
+
+
+def test_closing_a_port_that_fails_to_close_still_lets_the_log_go(auditor, sink):
+    stn = StnAdapter(CloseFails(), auditor)
+    stn.close()
+    assert not _still_attached(sink)
+
+
+class NoPromptAfterStop(FakeStnPort):
+    def write(self, data):
+        if data == b"\x08":
+            self.written += data
+            return 1
+        return super().write(data)
+
+    def read_until(self, expected=b"\n", size=None):
+        if self.written.endswith(b"\x08"):
+            return b"7E8 03 41"
+        return super().read_until(expected, size)
+
+
+def test_a_monitor_that_will_not_stop_still_closes(auditor, sink):
+    port = NoPromptAfterStop()
+    stn = StnAdapter(port, auditor)
+    stn.reset()
+    stn.start_can_monitor()
+    with pytest.raises(AdapterError, match="no prompt"):
+        stn.close()
+    assert port.closed and not _still_attached(sink)
+    stn.close()  # nothing more
+    assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_no_prompt"]
+
+
+def test_closing_an_adapter_in_an_unknown_state_sends_nothing(auditor, sink):
+    stn, port = ready(auditor)
+    stn.start_can_monitor()
+    port._out += b"7E8 03 4"  # then nothing: the prompt after a stop never comes
+    port.monitoring = False
+    with pytest.raises(AdapterError):
+        stn.stop_monitor()
+    written = bytes(port.written)
+    stn.close()
+    assert bytes(port.written) == written and port.closed
+
+
 def test_a_closed_adapter_refuses_everything(auditor, sink):
     stn, port = ready(auditor)
     stn.close()
