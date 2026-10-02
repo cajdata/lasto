@@ -17,6 +17,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import stat
 import sys
 import threading
 from collections import deque
@@ -54,13 +55,26 @@ class MemoryAuditSink(metaclass=SealedType):
         self._records.append(record)
 
 
+def _open_regular_file(path: str | os.PathLike[str], *, request: str) -> TextIO:
+    """Open `path` to append, then refuse (audited) anything fstat doesn't report as a regular file (guard v2, A5).
+
+    Guard v2 checks a path before it opens, but a descriptor passes that check, and this holds whatever the check
+    missed: an audit file never lands on a device, a console, or a pipe.
+    """
+    file = open(path, "a", encoding="utf-8", newline="\n")
+    if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+        file.close()
+        refuse(SafetyViolation("audit_file_not_regular", f"{path!r} isn't a regular file"), transport="core", request=request)
+    return file
+
+
 class JsonlAuditSink(metaclass=SealedType):
     """Append-only JSON Lines file. Each record is flushed and fsynced before write() returns."""
 
     __slots__ = ("_file",)
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
-        self._file = open(path, "a", encoding="utf-8", newline="\n")  # held open for the session
+        self._file = _open_regular_file(path, request=f"open the audit log {path!r}")  # held open for the session
 
     def write(self, record: dict[str, object]) -> None:
         self._file.write(json.dumps(record, sort_keys=True) + "\n")
@@ -157,7 +171,7 @@ class RefusalLog(metaclass=SealedType):
                 transport="core",
                 request=f"hold records in {path}",
             )
-        held_file = open(path, "a", encoding="utf-8", newline="\n")
+        held_file = _open_regular_file(path, request=f"hold records in {path}")
         with self._lock:
             self._held_file, self._held_path = held_file, str(path)
 

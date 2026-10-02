@@ -4,6 +4,7 @@ import ctypes
 import dataclasses
 import io
 import json
+import os
 import subprocess
 import sys
 
@@ -433,6 +434,24 @@ def test_the_held_records_file_is_set_once(clock, tmp_path):
     assert refused.value.reason == "held_records_file_already_set"
     assert [(r["reason"], r["transport"]) for r in events(sink, "rejected")] == [("held_records_file_already_set", "core")]
     assert not (tmp_path / "elsewhere.jsonl").exists()
+    log.reset()
+
+
+def test_the_held_records_file_must_be_a_regular_file(clock, tmp_path):
+    """Guard v2 (Phase 3, A5): checked with fstat once open, as for the audit log itself."""
+    sink = attached(clock)
+    log = RefusalLog()
+    read_end, write_end = os.pipe()
+    try:
+        with pytest.raises(SafetyViolation) as refused:
+            log.hold_on_disk(write_end)
+        assert refused.value.reason == "audit_file_not_regular"
+    finally:
+        os.close(read_end)
+    assert [(r["reason"], r["request"]) for r in events(sink, "rejected")] == [
+        ("audit_file_not_regular", f"hold records in {write_end}")
+    ]
+    log.hold_on_disk(tmp_path / "held.jsonl")  # the refused file was never set
     log.reset()
 
 

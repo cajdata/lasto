@@ -1,9 +1,14 @@
 """Rule 11: the audit log."""
 
 import json
+import os
 
-from lasto.safety.audit import Auditor, JsonlAuditSink, MemoryAuditSink
+import pytest
+from helpers import events
+
+from lasto.safety.audit import REFUSALS, Auditor, JsonlAuditSink, MemoryAuditSink
 from lasto.safety.clock import SystemClock
+from lasto.safety.errors import SafetyViolation
 
 
 def test_records(clock):
@@ -33,6 +38,23 @@ def test_jsonl_file(tmp_path):
     sink.close()
     lines = path.read_text(encoding="utf-8").splitlines()
     assert [json.loads(line)["event"] for line in lines] == ["session_opened", "session_closed"]
+
+
+def test_the_audit_log_must_be_a_regular_file(auditor, sink):
+    """Guard v2 (Phase 3, A5): checked with fstat once open. A descriptor passes the guard's path check (its path was
+    checked when it was opened), so without this one on a pipe or a console would take the audit log."""
+    REFUSALS.attach(auditor)
+    read_end, write_end = os.pipe()
+    try:
+        with pytest.raises(SafetyViolation) as refused:
+            JsonlAuditSink(write_end)
+        assert refused.value.reason == "audit_file_not_regular"
+        with pytest.raises(OSError):
+            os.fstat(write_end)  # closed with the refused file
+    finally:
+        os.close(read_end)
+    [refusal] = events(sink, "rejected")
+    assert refusal["request"] == f"open the audit log {write_end!r}"
 
 
 def test_system_clock():
