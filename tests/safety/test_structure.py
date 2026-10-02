@@ -9,7 +9,8 @@
   function, SetThreadExecutionState, and nothing else (review finding L10).
 - Only the session module imports the transmit binding and the gate.
 - Every argument parser disables option abbreviation, so nothing shorter than --live can enable it.
-- No eval/exec anywhere, no subprocesses in the safety core.
+- No eval/exec anywhere, and nothing in src/ starts a child process (guard v2 refuses one at runtime, except
+  in a test run).
 """
 
 from __future__ import annotations
@@ -651,8 +652,66 @@ def test_no_eval_or_exec():
                 assert node.func.id not in {"eval", "exec", "compile", "__import__"}, name
 
 
-def test_safety_core_runs_no_subprocesses():
-    for name, tree in sources().items():
-        if name.startswith("lasto.safety"):
-            assert not {"subprocess", "os.system", "multiprocessing"} & imports(tree), name
-            assert mentions(tree, "system(") == [], name
+CHILD_PROCESS_MODULES = (
+    "subprocess", "_posixsubprocess", "_winapi", "multiprocessing", "concurrent.futures.process", "webbrowser", "pty",
+)  # fmt: skip
+CHILD_PROCESS_NAMES = {
+    "system", "startfile", "popen", "posix_spawn", "posix_spawnp", "CreateProcess", "ProcessPoolExecutor",
+    "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
+    "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
+    "create_subprocess_exec", "create_subprocess_shell", "subprocess_exec", "subprocess_shell",
+}  # fmt: skip
+
+
+def _child_process_module(module: str) -> bool:
+    return any(module == name or module.startswith(name + ".") for name in CHILD_PROCESS_MODULES)
+
+
+def starts_a_child_process(tree: ast.Module) -> list[str]:
+    """Every import or name in `tree` that could start a child process."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found += [alias.name for alias in node.names if _child_process_module(alias.name)]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            found += [
+                f"{node.module}.{alias.name}"
+                for alias in node.names
+                if _child_process_module(f"{node.module}.{alias.name}") or alias.name in CHILD_PROCESS_NAMES
+            ]
+        elif isinstance(node, ast.Attribute) and node.attr in CHILD_PROCESS_NAMES:
+            found.append(f".{node.attr}")
+    return found
+
+
+@pytest.mark.parametrize(
+    ("snippet", "flagged"),
+    [
+        ("import subprocess", True),
+        ("from subprocess import run", True),
+        ("import multiprocessing.pool", True),
+        ("from concurrent.futures import ProcessPoolExecutor", True),
+        ("from concurrent.futures import process", True),
+        ("import concurrent.futures.process", True),
+        ("import os\nos.system('x')", True),
+        ("from os import startfile", True),
+        ("import os\nos.spawnv(0, 'x', [])", True),
+        ("import os\nos.execv('x', [])", True),
+        ("import os\nos.popen('x')", True),
+        ("import asyncio\nasyncio.create_subprocess_exec('x')", True),
+        ("import webbrowser", True),
+        ("import _winapi", True),
+        ("import os\nos.environ.get('X')", False),
+        ("from concurrent.futures import ThreadPoolExecutor", False),
+        ("import threading", False),
+    ],
+)
+def test_the_child_process_check(snippet, flagged):
+    assert bool(starts_a_child_process(ast.parse(snippet))) is flagged
+
+
+def test_nothing_in_src_starts_a_child_process():
+    """Guard v2 (Phase 3, A3) refuses a child process at runtime, but not in a test run, which starts them. So src/
+    is checked here: code that started one would pass every test and fail only at the truck."""
+    found = {name: hits for name, tree in sources().items() if (hits := starts_a_child_process(tree))}
+    assert found == {}

@@ -1,4 +1,4 @@
-r"""Guard v2: a lasto process writes only inside its data folder (finding P2, Phase 3).
+r"""Guard v2: a lasto process writes only inside its data folder, and starts no other (finding P2, Phase 3).
 
 On Windows the built-in open() or os.open() reaches a serial port without pyserial: open("COM5", "r+b")
 opens the MX+ for writing, and whoever held it could send the adapter any line, which a hex-only line
@@ -22,6 +22,10 @@ path forms got past it. So this guard turns the check around, to a short allow l
   VACUUM INTO open a second file with no event at all, and the guard can't put an authorizer on a new
   connection (Python raises the connect/handle event before the connection is initialized), so lasto's own
   connections refuse both (lasto.storage.database) and the scanner bans that SQL in src/.
+- A child process runs without this process's hook, so outside a test run (which starts them) the guard
+  refuses every way Python starts one: subprocess.Popen, _winapi.CreateProcess, os.system, os.startfile,
+  os.spawn* and os.exec*. A Bluetooth socket could reach the MX+ with no COM port at all, so one is refused
+  everywhere, before it exists.
 - pyserial opens the adapter's port with CreateFileW through ctypes, which raises no open event, so the
   STN link is unaffected. Where ctypes may be used is checked separately.
 
@@ -65,6 +69,12 @@ _READ_ACCESS = _GENERIC_READ | 0x0001 | 0x0008 | 0x0080 | 0x00020000 | 0x0010000
 _OPEN_EXISTING = 3
 
 OUTSIDE = "outside the folders this process may write"
+
+# The audit events that start another process, which runs without this process's hook (Windows: no fork).
+CHILD_PROCESS_EVENTS = frozenset(
+    {"subprocess.Popen", "_winapi.CreateProcess", "os.system", "os.startfile", "os.startfile/2", "os.spawn", "os.exec"}
+)
+_AF_BLUETOOTH = 32  # socket.AF_BLUETOOTH on Windows
 
 
 def is_serial_device_path(path: object) -> bool:
@@ -257,8 +267,20 @@ def _check_read(event: str, target: object) -> None:
         )
 
 
+def check_child_process(event: str, args: tuple[object, ...], *, test_run: bool) -> None:
+    """A child process runs without this process's audit hook, so it could open anything: only a test run, which
+    starts them, may. Nothing in src/ starts one (test_structure.py)."""
+    if not test_run:
+        refuse(
+            SafetyViolation("child_process_refused", f"{event} {args[:2]!r}: a child process isn't covered by this process's guard"),
+            transport="core",
+            request=f"{event} {args[:2]!r}",
+        )
+
+
 def guard_event(event: str, args: tuple[object, ...]) -> None:
-    """The audit hook: every write-capable open must pass write_problem(); a read that names a serial device is refused."""
+    """The audit hook: every write-capable open must pass write_problem(); a read that names a serial device is
+    refused; a child process starts only in a test run; a Bluetooth socket never exists."""
     if event == "open":
         target, mode, flags = args[0], args[1], args[2]
         if _opens_for_writing(mode, flags):
@@ -286,6 +308,14 @@ def guard_event(event: str, args: tuple[object, ...]) -> None:
             SafetyViolation("sqlite_extension_refused", "SQLite extensions are native code the guard can't check"),
             transport="core",
             request=event,
+        )
+    elif event in CHILD_PROCESS_EVENTS:
+        check_child_process(event, args, test_run=hardware_firewall_installed())
+    elif event == "socket.__new__" and args[1] == _AF_BLUETOOTH:
+        refuse(
+            SafetyViolation("bluetooth_socket_refused", "a Bluetooth socket could reach the adapter with no serial port"),
+            transport="stn",
+            request=f"{event} family {args[1]}",
         )
 
 
