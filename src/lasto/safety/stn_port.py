@@ -65,7 +65,10 @@ def _open_serial(port_name: str, *, factory: Callable[..., SerialPort] | None) -
         refuse(ValueError(f"not a COM port name: {port_name!r}"), transport="stn", reason="bad_port_name")
     if factory is None:
         factory = _pyserial().Serial
-    return factory(port=port_name, baudrate=115200, timeout=COMMAND_TIMEOUT, write_timeout=COMMAND_TIMEOUT)
+    try:
+        return factory(port=port_name, baudrate=115200, timeout=COMMAND_TIMEOUT, write_timeout=COMMAND_TIMEOUT)
+    except OSError as error:  # pyserial's SerialException: no such port, or another program holds it
+        _reject("adapter_open_failed", f"could not open {port_name}: {error}", f"open {port_name}")
 
 
 def open_adapter(port_name: str, *, auditor: Auditor, factory: Callable[..., SerialPort] | None = None) -> StnAdapter:
@@ -73,8 +76,14 @@ def open_adapter(port_name: str, *, auditor: Auditor, factory: Callable[..., Ser
 
     The port itself is never handed out: it lives inside the adapter, so every
     line reaching it goes through the allowlist and the audit log (finding N1).
+    The audit log is attached first, so a refused port name or a failed open is
+    written to it too (finding L4).
     """
-    return StnAdapter(_open_serial(port_name, factory=factory), auditor)
+    REFUSALS.attach(auditor)
+    try:
+        return StnAdapter(_open_serial(port_name, factory=factory), auditor)
+    finally:
+        REFUSALS.detach(auditor)  # the adapter holds its own attachment while it's open
 
 
 def _lines(text: str) -> list[str]:

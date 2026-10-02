@@ -1,5 +1,7 @@
 """Rule 4: the STN adapter link against the simulated MX+."""
 
+import itertools
+
 import pytest
 from helpers import events
 
@@ -42,6 +44,46 @@ def test_open_adapter_uses_the_factory(auditor):
 def test_opening_a_real_port_is_blocked_in_tests(auditor):
     with pytest.raises(HardwareFirewallError):
         open_adapter("COM5", auditor=auditor)
+
+
+_PROBES = itertools.count()
+
+
+def _still_attached(sink) -> bool:
+    """Whether the refusal log still writes to this sink: an event recorded now reaches it only if it is."""
+    probe = f"attached_probe_{next(_PROBES)}"
+    REFUSALS.event(probe)
+    return events(sink, probe) != []
+
+
+def test_a_refused_port_name_goes_to_the_callers_audit_log(auditor, sink):
+    """Review finding L4: the audit log is attached before the port opens, not held for the next one."""
+    with pytest.raises(ValueError):
+        open_adapter("COM0", auditor=auditor, factory=lambda **kwargs: FakeStnPort())
+    assert [r["reason"] for r in events(sink, "rejected")] == ["bad_port_name"]
+    assert not _still_attached(sink)
+
+
+class PortWontOpen(OSError):
+    """pyserial's SerialException: could not open port."""
+
+
+def test_a_port_that_will_not_open_is_audited(auditor, sink):
+    def factory(**kwargs):
+        raise PortWontOpen("could not open port 'COM5': FileNotFoundError(2, 'The system cannot find the file specified.')")
+
+    with pytest.raises(AdapterError, match="could not open COM5"):
+        open_adapter("COM5", auditor=auditor, factory=factory)
+    [refusal] = events(sink, "rejected")
+    assert (refusal["reason"], refusal["request"]) == ("adapter_open_failed", "open COM5")
+    assert not _still_attached(sink)
+
+
+def test_an_open_adapter_holds_the_audit_log_once(auditor, sink):
+    stn = open_adapter("COM5", auditor=auditor, factory=lambda **kwargs: FakeStnPort())
+    assert _still_attached(sink)
+    stn.close()
+    assert not _still_attached(sink)
 
 
 def test_reset_waits_for_the_prompt_then_configures(auditor, sink):
@@ -262,8 +304,7 @@ def test_an_adapter_that_sends_without_a_prompt_is_never_written_to(auditor, sin
     assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_not_settled"]
     assert "power-cycle" in str(refused.value)
     assert port.written == b"" and port.closed
-    REFUSALS.event("still_attached_probe")
-    assert events(sink, "still_attached_probe") == []  # the failed open detached its audit log
+    assert not _still_attached(sink)  # the failed open detached its audit log
 
 
 def test_after_a_prompt_timeout_the_adapter_refuses_until_reopened(auditor, sink):
