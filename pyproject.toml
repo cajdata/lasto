@@ -22,6 +22,7 @@ classifiers = [
 # Each dependency arrives in the phase that first needs it, pinned exactly (docs/architecture.md §10).
 dependencies = [
     "zstandard==0.25.0",  # Phase 2: raw capture segments, one checksummed zstd frame per second
+    "pyserial==3.5",  # Phase 3: the OBDLink MX+ link; only lasto.safety.stn_port imports it
 ]
 
 [project.urls]
