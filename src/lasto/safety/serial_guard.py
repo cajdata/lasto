@@ -29,9 +29,8 @@ path forms got past it. So this guard turns the check around, to a short allow l
 - pyserial opens the adapter's port with CreateFileW through ctypes, and a ctypes call raises no event at
   all. Loading a library and looking a function up do, so ctypes may load only lasto's libraries and look
   up only PCANBasic's CAN_ functions and the kernel32 and user32 functions lasto binds (FOREIGN_FUNCTIONS).
-  pyserial's kernel32 bindings, CreateFileW among
-  them, are allowed only while stn_port imports pyserial, on that thread (PYSERIAL_IMPORT). Which modules
-  may use ctypes at all is checked by the scanner.
+  pyserial's kernel32 bindings, CreateFileW among them, are allowed only while stn_port imports pyserial,
+  on that thread (PYSERIAL_IMPORT). Which modules may use ctypes at all is checked by the scanner.
 
 From here on, Python writes no .pyc files (the data folder is the only place this process may write).
 """
