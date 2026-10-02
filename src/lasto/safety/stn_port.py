@@ -12,6 +12,7 @@ enforce those rules. Every refusal is audited (rule 11).
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections.abc import Callable
 from types import ModuleType
@@ -28,10 +29,15 @@ PROMPT = b">"
 STOP_MONITOR = b"\x08"
 COMMAND_TIMEOUT = 2.0
 RESET_TIMEOUT = 5.0
+# How long an adapter that sends nothing when the link opens must stay quiet before it's taken as booted and idle.
+# Provisional: the bench test (B3) measures how long the MX+ takes to boot.
+SETTLE_TIMEOUT = 3.0
 CONFIGURE_COMMANDS = ("ATE0", "ATL0", "ATS0", "ATH1", "ATM0")
 
 _PORT_NAME = re.compile(r"COM[1-9][0-9]{0,2}")
 _VOLTAGE = re.compile(r"\d{1,2}\.\d{1,3}")
+# What the adapter prints as it boots (ATZ, power, or a Bluetooth reconnect or wake). Confirm on the bench (B3).
+_BANNER = re.compile(r"ELM327 v\d\S*")
 
 
 class SerialPort(Protocol, metaclass=SealedProtocolType):
@@ -75,27 +81,101 @@ def _lines(text: str) -> list[str]:
     return [line.strip() for line in text.replace("\n", "\r").split("\r") if line.strip()]
 
 
+def _has_banner(lines: list[str]) -> bool:
+    return any(_BANNER.fullmatch(line) for line in lines)
+
+
 def _reject(reason: str, detail: str, request: str = "") -> NoReturn:
     """Refuse (audited) an answer or state the adapter link can't accept."""
     refuse(AdapterError(detail), transport="stn", request=request, reason=reason)
 
 
 class StnAdapter(metaclass=SealedType):
-    __slots__ = ("_auditor", "_configured", "_monitoring", "_port", "_rx")
+    """The OBDLink, from the moment its link opens (finding E, the bootloader window):
+
+    - Opening sends nothing. The adapter is read until a prompt arrives (after its banner, if opening the link
+      rebooted it), or until SETTLE_TIMEOUT passes with nothing at all. Output with no prompt refuses the open.
+    - ATZ goes only through reset(), which sends nothing more until the prompt is back.
+    - After a prompt that never came, or a banner outside reset() (the adapter rebooted), its state is unknown:
+      it refuses every command until it's opened again, so ATZ is never sent blindly.
+    - A failed read or write (a Bluetooth drop: pyserial's SerialException is an OSError) closes it, audited,
+      and nothing retries it.
+    """
+
+    __slots__ = ("_auditor", "_closed", "_configured", "_monitoring", "_port", "_rx", "_unknown")
 
     def __init__(self, port: SerialPort, auditor: Auditor) -> None:
         self._port = port
         self._auditor = auditor
         self._configured = False
         self._monitoring = False
+        self._closed = False
+        self._unknown = ""  # why the adapter's state is unknown, once it is
         self._rx = bytearray()
         REFUSALS.attach(auditor)
+        try:
+            self._settle()
+        except BaseException:
+            with contextlib.suppress(OSError):
+                self._port.close()
+            REFUSALS.detach(auditor)
+            raise
 
     @property
     def monitoring(self) -> bool:
         return self._monitoring
 
-    # ---- the only writes to the serial port ----
+    def _settle(self) -> None:
+        """Wait out the bootloader window without sending anything."""
+        self._port.timeout = SETTLE_TIMEOUT
+        try:
+            data = self._receive(PROMPT, "open the adapter")
+        finally:
+            self._port.timeout = COMMAND_TIMEOUT
+        if data and not data.endswith(PROMPT):
+            _reject(
+                "adapter_not_settled",
+                f"the adapter sent {data!r} with no prompt when its link opened; power-cycle it and open it again",
+                "open the adapter",
+            )
+
+    # ---- the adapter's state ----
+
+    def _require_usable(self, request: str) -> None:
+        if self._closed:
+            _reject("adapter_closed", "the adapter is closed; open it again", request)
+        if self._unknown:
+            _reject("adapter_state_unknown", f"{self._unknown}, so nothing is sent until it's opened again", request)
+
+    def _no_prompt(self, data: bytes, request: str) -> NoReturn:
+        self._unknown = "a prompt never came back"
+        _reject("adapter_no_prompt", f"no prompt from the adapter (got {data!r}); open it again before anything else", request)
+
+    def _rebooted(self, request: str) -> NoReturn:
+        self._unknown = "the adapter rebooted mid-session"
+        self._monitoring = False
+        _reject("adapter_rebooted", f"the adapter's banner arrived during {request}: it rebooted", request)
+
+    def _lose_link(self, error: OSError, request: str) -> NoReturn:
+        self._closed = True
+        self._monitoring = False
+        with contextlib.suppress(OSError):
+            self._port.close()
+        _reject("adapter_link_lost", f"the link to the adapter failed ({error}); it's closed, and nothing retries it", request)
+
+    # ---- the only writes to the serial port, and its reads ----
+
+    def _send(self, data: bytes, request: str) -> None:
+        try:
+            self._port.write(data)
+        except OSError as error:
+            self._lose_link(error, request)
+
+    def _receive(self, expected: bytes, request: str) -> bytes:
+        try:
+            return self._port.read_until(expected)
+        except OSError as error:
+            self._lose_link(error, request)
 
     def _write_command(self, command: str, *, reset: bool = False, monitor: bool = False) -> str:
         canonical = stn_policy.check_command(command)
@@ -103,6 +183,7 @@ class StnAdapter(metaclass=SealedType):
             refuse(SafetyViolation("adapter_reset_outside_reset_routine", canonical), transport="stn", request=canonical)
         if stn_policy.is_monitor(canonical) and not monitor:
             refuse(SafetyViolation("adapter_monitor_outside_monitor_routine", canonical), transport="stn", request=canonical)
+        self._require_usable(canonical)
         if self._monitoring:
             refuse(
                 SafetyViolation("adapter_is_monitoring", "stop monitoring before sending commands"),
@@ -110,26 +191,29 @@ class StnAdapter(metaclass=SealedType):
                 request=canonical,
             )
         self._auditor.adapter_command(command=canonical)
-        self._port.write(canonical.encode("ascii") + b"\r")
+        self._send(canonical.encode("ascii") + b"\r", canonical)
         return canonical
 
     def _write_stop(self) -> None:
+        self._require_usable("stop monitoring")
         self._auditor.adapter_command(command="<backspace: stop monitoring>")
-        self._port.write(STOP_MONITOR)
+        self._send(STOP_MONITOR, "stop monitoring")
 
     # ---- reading ----
 
-    def _read_prompt(self) -> str:
-        data = self._port.read_until(PROMPT)
+    def _read_prompt(self, request: str) -> str:
+        data = self._receive(PROMPT, request)
         if not data.endswith(PROMPT):
-            _reject("adapter_no_prompt", f"no prompt from the adapter (got {data!r})")
+            self._no_prompt(data, request)
         return data[:-1].replace(b"\x00", b"").decode("ascii", "replace")
 
-    def _response(self, canonical: str) -> list[str]:
-        lines = _lines(self._read_prompt())
+    def _response(self, canonical: str, *, booting: bool = False) -> list[str]:
+        lines = _lines(self._read_prompt(canonical))
         # Until ATE0 takes effect, the adapter echoes the command first.
         if lines and lines[0].replace(" ", "").upper() == canonical:
             lines = lines[1:]
+        if not booting and _has_banner(lines):
+            self._rebooted(canonical)
         return lines
 
     def _command(self, command: str) -> str:
@@ -141,6 +225,7 @@ class StnAdapter(metaclass=SealedType):
             _reject("adapter_unexpected_answer", f"{command} answered {response!r}, expected {expected!r}", command)
 
     def _require_configured(self, operation: str) -> None:
+        self._require_usable(operation)
         if not self._configured:
             _reject("adapter_not_reset", "reset the adapter first", operation)
 
@@ -152,7 +237,7 @@ class StnAdapter(metaclass=SealedType):
         canonical = self._write_command("ATZ", reset=True)
         self._port.timeout = RESET_TIMEOUT
         try:
-            banner = " ".join(self._response(canonical))
+            banner = " ".join(self._response(canonical, booting=True))
         finally:
             self._port.timeout = COMMAND_TIMEOUT
         for command in CONFIGURE_COMMANDS:
@@ -207,12 +292,15 @@ class StnAdapter(metaclass=SealedType):
         If the monitor ends on its own (for example BUFFER FULL), the prompt
         comes back, monitoring is marked stopped, and None is returned.
         """
+        self._require_usable("read a monitor line")
         if not self._monitoring:
             _reject("adapter_not_monitoring", "the adapter isn't monitoring", "read a monitor line")
-        self._rx.extend(self._port.read_until(b"\r"))
+        self._rx.extend(self._receive(b"\r", "read a monitor line"))
         if self._rx.endswith(b"\r"):
             line = bytes(self._rx[:-1]).replace(b"\x00", b"").decode("ascii", "replace").strip()
             self._rx.clear()
+            if _BANNER.fullmatch(line):
+                self._rebooted("read a monitor line")
             return line
         if self._rx.endswith(PROMPT):
             self._rx.clear()
@@ -224,12 +312,16 @@ class StnAdapter(metaclass=SealedType):
         if not self._monitoring:
             return []
         self._write_stop()
-        text = (bytes(self._rx) + self._read_prompt().encode("ascii", "replace")).decode("ascii", "replace")
+        text = (bytes(self._rx) + self._read_prompt("stop monitoring").encode("ascii", "replace")).decode("ascii", "replace")
         self._rx.clear()
         self._monitoring = False
-        return _lines(text)
+        lines = _lines(text)
+        if _has_banner(lines):
+            self._rebooted("stop monitoring")
+        return lines
 
     def close(self) -> None:
+        self._closed = True
         self._port.close()
         REFUSALS.detach(self._auditor)
 

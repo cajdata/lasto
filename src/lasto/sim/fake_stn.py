@@ -43,7 +43,10 @@ class FakeStnPort:
         monitor_ends: bool = False,
         banner: str = "ELM327 v1.4b",
         protocol_report: str | None = None,
+        on_open: str = "",
     ) -> None:
+        """on_open is output already waiting when the link opens. If there is any, opening the link rebooted the
+        adapter, and its bootloader window lasts until it has sent a prompt."""
         self.timeout: float | None = 2.0
         self.write_timeout: float | None = 2.0
         self.closed = False
@@ -57,8 +60,8 @@ class FakeStnPort:
         self.written = bytearray()
         self.monitoring = False
         self._line = bytearray()
-        self._out = bytearray()
-        self._bootloader_window = False
+        self._out = bytearray(on_open.encode("ascii"))
+        self._bootloader_window = bool(on_open)
         self._reset_state()
 
     def _reset_state(self) -> None:

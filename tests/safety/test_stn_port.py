@@ -4,6 +4,7 @@ import pytest
 from helpers import events
 
 from lasto.safety import stn_port
+from lasto.safety.audit import REFUSALS
 from lasto.safety.errors import AdapterError, SafetyViolation
 from lasto.safety.stn_port import COMMAND_TIMEOUT, StnAdapter, open_adapter
 from lasto.sim.fake_stn import FakeStnPort
@@ -180,8 +181,10 @@ def test_refused_commands_are_audited_and_never_written(auditor, sink):
 
 
 class SilentPort(FakeStnPort):
+    """Answers a command, but never with a prompt."""
+
     def read_until(self, expected=b"\n", size=None):
-        return b"OK\r"
+        return b"OK\r" if self.commands else b""
 
 
 def test_missing_prompt(auditor):
@@ -202,7 +205,7 @@ def test_echo_is_stripped_before_ate0_takes_effect(auditor):
     stn, port = adapter(auditor)
     stn._configured = True  # skip the reset to see the echo
     stn._write_command("ATZ", reset=True)
-    stn._read_prompt()
+    stn._read_prompt("ATZ")
     port.echo = True
     assert stn._command("STI") == "STN2255 v5.10.3"
 
@@ -215,6 +218,174 @@ def test_close(auditor):
 
 def test_lines_helper():
     assert stn_port._lines("a\r\rb\n c \r") == ["a", "b", "c"]
+
+
+# ---- the bootloader window and an adapter in an unknown state (finding E, Phase 3 A7) ----
+
+BOOTED = "\r\rELM327 v1.4b\r\r>"
+
+
+def test_opening_sends_nothing_until_the_adapter_has_booted(auditor):
+    """Opening the link can reboot the adapter. The simulator records any byte sent before its prompt."""
+    stn, port = adapter(auditor, on_open=BOOTED)
+    assert port.written == b""
+    assert stn.reset() == "ELM327 v1.4b"
+
+
+def test_a_quiet_adapter_is_ready_once_the_settle_time_passes(auditor):
+    stn, port = adapter(auditor)
+    assert port.timeout == COMMAND_TIMEOUT
+    stn.reset()
+
+
+class SettleTimes(FakeStnPort):
+    def __init__(self, **options):
+        self.timeouts = []
+        super().__init__(**options)
+
+    def read_until(self, expected=b"\n", size=None):
+        self.timeouts.append(self.timeout)
+        return super().read_until(expected, size)
+
+
+def test_the_first_read_waits_the_settle_time(auditor):
+    port = SettleTimes()
+    StnAdapter(port, auditor)
+    assert port.timeouts == [stn_port.SETTLE_TIMEOUT]
+    assert port.timeout == COMMAND_TIMEOUT
+
+
+def test_an_adapter_that_sends_without_a_prompt_is_never_written_to(auditor, sink):
+    port = FakeStnPort(on_open="\x00\x00ELM3")  # still booting, or streaming output
+    with pytest.raises(AdapterError) as refused:
+        StnAdapter(port, auditor)
+    assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_not_settled"]
+    assert "power-cycle" in str(refused.value)
+    assert port.written == b"" and port.closed
+    REFUSALS.event("still_attached_probe")
+    assert events(sink, "still_attached_probe") == []  # the failed open detached its audit log
+
+
+def test_after_a_prompt_timeout_the_adapter_refuses_until_reopened(auditor, sink):
+    port = SilentPort()
+    stn = StnAdapter(port, auditor)
+    with pytest.raises(AdapterError, match="no prompt"):
+        stn.reset()
+    calls = (stn.reset, stn.identify, stn.start_kline_monitor, stn.start_can_monitor, lambda: stn._command("STI"))
+    for call in calls:
+        with pytest.raises(AdapterError, match="opened again"):
+            call()
+    assert port.commands == ["ATZ"]  # ATZ is never sent again blindly
+    assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_no_prompt"] + ["adapter_state_unknown"] * len(calls)
+
+
+def test_a_banner_mid_session_means_the_adapter_rebooted(auditor, sink):
+    stn, port = ready(auditor)
+    port._out += b"ELM327 v1.4b\r\r>"  # it rebooted: power, or a Bluetooth reconnect
+    with pytest.raises(AdapterError, match="rebooted"):
+        stn.identify()
+    sent = list(port.commands)
+    with pytest.raises(AdapterError):
+        stn.read_voltage()
+    with pytest.raises(AdapterError):
+        stn.reset()
+    assert port.commands == sent
+    assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_rebooted", "adapter_state_unknown", "adapter_state_unknown"]
+
+
+def test_a_banner_in_monitor_output_means_the_adapter_rebooted(auditor, sink):
+    stn, port = ready(auditor)
+    stn.start_can_monitor()
+    port._out += b"ELM327 v1.4b\r"
+    with pytest.raises(AdapterError, match="rebooted"):
+        stn.read_monitor_line()
+    assert not stn.monitoring
+    with pytest.raises(AdapterError):
+        stn.read_monitor_line()
+    assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_rebooted", "adapter_state_unknown"]
+
+
+def test_a_banner_while_stopping_the_monitor_means_the_adapter_rebooted(auditor, sink):
+    stn, port = ready(auditor)
+    stn.start_can_monitor()
+    port.monitoring = False  # it rebooted: the backspace stops nothing, and the banner comes back
+    port._out += b"ELM327 v1.4b\r\r>"
+    with pytest.raises(AdapterError, match="rebooted"):
+        stn.stop_monitor()
+    assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_rebooted"]
+
+
+class SerialException(OSError):
+    """What pyserial raises when the Bluetooth link drops: ClearCommError or WriteFile failed."""
+
+
+class DropsTheLink(FakeStnPort):
+    def __init__(self, **options):
+        self.dropped = False
+        super().__init__(**options)
+
+    def write(self, data):
+        if self.dropped:
+            raise SerialException("WriteFile failed (PermissionError(13, 'The device does not recognize the command.'))")
+        return super().write(data)
+
+    def read_until(self, expected=b"\n", size=None):
+        if self.dropped:
+            raise SerialException("ClearCommError failed (PermissionError(13, 'The device does not recognize the command.'))")
+        return super().read_until(expected, size)
+
+
+@pytest.mark.parametrize("when", ["a command", "a monitor read", "stopping the monitor"])
+def test_a_dropped_link_closes_the_adapter_with_no_retry(auditor, sink, when):
+    port = DropsTheLink()
+    stn = StnAdapter(port, auditor)
+    stn.reset()
+    action = stn.identify
+    if when != "a command":
+        stn.start_can_monitor()
+        action = stn.read_monitor_line if when == "a monitor read" else stn.stop_monitor
+    port.dropped = True
+    written = bytes(port.written)
+    with pytest.raises(AdapterError, match="nothing retries"):
+        action()
+    assert port.closed and not stn.monitoring
+    with pytest.raises(AdapterError):
+        stn.identify()
+    assert bytes(port.written) == written
+    assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_link_lost", "adapter_closed"]
+
+
+def test_a_link_that_drops_while_opening_closes_it(auditor, sink):
+    port = DropsTheLink()
+    port.dropped = True
+    with pytest.raises(AdapterError, match="nothing retries"):
+        StnAdapter(port, auditor)
+    assert port.closed
+    assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_link_lost"]
+
+
+class CloseFails(DropsTheLink):
+    def close(self):
+        raise SerialException("the port is already gone")
+
+
+def test_a_dropped_link_is_reported_even_if_closing_the_port_fails(auditor, sink):
+    port = CloseFails()
+    stn = StnAdapter(port, auditor)
+    stn.reset()
+    port.dropped = True
+    with pytest.raises(AdapterError, match="nothing retries"):
+        stn.identify()
+    assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_link_lost"]
+
+
+def test_a_closed_adapter_refuses_everything(auditor, sink):
+    stn, port = ready(auditor)
+    stn.close()
+    REFUSALS.attach(auditor)
+    with pytest.raises(AdapterError, match="closed"):
+        stn.identify()
+    assert [r["reason"] for r in events(sink, "rejected")] == ["adapter_closed"]
 
 
 # ---- finding #3: every adapter rejection is audited where it is raised, exactly once ----
