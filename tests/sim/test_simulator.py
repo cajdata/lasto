@@ -370,6 +370,21 @@ def test_plugin_fails_the_run_for_violations_outside_any_test(pytester):
     result.stdout.fnmatch_lines(["*violations outside any test*"])
 
 
+def test_a_collection_error_is_reported_as_one(pytester):
+    """The run's own folders are registered when the session starts, before collection, so even a run whose
+    collection fails writes pytest's cache and reports the error it found, not a refused write."""
+    pytester.makepyfile(
+        """
+        import lasto.safety  # installs guard v2
+        import no_such_module
+        """
+    )
+    result = pytester.runpytest_subprocess("-p", "lasto.sim.pytest_plugin")
+    assert result.ret == pytest.ExitCode.INTERRUPTED
+    assert "write_outside_the_data_folder" not in result.stdout.str() + result.stderr.str()
+    assert (pytester.path / ".pytest_cache").is_dir()
+
+
 def test_plugin_installs_the_firewall_in_a_fresh_run(pytester):
     pytester.makepyfile(
         """

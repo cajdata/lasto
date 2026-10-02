@@ -90,18 +90,20 @@ def _fresh_kill_switch() -> None:
     fresh_kill_switch()
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _a_test_run_writes_in_its_own_folders(pytestconfig: pytest.Config) -> None:
+def pytest_sessionstart(session: pytest.Session) -> None:
     """Guard v2 lets a process write only in the folders it registered. A test run registers its own: the system
     temp folder, where pytest keeps its temp folders and capture files, and the repo's tool caches. Only a test
-    run (the hardware firewall installed) may register more than one."""
+    run (the hardware firewall installed) may register more than one.
+
+    Done as the session starts, after coverage has started measuring and before collection, so a run whose
+    collection fails still writes pytest's cache and reports its error."""
     import tempfile
 
     from lasto.safety.serial_guard import allow_writes_in
 
     allow_writes_in(os.path.realpath(tempfile.gettempdir()))
     for name in (".pytest_cache", ".hypothesis"):
-        folder = pytestconfig.rootpath / name
+        folder = session.config.rootpath / name
         folder.mkdir(exist_ok=True)
         allow_writes_in(folder)
 
