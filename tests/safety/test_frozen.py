@@ -36,6 +36,7 @@ from lasto.safety.killswitch import KILL_SWITCH
 from lasto.safety.pcan_active import REQUEST_CEILING
 from lasto.safety.requests import Purpose
 from lasto.safety.serial_guard import GUARD as WRITE_GUARD
+from lasto.safety.serial_guard import PYSERIAL_IMPORT
 
 SENTINEL = object()
 MISSING = object()
@@ -159,8 +160,15 @@ def _acceptable(name: str, value: object) -> bool:
     if name == "annotations":  # from __future__ import annotations
         return True
     # The process-wide objects, stateful by design with private slots only: the refusal log, the kill switch,
-    # the write functions' shared ceiling, and the folders guard v2 lets this process write in.
-    return value is REFUSALS or value is KILL_SWITCH or value is REQUEST_CEILING or value is WRITE_GUARD
+    # the write functions' shared ceiling, the folders guard v2 lets this process write in, and the threads
+    # importing pyserial, which may look up its kernel32 functions.
+    return (
+        value is REFUSALS
+        or value is KILL_SWITCH
+        or value is REQUEST_CEILING
+        or value is WRITE_GUARD
+        or value is PYSERIAL_IMPORT
+    )
 
 
 def test_every_module_level_value_is_immutable():

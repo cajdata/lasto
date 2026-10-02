@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from types import ModuleType
 from typing import NoReturn, Protocol
 
 from lasto.safety import stn_policy
 from lasto.safety._frozen import SealedProtocolType, SealedType, freeze
 from lasto.safety.audit import REFUSALS, Auditor, refuse
 from lasto.safety.errors import AdapterError, SafetyViolation
+from lasto.safety.serial_guard import PYSERIAL_IMPORT
 
 PROMPT = b">"
 # Backspace stops a monitor; on an idle adapter it edits an empty line, so nothing is left behind.
@@ -45,13 +47,18 @@ class SerialPort(Protocol, metaclass=SealedProtocolType):
         """Close the port."""
 
 
+def _pyserial() -> ModuleType:
+    """pyserial, imported where guard v2 lets it look up its kernel32 functions (CreateFileW among them)."""
+    with PYSERIAL_IMPORT:
+        import serial  # only imported when real hardware is opened
+    return serial
+
+
 def _open_serial(port_name: str, *, factory: Callable[..., SerialPort] | None) -> SerialPort:
     if not isinstance(port_name, str) or _PORT_NAME.fullmatch(port_name) is None:
         refuse(ValueError(f"not a COM port name: {port_name!r}"), transport="stn", reason="bad_port_name")
     if factory is None:
-        import serial  # pyserial; only imported when real hardware is opened
-
-        factory = serial.Serial
+        factory = _pyserial().Serial
     return factory(port=port_name, baudrate=115200, timeout=COMMAND_TIMEOUT, write_timeout=COMMAND_TIMEOUT)
 
 

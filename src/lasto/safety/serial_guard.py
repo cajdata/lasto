@@ -26,8 +26,12 @@ path forms got past it. So this guard turns the check around, to a short allow l
   refuses every way Python starts one: subprocess.Popen, _winapi.CreateProcess, os.system, os.startfile,
   os.spawn* and os.exec*. A Bluetooth socket could reach the MX+ with no COM port at all, so one is refused
   everywhere, before it exists.
-- pyserial opens the adapter's port with CreateFileW through ctypes, which raises no open event, so the
-  STN link is unaffected. Where ctypes may be used is checked separately.
+- pyserial opens the adapter's port with CreateFileW through ctypes, and a ctypes call raises no event at
+  all. Loading a library and looking a function up do, so ctypes may load only lasto's libraries and look
+  up only PCANBasic's CAN_ functions and the kernel32 and user32 functions lasto binds (FOREIGN_FUNCTIONS).
+  pyserial's kernel32 bindings, CreateFileW among
+  them, are allowed only while stn_port imports pyserial, on that thread (PYSERIAL_IMPORT). Which modules
+  may use ctypes at all is checked by the scanner.
 
 From here on, Python writes no .pyc files (the data folder is the only place this process may write).
 """
@@ -40,12 +44,13 @@ import re
 import stat
 import sys
 import threading
+from typing import Any
 from urllib import parse
 
 from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import refuse
 from lasto.safety.errors import SafetyViolation
-from lasto.safety.pcan_dll import hardware_firewall_installed
+from lasto.safety.pcan_dll import dll_path, hardware_firewall_installed
 
 # The audit events that open a file by name. The name is the first argument.
 OPEN_EVENTS = frozenset({"open", "_winapi.CreateFile"})
@@ -75,6 +80,32 @@ CHILD_PROCESS_EVENTS = frozenset(
     {"subprocess.Popen", "_winapi.CreateProcess", "os.system", "os.startfile", "os.startfile/2", "os.spawn", "os.exec"}
 )
 _AF_BLUETOOTH = 32  # socket.AF_BLUETOOTH on Windows
+
+# What ctypes may look up, by library. PCANBasic.dll is the one in the system folder, by its path, and only its CAN_
+# functions: which of them lasto binds, and that only pcan_active binds the transmit one, is the structural tests'
+# job (this module is on the passive path, which names no write function). kernel32 and user32 go by the names lasto
+# loads them by, with exactly the functions lasto binds.
+PCAN_BASIC = "PCANBasic.dll"
+_PCAN_FUNCTION = re.compile(r"CAN_[A-Za-z]+")
+FOREIGN_FUNCTIONS = frozenset(
+    {
+        ("kernel32", "GetSystemDirectoryW"),  # where PCANBasic.dll is (pcan_dll)
+        ("kernel32", "GetCurrentThreadId"),  # the hotkey
+        ("kernel32", "SetThreadExecutionState"),  # Windows doesn't sleep during a capture (operations/keep_awake)
+        ("user32", "RegisterHotKey"), ("user32", "UnregisterHotKey"), ("user32", "GetMessageW"),
+        ("user32", "PostThreadMessageW"),
+    }
+)  # fmt: skip
+# pyserial 3.5's kernel32 bindings (serial/win32.py), looked up as it's imported: allowed only inside PYSERIAL_IMPORT.
+PYSERIAL_FUNCTIONS = frozenset(
+    {
+        "CreateEventW", "CreateFileW", "GetLastError", "GetOverlappedResult", "ResetEvent", "WriteFile", "ReadFile",
+        "CloseHandle", "ClearCommBreak", "ClearCommError", "SetupComm", "EscapeCommFunction", "GetCommModemStatus",
+        "GetCommState", "GetCommTimeouts", "PurgeComm", "SetCommBreak", "SetCommMask", "SetCommState",
+        "SetCommTimeouts", "WaitForSingleObject", "WaitCommEvent", "CancelIoEx",
+    }
+)  # fmt: skip
+_BY_NAME = ("kernel32", "user32")
 
 
 def is_serial_device_path(path: object) -> bool:
@@ -236,6 +267,59 @@ def sqlite_problem(database: object, roots: tuple[str, ...]) -> str | None:
     return write_problem(text, roots)
 
 
+def loaded_library(name: object) -> str | None:
+    """Which of lasto's libraries ctypes loads by `name`, or None: PCANBasic.dll by its path in the system folder,
+    kernel32 or user32 by name (Windows KnownDLLs, which no other folder can stand in for)."""
+    if not isinstance(name, str):
+        return None
+    if os.path.isabs(name) and _same(name, dll_path()):
+        return PCAN_BASIC
+    lowered = name.lower()
+    return lowered if lowered in _BY_NAME else None
+
+
+def foreign_function_allowed(library: str | None, name: object, *, importing_pyserial: bool) -> bool:
+    """Whether ctypes may look up `name` (a function name, or an ordinal) in `library`, from loaded_library()."""
+    if library == PCAN_BASIC:
+        return isinstance(name, str) and _PCAN_FUNCTION.fullmatch(name) is not None
+    if (library, name) in FOREIGN_FUNCTIONS:
+        return True
+    return importing_pyserial and library == "kernel32" and name in PYSERIAL_FUNCTIONS
+
+
+class PyserialImport(metaclass=SealedType):
+    """`with PYSERIAL_IMPORT: import serial`, in stn_port only: while it runs, on that thread, pyserial may look up
+    its kernel32 functions. pyserial imported anywhere else fails."""
+
+    __slots__ = ("_lock", "_threads")
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._threads: frozenset[int] = frozenset()
+
+    def __enter__(self) -> None:
+        with self._lock:
+            self._threads = self._threads | {threading.get_ident()}
+
+    def __exit__(self, *_exc: object) -> None:
+        with self._lock:
+            self._threads = self._threads - {threading.get_ident()}
+
+    def on_this_thread(self) -> bool:
+        return threading.get_ident() in self._threads
+
+
+PYSERIAL_IMPORT = PyserialImport()
+
+
+def _loaded_by(library: Any) -> object:
+    """The name ctypes loaded a library by, as it keeps it; None for anything that isn't a ctypes library."""
+    try:
+        return library._name
+    except AttributeError:
+        return None
+
+
 def _opens_for_writing(mode: object, flags: object) -> bool:
     if isinstance(flags, int):
         return bool(flags & ~_READ_FLAGS)
@@ -280,7 +364,8 @@ def check_child_process(event: str, args: tuple[object, ...], *, test_run: bool)
 
 def guard_event(event: str, args: tuple[object, ...]) -> None:
     """The audit hook: every write-capable open must pass write_problem(); a read that names a serial device is
-    refused; a child process starts only in a test run; a Bluetooth socket never exists."""
+    refused; ctypes loads and looks up only what lasto binds; a child process starts only in a test run; a
+    Bluetooth socket never exists."""
     if event == "open":
         target, mode, flags = args[0], args[1], args[2]
         if _opens_for_writing(mode, flags):
@@ -309,6 +394,22 @@ def guard_event(event: str, args: tuple[object, ...]) -> None:
             transport="core",
             request=event,
         )
+    elif event == "ctypes.dlopen":
+        if loaded_library(args[0]) is None:
+            refuse(
+                SafetyViolation("foreign_library_refused", f"{args[0]!r} isn't a library lasto binds"),
+                transport="core",
+                request=f"{event} {args[0]!r}",
+            )
+    elif event == "ctypes.dlsym":
+        loaded = _loaded_by(args[0])
+        importing_pyserial = PYSERIAL_IMPORT.on_this_thread()
+        if not foreign_function_allowed(loaded_library(loaded), args[1], importing_pyserial=importing_pyserial):
+            refuse(
+                SafetyViolation("foreign_function_refused", f"{args[1]!r} in {loaded!r} isn't a function lasto binds"),
+                transport="core",
+                request=f"{event} {loaded!r} {args[1]!r}",
+            )
     elif event in CHILD_PROCESS_EVENTS:
         check_child_process(event, args, test_run=hardware_firewall_installed())
     elif event == "socket.__new__" and args[1] == _AF_BLUETOOTH:
