@@ -718,6 +718,62 @@ def test_nothing_in_src_starts_a_child_process():
     assert found == {}
 
 
+# What creates a subinterpreter, where none of this interpreter's Python-level audit hooks runs (review finding L13).
+# CPython's test modules can too (_testcapi.run_in_subinterp), and none of them raises an audit event in 3.13.
+SUBINTERPRETER_MODULES = ("_interpreters", "_xxsubinterpreters", "concurrent.interpreters", "_testcapi", "_testinternalcapi")
+
+
+def creates_a_subinterpreter(tree: ast.Module) -> list[str]:
+    """Every import in `tree` that could create a subinterpreter, and 3.14's InterpreterPoolExecutor."""
+
+    def banned(module: str) -> bool:
+        return any(module == name or module.startswith(name + ".") for name in SUBINTERPRETER_MODULES)
+
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found += [alias.name for alias in node.names if banned(alias.name)]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            found += [
+                f"{node.module}.{alias.name}"
+                for alias in node.names
+                if banned(node.module) or banned(f"{node.module}.{alias.name}") or alias.name == "InterpreterPoolExecutor"
+            ]
+        elif isinstance(node, ast.Attribute) and node.attr == "InterpreterPoolExecutor":
+            found.append(".InterpreterPoolExecutor")
+    return found
+
+
+@pytest.mark.parametrize(
+    ("snippet", "flagged"),
+    [
+        ("import _interpreters", True),
+        ("import _interpreters as i", True),
+        ("from _interpreters import create", True),
+        ("import _xxsubinterpreters", True),
+        ("import concurrent.interpreters", True),
+        ("from concurrent import interpreters", True),
+        ("from concurrent.interpreters import create", True),
+        ("from concurrent.futures import InterpreterPoolExecutor", True),
+        ("import concurrent.futures\nconcurrent.futures.InterpreterPoolExecutor()", True),
+        ("import _testcapi", True),
+        ("from _testinternalcapi import get_interp_settings", True),
+        ("from concurrent.futures import ThreadPoolExecutor", False),
+        ("import concurrent.futures", False),
+        ("import threading", False),
+    ],
+)
+def test_the_subinterpreter_check(snippet, flagged):
+    assert bool(creates_a_subinterpreter(ast.parse(snippet))) is flagged
+
+
+def test_nothing_in_src_creates_a_subinterpreter():
+    """Review finding L13: a subinterpreter runs code with none of this interpreter's Python-level audit hooks, so
+    guard v2 sees nothing it does."""
+    found = {name: hits for name, tree in sources().items() if (hits := creates_a_subinterpreter(tree))}
+    assert found == {}
+
+
 # shutil's copies: copy2 (and copytree and move, which call it) copy through _winapi.CopyFile2, which raises no audit
 # event. pathlib's (Python 3.14) use it too. copyfile goes through open, but copies stay in one place: open.
 SHUTIL_COPIES = {"copy", "copy2", "copyfile", "copytree", "move"}
