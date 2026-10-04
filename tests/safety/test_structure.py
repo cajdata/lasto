@@ -820,14 +820,19 @@ def test_the_guards_winapi_import_is_still_there():
 # What creates a subinterpreter, where none of this interpreter's Python-level audit hooks runs (review finding L13).
 # CPython's test modules can too (_testcapi.run_in_subinterp), and none of them raises an audit event in 3.13.
 SUBINTERPRETER_MODULES = ("_interpreters", "_xxsubinterpreters", "concurrent.interpreters", "_testcapi", "_testinternalcapi")
+# Guard v2 refuses importing those modules at the import statement's `import` event, which these load a module
+# without: importlib.import_module, importlib.util.module_from_spec, and _imp itself.
+IMPORT_EVENT_BYPASSES = {"import_module", "module_from_spec"}
 
 
 def creates_a_subinterpreter(tree: ast.Module) -> list[str]:
-    """Every import in `tree` that could create a subinterpreter, and 3.14's InterpreterPoolExecutor."""
+    """Every import in `tree` that could create a subinterpreter, 3.14's InterpreterPoolExecutor, and every way to load
+    a module that the guard's import refusal wouldn't see."""
 
     def banned(module: str) -> bool:
-        return any(module == name or module.startswith(name + ".") for name in SUBINTERPRETER_MODULES)
+        return any(module == name or module.startswith(name + ".") for name in (*SUBINTERPRETER_MODULES, "_imp"))
 
+    names = bindings(tree)
     found = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -836,10 +841,15 @@ def creates_a_subinterpreter(tree: ast.Module) -> list[str]:
             found += [
                 f"{node.module}.{alias.name}"
                 for alias in node.names
-                if banned(node.module) or banned(f"{node.module}.{alias.name}") or alias.name == "InterpreterPoolExecutor"
+                if banned(node.module)
+                or banned(f"{node.module}.{alias.name}")
+                or alias.name == "InterpreterPoolExecutor"
+                or (node.module.split(".")[0] == "importlib" and alias.name in IMPORT_EVENT_BYPASSES)
             ]
         elif isinstance(node, ast.Attribute) and node.attr == "InterpreterPoolExecutor":
             found.append(".InterpreterPoolExecutor")
+        elif isinstance(node, ast.Attribute) and node.attr in IMPORT_EVENT_BYPASSES and _rooted_in(node.value, names, "importlib"):
+            found.append(f"importlib .{node.attr}")
     return found
 
 
@@ -857,6 +867,13 @@ def creates_a_subinterpreter(tree: ast.Module) -> list[str]:
         ("import concurrent.futures\nconcurrent.futures.InterpreterPoolExecutor()", True),
         ("import _testcapi", True),
         ("from _testinternalcapi import get_interp_settings", True),
+        ("import importlib\nimportlib.import_module(name)", True),
+        ("from importlib import import_module", True),
+        ("import importlib.util\nimportlib.util.module_from_spec(spec)", True),
+        ("from importlib.util import module_from_spec", True),
+        ("from importlib import util\nutil.module_from_spec(spec)", True),
+        ("import _imp", True),
+        ("from _imp import create_builtin", True),
         ("from concurrent.futures import ThreadPoolExecutor", False),
         ("import concurrent.futures", False),
         ("import threading", False),
@@ -868,7 +885,8 @@ def test_the_subinterpreter_check(snippet, flagged):
 
 def test_nothing_in_src_creates_a_subinterpreter():
     """Review finding L13: a subinterpreter runs code with none of this interpreter's Python-level audit hooks, so
-    guard v2 sees nothing it does."""
+    guard v2 sees nothing it does. The guard refuses importing a module that creates them, at the import statement's
+    event; src/ also uses none of the routes that load a module without that event."""
     found = {name: hits for name, tree in sources().items() if (hits := creates_a_subinterpreter(tree))}
     assert found == {}
 
