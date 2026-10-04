@@ -620,6 +620,38 @@ def test_no_sql_in_src_opens_another_database_file():
     assert found == []
 
 
+def star_imports(tree: ast.Module) -> list[str]:
+    return [
+        f"from {'.' * node.level}{node.module or ''} import *"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("snippet", "flagged"),
+    [
+        ("from shutil import *", True),
+        ("from os import *", True),
+        ("from sqlite3 import *", True),
+        ("from . import *", True),
+        ("from lasto.safety.errors import *", True),
+        ("from shutil import disk_usage", False),
+        ("import os", False),
+    ],
+)
+def test_the_star_import_check(snippet, flagged):
+    assert bool(star_imports(ast.parse(snippet))) is flagged
+
+
+def test_no_star_imports_in_src():
+    """A star import binds names no rule here can see: `from shutil import *` then `copy2(...)`, `from os import *`
+    then `system(...)`, or `from sqlite3 import *` then `connect(...)` would get past every rule that reads imports
+    by name (the copy, child-process, subinterpreter and SQLite rules among them)."""
+    found = {name: hits for name, tree in sources().items() if (hits := star_imports(tree))}
+    assert found == {}
+
+
 # Where SQLite's connect lives: the same function in all three, and the Connection class it builds.
 SQLITE_MODULES = ("sqlite3", "sqlite3.dbapi2", "_sqlite3")
 
