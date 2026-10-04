@@ -85,6 +85,15 @@ def test_a_constant_computed_from_an_unstable_one_fails_the_build(tree):
         safety.load_facts(tree)
 
 
+def test_a_line_the_site_cant_evaluate_is_skipped_not_fatal(tmp_path):
+    for source in ("-'a'", "-A.B", "frozenset({Ecu(name='a')})"):
+        with pytest.raises(BuildError):
+            safety._evaluate(ast.parse(source, mode="eval").body, {})
+    p = tmp_path / "m.py"
+    p.write_text("import math\nY = -math.inf\nZ = frozenset({Ecu(name='a')})\nX = 1\n", encoding="utf-8")
+    assert safety._read(p, tmp_path).get("X") == 1
+
+
 def test_arithmetic_errors_are_build_errors(tree):
     for source in ("1 / 0", "int(1e400)", "int(1e400 - 1e400)"):
         with pytest.raises(BuildError):
@@ -92,6 +101,107 @@ def test_arithmetic_errors_are_build_errors(tree):
     edit(tree, "safety/ratelimit.py", "CEILING_WINDOW = 1.0", "CEILING_WINDOW = 0.0")
     with pytest.raises(BuildError, match="CEILING_WINDOW"):
         safety.load_facts(tree)
+
+
+def test_powers_are_evaluated_within_bounds():
+    assert safety._evaluate(ast.parse("2**30", mode="eval").body, {}) == 2**30
+    for source in ("2**1000", "2**-1", "2**0.5", "'a'**2", "1e308**2", "(1e200**2)**2", "(2**64)**64", "A * A"):
+        with pytest.raises(BuildError):
+            safety._evaluate(ast.parse(source, mode="eval").body, {"A": 2**4000})  # whole numbers past 4096 bits
+
+
+def test_cli_options_come_from_source():
+    f = safety.load_facts()
+    assert {"--live", "--channel", "--port", "--data", "--profile", "--seconds", "--bus", "--id", "--from", "--to"} <= f.cli_options
+    assert all(o.startswith("--") for o in f.cli_options)
+    by = f.cli_options_by_command
+    assert by["drive"] == {"--help", "--live", "--channel", "--port", "--data", "--profile", "--seconds"}
+    assert by["log"] == {"--help", "--data", "--bus", "--id", "--from", "--to"}
+    assert by["map"] == {"--help", "--live", "--channel", "--port"}
+    assert by["gui"] == {"--help"}
+    assert by[""] == {"--help", "--version"}  # bare `lasto`
+    assert set(by) == set(f.commands) | {""}
+
+
+PROFILE = 'sub.add_argument("--profile", help="polled logging profile (default: passive capture)")'
+
+
+@pytest.mark.parametrize("old, new", [
+    ('if name == "log":', 'if name.startswith("log"):'),  # a test it can't follow
+    ('if name == "log":', 'elif name == "log":'),  # an else branch
+    ("if name in BUILT:", 'if name == "gui":\n            continue\n        if name in BUILT:'),  # control flow
+    (PROFILE, f"action = {PROFILE}"),  # not a bare call
+    (PROFILE, f"if True:\n                {PROFILE}"),  # a nested block
+    (PROFILE, PROFILE.replace("sub.", "parser.")),  # another parser
+    (PROFILE, f"{PROFILE} if name else None"),  # a conditional expression
+    ('BUILT = frozenset({"drive", "log"})', 'BUILT = frozenset({"drive", "log", "fly"})'),  # not a command
+    ("allow_abbrev=False)\n        if name in HARDWARE", "allow_abbrev=False, parents=[])\n        if name in HARDWARE"),
+    ("allow_abbrev=False)\n        if name in HARDWARE", "allow_abbrev=False, add_help=False)\n        if name in HARDWARE"),
+    ("allow_abbrev=False)\n        if name in HARDWARE", 'allow_abbrev=False, aliases=["d"])\n        if name in HARDWARE'),
+    ("sub = subparsers.add_parser(name,", "sub = add_parser(subparsers, name,"),  # a helper, not the subparsers
+    ("    return parser\n", '    else:\n        parser.add_argument("--x")\n    return parser\n'),  # for ... else
+    ("def _check_hardware_arguments", "def build_parser():\n    return None\n\n\ndef _check_hardware_arguments"),
+])
+def test_cli_options_need_a_shape_the_site_understands(tree, old, new):
+    # Each of these would make the site credit an option to the wrong command, so it refuses them.
+    edit(tree, "cli.py", old, new)
+    with pytest.raises(BuildError, match="cli.py"):
+        safety.load_facts(tree)
+
+
+def test_cli_without_options_fails_the_build(tree):
+    p = tree / "src" / "lasto" / "cli.py"
+    p.write_text(p.read_text(encoding="utf-8").replace(".add_argument(", ".add_arg("), encoding="utf-8")
+    with pytest.raises(BuildError, match="no --options"):
+        safety.load_facts(tree)
+
+
+@pytest.mark.parametrize("rebind", [
+    "import os as X",
+    "from os import sep as X",
+    "def X():\n    pass",
+    "class X:\n    pass",
+    "(X := 2)",
+    "Y = [z for z in range(3) if (X := z)]",
+    "del X",
+    "try:\n    pass\nexcept ValueError as X:\n    pass",
+    "match 1:\n    case X:\n        pass",
+    "from os import *",
+    # := in the parts of a def, class, or lambda that run in the module's scope
+    "def f(a=(X := 2)):\n    pass",
+    "@(X := staticmethod)\ndef f():\n    pass",
+    "class C((X := object)):\n    pass",
+    "Y = lambda a=(X := 2): a",
+    # changing a constant's contents in place
+    "X[0] = 2",
+    "del X[0]",
+    "X.update({0: 2})",
+    "Y = [(A := (X := z)) for z in range(3)]",
+    "(A := X.update({0: 2}))",
+    "class C:\n    X.update({0: 2})",
+    "def f():\n    X[0] = 2\nf()",
+    "globals()['X'] = 2",
+    "globals().update(X=2)",
+])
+def test_every_way_of_rebinding_a_constant_is_refused(tmp_path, rebind):
+    p = tmp_path / "m.py"
+    p.write_text(f"X = 1\n{rebind}\n", encoding="utf-8")
+    with pytest.raises(BuildError, match="changes X"):
+        safety._read(p, tmp_path).get("X")
+
+
+@pytest.mark.parametrize("local", [
+    "def f():\n    X = 2\n    return X",
+    "class C:\n    X = 2",
+    "Y = [X for X in range(3)]",
+    "Y = lambda X: X",
+    "def f(X):\n    X[0] = 2",
+    "def f():\n    X = {}\n    X[0] = 2",
+])
+def test_names_bound_in_their_own_scope_dont_count(tmp_path, local):
+    p = tmp_path / "m.py"
+    p.write_text(f"X = 1\n{local}\n", encoding="utf-8")
+    assert safety._read(p, tmp_path).get("X") == 1
 
 
 def test_other_calls_are_never_evaluated():

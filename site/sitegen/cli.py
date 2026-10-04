@@ -23,6 +23,23 @@ def _build_and_check(out: Path, strict: bool) -> int:
     return 1 if problems else 0
 
 
+def watch_roots() -> list[Path]:
+    """What serve --watch watches: the site's own sources, every app file the site reads, pyproject.toml
+    (the home page's "Runs on" line), and every file a page's date follows (its sources:)."""
+    import yaml
+
+    from sitegen import appfacts
+    from sitegen.pages import FRONT_MATTER
+
+    sources: set[Path] = set()
+    for page in paths.CONTENT.rglob("*.md"):
+        m = FRONT_MATTER.match(page.read_text(encoding="utf-8").replace("\r\n", "\n"))
+        meta = (yaml.safe_load(m.group(1)) or {}) if m else {}
+        sources.update(paths.ROOT / s for s in meta.get("sources", []))
+    return [paths.CONTENT, paths.DATA, paths.TEMPLATES, paths.STATIC, paths.SAFETY, paths.ROOT / "pyproject.toml",
+            *(paths.APP / rel for rel in appfacts.FILES), *sorted(sources)]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="build.py", description="Build and preview lasto.dev.", allow_abbrev=False)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -33,7 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--strict", action="store_true")
     s = sub.add_parser("serve", help="build, then serve on 127.0.0.1", allow_abbrev=False)
     s.add_argument("--port", type=int, default=8000)
-    s.add_argument("--watch", action="store_true", help="rebuild and recheck when content, data, templates, or static files change")
+    s.add_argument("--watch", action="store_true",
+                   help="rebuild and recheck when anything the site is built or dated from changes")
     lk = sub.add_parser("links", help="check the built site's links with the pinned lychee", allow_abbrev=False)
     lk.add_argument("--online", action="store_true", help="also check links to other sites (needs network)")
     lk.add_argument("--dist", type=Path, default=paths.DIST, help="built site to check (default site/dist)")
@@ -58,8 +76,7 @@ def main(argv: list[str] | None = None) -> int:
             from sitegen.serve import serve
 
             code = _build_and_check(paths.DIST, strict=False)
-            roots = [paths.CONTENT, paths.DATA, paths.TEMPLATES, paths.STATIC, paths.SAFETY]
-            serve(paths.DIST, args.port, roots if args.watch else None, lambda: _build_and_check(paths.DIST, strict=False))
+            serve(paths.DIST, args.port, watch_roots() if args.watch else None, lambda: _build_and_check(paths.DIST, strict=False))
             return code
     except BuildError as exc:
         print(f"build failed: {exc}", file=sys.stderr)

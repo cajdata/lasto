@@ -9,6 +9,7 @@ on:
     paths:
       - "site/**"
       - "src/lasto/**"  # the Safety page and service map read the safety core's source
+      - "docs/architecture.md"  # a docs page's date follows it (its sources:)
       - "pyproject.toml"  # requires-python, for the "Runs on" line
       - ".python-version"  # the Python this workflow sets up
       - ".github/**"  # the site tests check every workflow and dependabot.yml
@@ -16,6 +17,7 @@ on:
     paths:
       - "site/**"
       - "src/lasto/**"
+      - "docs/architecture.md"
       - "pyproject.toml"
       - ".python-version"
       - ".github/**"

@@ -42,7 +42,17 @@ BRANDS = {"Toyota": "Toyota", "Lexus": "Lexus", "Subaru": "Subaru", "PEAK": "PEA
           "OBDLink": "OBDLink", "Launch Creader": "Launch", "Creader": "Creader"}
 
 # Phrases that stop being true when a phase is done.
-STALE = {"nothing runs at the truck": 2, "none recorded yet": 2, "hasn't been done yet": 2}
+STALE = {"none recorded yet": 2, "hasn't been done yet": 2}
+# Phrases that stop being true when a phase has run at the truck (its live_tested date), before its approval.
+# Phase 3's truck test is the first with the MX+ (monitoring in silent mode), Phase 4's the first that sends.
+STALE_AT_TRUCK = {
+    "nothing runs at the truck": 2,
+    "polled mode and the mx+ haven't": 3,
+    "only passive capture has run at the truck": 4,
+    "has only listened so far": 4,
+    "only listens so far": 4,
+    "hasn't asked the truck anything yet": 4,
+}
 
 # "built in ten phases": the count has to match the roadmap.
 PHASE_COUNT = re.compile(r"\bbuilt in (\w+) phases\b", re.I)
@@ -277,11 +287,16 @@ def run(dist: Path, pages: list, site: dict, roadmap: Roadmap, text_cmap: frozen
 
 
 def _stale(where: str, text: str, roadmap: Roadmap) -> list[str]:
-    low = text.lower()
+    low = text.lower().replace("’", "'")  # the HTML has curly apostrophes, the phrases straight ones
     problems = [
         f"{where}: says {phrase!r}, but Phase {phase} is done"
         for phrase, phase in STALE.items()
         if roadmap.phase(phase).done and phrase in low
+    ]
+    problems += [
+        f'{where}: says "{phrase}", but Phase {phase} has run at the truck'
+        for phrase, phase in STALE_AT_TRUCK.items()
+        if roadmap.phase(phase).tested_at_truck and phrase in low
     ]
     for m in PHASE_COUNT.finditer(low):
         word = m.group(1)
