@@ -78,6 +78,23 @@ def test_identifiers_dates_and_units_dont_break():
     assert "read-only" in out and '<span class="nw">read-only</span>' not in out
 
 
+def test_more_units_stay_with_their_numbers():
+    out = markdown.nobreak("75 to 78 Hz, 10 ms, 0.14 s, 20 GB, 13 MB, 500 kbit/s, 60 minutes, 30 days")
+    for unit in ["78 Hz", "10 ms", "0.14 s", "20 GB", "13 MB", "500 kbit/s", "60 minutes", "30 days"]:
+        assert unit.replace(" ", " ") in out, unit
+    assert "3 sessions" in markdown.nobreak("3 sessions")  # an ordinary word starting with s isn't a unit
+
+
+def test_capitalized_words_still_break_at_their_hyphen():
+    # A capital at the start of an ordinary word doesn't make it an identifier. Kept together, these
+    # pushed the roadmap's first table past a 375 px screen.
+    out = markdown.nobreak("Creader-assisted, Read-only, Listen-only, Pre-alpha")
+    assert '<span class="nw">' not in out
+    out = markdown.nobreak("K-line, OBD-II, PEAK-System, PCAN-View, 2UZ-FE, 3-way, 12-bit, GPL-3.0-or-later")
+    for word in ["K-line", "OBD-II", "PEAK-System", "PCAN-View", "2UZ-FE", "3-way", "12-bit", "GPL-3.0-or-later"]:
+        assert f'<span class="nw">{word}</span>' in out
+
+
 def test_heading_tag(md):
     html, _ = render(md, '## H {#h}\n\n### Polled mode {#polled tag="Phase 4"}\n')
     assert '<h3 id="polled"><span class="n">1.1</span> Polled mode <span class="tag">Phase 4</span></h3>' in html
