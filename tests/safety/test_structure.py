@@ -616,6 +616,81 @@ def test_no_sql_in_src_opens_another_database_file():
     assert found == []
 
 
+# Where SQLite's connect lives: the same function in all three, and the Connection class it builds.
+SQLITE_MODULES = ("sqlite3", "sqlite3.dbapi2", "_sqlite3")
+
+
+def _from_sqlite(node: ast.AST, names: dict[str, tuple[str, ...]]) -> bool:
+    return any(_rooted_in(node, names, module) for module in SQLITE_MODULES)
+
+
+def opens_sqlite_connections(tree: ast.Module) -> list[str]:
+    """Every way `tree` could open an SQLite connection: connect under any name, a Connection built or subclassed
+    (an annotation is fine), or the _sqlite3 module (review finding L14)."""
+    names = bindings(tree)
+    connection_names = {name for name, binding in names.items() if binding[0] == "from" and binding[1] in SQLITE_MODULES and binding[2] == "Connection"}
+
+    def is_connection_class(node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in connection_names
+        return isinstance(node, ast.Attribute) and node.attr == "Connection" and _from_sqlite(node.value, names)
+
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found += [f"import {alias.name}" for alias in node.names if alias.name == "_sqlite3"]
+        elif isinstance(node, ast.ImportFrom) and node.module in SQLITE_MODULES:
+            found += [f"from {node.module} import connect" for alias in node.names if alias.name == "connect"]
+        elif isinstance(node, ast.Attribute) and node.attr == "connect" and _from_sqlite(node.value, names):
+            found.append(f"{ast.unparse(node)}")
+        elif isinstance(node, ast.Call) and is_connection_class(node.func):
+            found.append(f"{ast.unparse(node.func)}(...)")
+        elif isinstance(node, ast.ClassDef) and any(is_connection_class(base) for base in node.bases):
+            found.append(f"class {node.name}({', '.join(ast.unparse(base) for base in node.bases)})")
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) > 1:
+            name = node.args[1]
+            if _from_sqlite(node.args[0], names) and isinstance(name, ast.Constant) and name.value in ("connect", "Connection"):
+                found.append(f"getattr(..., {name.value!r})")
+    return found
+
+
+@pytest.mark.parametrize(
+    ("snippet", "flagged"),
+    [
+        ("import sqlite3\nsqlite3.connect(path)", True),
+        ("import sqlite3 as db\ndb.connect(path)", True),
+        ("from sqlite3 import connect\nconnect(path)", True),
+        ("from sqlite3 import connect as open_database", True),
+        ("import sqlite3\nopener = sqlite3.connect", True),
+        ("import sqlite3.dbapi2\nsqlite3.dbapi2.connect(path)", True),
+        ("from sqlite3 import dbapi2\ndbapi2.connect(path)", True),
+        ("import sqlite3.dbapi2 as dbapi\ndbapi.connect(path)", True),
+        ("from sqlite3.dbapi2 import connect", True),
+        ("import _sqlite3", True),
+        ("import sqlite3\nsqlite3.Connection(path)", True),
+        ("from sqlite3 import Connection\nConnection(path)", True),
+        ("from sqlite3 import Connection as Plain\nPlain(path)", True),
+        ("import sqlite3\nclass Mine(sqlite3.Connection):\n    pass", True),
+        ("import sqlite3\ngetattr(sqlite3, 'connect')(path)", True),
+        ("import sqlite3\nconn: sqlite3.Connection | None = None", False),
+        ("from sqlite3 import Connection\ndef use(conn: Connection) -> None:\n    pass", False),
+        ("import sqlite3\nsqlite3.SQLITE_DENY", False),
+        ("import sqlite3\nconn.execute('SELECT 1')", False),
+        ("import socket\nsocket.create_connection(address)", False),
+    ],
+)
+def test_the_sqlite_connection_check(snippet, flagged):
+    assert bool(opens_sqlite_connections(ast.parse(snippet))) is flagged
+
+
+def test_only_storage_database_opens_sqlite_connections():
+    """Review finding L14: lasto's connections refuse ATTACH and VACUUM INTO because storage.database's connect and
+    connect_read_only give each one an authorizer. A connection opened anywhere else, by connect or by building a
+    Connection, would have none."""
+    found = {name: hits for name, tree in sources().items() if (hits := opens_sqlite_connections(tree))}
+    assert set(found) == {"lasto.storage.database"}, found
+
+
 def test_every_argument_parser_disables_abbreviation():
     parsers = 0
     for name, tree in sources().items():
