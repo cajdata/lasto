@@ -1,6 +1,6 @@
 ---
 stamp: preliminary
-phase: 1
+phase: 2
 order: 2
 toc: true
 title: "Safety: what Lasto will and won't send | Lasto"
@@ -18,10 +18,10 @@ about_app: true
 - {{ facts.never_services|length }} services, like clearing codes and security access, are on a never-list that no setting can turn on.
 - Standard OBD-II requests can go to `0x{{ facts.functional_id|hex3 }}`, the address every module with OBD-II data answers. Everything else goes only to modules on an approved list that's fixed when Lasto starts, and today that list has {{ facts.ecus|length }} {{ "entry" if facts.ecus|length == 1 else "entries" }}: {% for e in facts.ecus %}the {{ e.name }} computer{% if not loop.last %}, {% endif %}{% endfor %}.
 - Rate limits, a kill switch, a motion interlock, and a battery guard sit in front of every request, and one write function checks every frame again before it goes out.
-- Everything it sends goes in the audit log before it goes out. Refusals are logged too, or held for the next log that opens.
+- Everything it sends goes in the audit log before it goes out. Refusals are logged too, or held until a log opens.
 
 ::: side
-Every table, number, and module on this page is read from the safety core's source when the site is built, so none can drift from the code.
+Every table, limit, and module on this page that the safety core defines is read from its source when the site is built, so none can drift from the code. The truck results come from Phase 2's tests.
 :::
 
 ## Can a data logger damage my truck? {#damage}
@@ -34,7 +34,7 @@ The physical side is real too. A bent pin, a miswired splitter, or a cable route
 
 ## Passive mode sends nothing {#listen-only}
 
-Before it records, Lasto opens the PCAN-USB in this order, and stops at the first step that fails:
+On real hardware, Lasto first checks that it runs on the system's own clock and that its audit log is the kind that syncs every record to disk. For now that check reads only the log's type ([a known gap](/safety/core/#audit)). Then it opens the PCAN-USB in this order, and stops at the first step that fails:
 
 1. The channel has to be free. If PCAN-View or another program holds it, the adapter might already be active, so Lasto refuses.
 2. Turn on listen-only mode, before connecting to the bus.
@@ -43,9 +43,11 @@ Before it records, Lasto opens the PCAN-USB in this order, and stops at the firs
 
 It never turns listen-only on after connecting, reopens included. The passive code never loads the PCAN transmit function, and a structural test reads the source to make sure it stays that way.
 
-While it records, Lasto reads the setting again every {{ facts.status_interval|num }} seconds, and right away whenever the driver reports the adapter rejoining the bus. If it ever reads anything but on, or the adapter fails, Lasto stops trusting the channel. It logs why and closes the channel, which throws away anything the driver restarted on its own. Then it runs the whole sequence above again, up to {{ facts.reopen_attempts }} tries, and at most {{ facts.max_reopens }} reopens per session. If the channel can't be closed, or listen-only can't be confirmed again, the session ends and the log says why. [A timing diagram](/safety/core/#on-the-wire) shows what listen-only means for one frame, bit by bit.
+While it records, Lasto reads the setting again every {{ facts.status_interval|num }} seconds, and right away whenever the driver reports the adapter rejoining the bus. If it ever reads anything but on, or the adapter fails, Lasto stops trusting the channel. It logs why and closes the channel, which throws away anything the driver restarted on its own. Then it runs the whole sequence above again, up to {{ facts.reopen_attempts }} tries, and at most {{ facts.max_reopens }} reopens in one capture. If the channel can't be closed, or listen-only can't be confirmed again, the capture ends and the log says why. [A timing diagram](/safety/core/#on-the-wire) shows what listen-only means for one frame, bit by bit.
 
-One thing PEAK doesn't promise in writing is that the adapter spends no time at all in normal mode as it joins the bus; its documentation says only that listen-only applies "as fast as possible." A bench test, with the PCAN-USB and the MX+ testing each other, will prove it on this adapter. It hasn't been done yet.
+At the truck, in Phase 2's tests with PCAN-Basic 5.1.0.1194, listen-only read back on and stayed on in every run, with no error frames or overruns. [Passive capture](/docs/passive-capture/) describes a capture from start to finish.
+
+One thing PEAK doesn't promise in writing is that the adapter spends no time at all in normal mode as it joins the bus; its documentation says only that listen-only applies "as fast as possible." The truck tests can't show that. A bench test, with the PCAN-USB and the MX+ testing each other, can. It was optional for Phase 2's passive tests, and it's still to come.
 
 ::: side
 Enforced in {{ code_file("pcan_passive.py") }}, {{ code_file("reader.py") }}, and {{ code_file("session.py") }}.
@@ -61,7 +63,7 @@ Polled mode is planned for Phase 4. Every request will go through these checks i
 4. It's addressed to a module on the approved list, or to `0x{{ facts.functional_id|hex3 }}`.
 5. The interlocks allow it: parked-only work needs 0 mph, the battery guard has to be satisfied, and a logging request has to be in the profile picked when the session started.
 6. It fits in one CAN frame. Lasto never sends multi-frame requests.
-7. The encoded bytes pass the frame check: 8 bytes, an ID of `0x{{ facts.functional_id|hex3 }}` or an approved module and never one the truck uses for its own traffic, and a service on the allowlist and off the never-list, within the limits for each kind of module below.
+7. The encoded bytes pass the frame check: 8 bytes, an ID of `0x{{ facts.functional_id|hex3 }}` or an approved module and never one on the gate's list of the truck's own broadcast IDs (Phase 4 adds the 17 Phase 2 found), and a service on the allowlist and off the never-list, within the limits for each kind of module below.
 8. Its turn under the rate limit comes within {{ facts.max_rate_wait|num }} {{ "second" if facts.max_rate_wait == 1 else "seconds" }}, or it's refused. While it waits, Lasto keeps reading the bus, and stops at once if the kill switch trips.
 9. The interlocks still allow it, since the readings may have aged while it waited.
 
@@ -129,7 +131,7 @@ During a polled session, the kill switch stops all sending the moment any of the
 - an error in anything that reads the incoming frames
 - you pressing {{ facts.hotkey }}
 
-A request that fails a check is refused and logged, and the session carries on. A kill is different. There's one kill switch for the whole program, and once it trips it stays tripped until Lasto restarts. Nothing retries, no polled session can open again, and the trip is logged in every open audit log, or held for the next one. The polled session switches the adapter back to listen-only and checks that it took, or closes the channel. Passive capture keeps recording unless the adapter itself failed.
+A request that fails a check is refused and logged, and the session carries on. A kill is different. There's one kill switch for the whole program, and once it trips it stays tripped until Lasto restarts. Nothing retries, no polled session can open again, and the trip is logged in every open audit log, or held for the next one to open. The polled session switches the adapter back to listen-only and checks that it took, or closes the channel. Saving and reporting on a kill come with Phase 4, through the stop path passive capture already uses. Passive capture has no kill switch, because it can't send. Error frames and bus faults don't stop it, and an adapter failure gets the reopen [described above](#listen-only).
 
 ::: side
 {{ facts.hotkey }} works even when the terminal isn't focused.
@@ -168,8 +170,9 @@ Enforced in {{ code_file("stn_policy.py") }} and {{ code_file("stn_port.py") }}.
 - [Real hardware only when you ask](/safety/core/#simulator): every command uses the simulator unless you type `--live` and the adapter's channel or port.
 - [One write function](/safety/core/#writer) checks every frame again, and holds all requests to {{ facts.ceiling_frames }} in any {{ facts.ceiling_window|num }}-second window.
 - [The rules are sealed](/safety/core/#frozen) against changes while Lasto runs, and the safety core keeps its own clock.
-- [The serial guard](/safety/core/#serial-guard), once the safety core is loaded, refuses opening a COM or AUX port by name with Python's file functions. It's built and tested, and an independent review of it is scheduled before Phase 3.
-- [The audit log](/safety/core/#audit) gets every frame before it's sent, and every refusal where it happens, held for the next log if none is open.
+- [The serial guard](/safety/core/#serial-guard), installed before every command but the GUI, refuses opening a COM or AUX port by name with Python's file functions. It's built and tested. Its independent review has to happen before any MX+ code touches hardware.
+- [The audit log](/safety/core/#audit) gets every frame before it's sent, and every refusal where it happens, held for the next log if none is open. On real hardware a session refuses any log but the kind that syncs every record to disk, checked by type for now.
+- [Passive capture](/safety/core/#passive-capture) stops cleanly if its database or raw files can't be written, and its data folder refuses names that point at a device.
 - [The tests](/safety/core/#tests): a simulated truck fails the run on a denied service, a frame on an ID Lasto may not use, or any frame while it only listens. Other tests cover timing and the parked-only rules.
 
 ## What the design does and doesn't claim {#threat-model}
@@ -182,10 +185,11 @@ In practice, the rules protect you from Lasto's own code going wrong. They can't
 
 ## What isn't proven yet {#not-proven}
 
-- Nothing has run on the truck, or on a real PCAN-USB or MX+. Every test so far runs against the simulator.
-- The listen-only and silent-mode bench tests haven't been done. There's no bench bus yet.
-- The serial guard hasn't had its independent review. It's scheduled before Phase 3.
-- The engine computer's address comes from the OBD-II standard and the service manual. No capture has confirmed it yet.
+- Only passive capture has run at the truck. Polled mode and the MX+ haven't, and every test of them so far runs against the simulator.
+- The listen-only and silent-mode bench tests are still to come. There's no bench bus yet.
+- The serial guard hasn't had its independent review. It comes before any MX+ code touches hardware, in Phase 3.
+- The engine computer's address comes from the OBD-II standard and the service manual. No Creader capture has confirmed it yet.
+- What each of the truck's broadcast IDs carries is a hypothesis until Phases 3 and 5, and conditions Phase 2 didn't test, like 4WD low, may add IDs ([the list](/docs/passive-capture/#bus)).
 - The padding byte for requests is `0x{{ facts.padding_byte|hex2 }}` until a Creader capture confirms what Toyota uses.
 - The {{ facts.hotkey }} hotkey is built and tested with fakes. It gets wired into real sessions in Phase 4.
 
