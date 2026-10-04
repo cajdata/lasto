@@ -23,6 +23,7 @@ from functools import cache
 from pathlib import Path
 
 import pytest
+from scan import bindings
 
 import lasto
 
@@ -714,4 +715,93 @@ def test_nothing_in_src_starts_a_child_process():
     """Guard v2 (Phase 3, A3) refuses a child process at runtime, but not in a test run, which starts them. So src/
     is checked here: code that started one would pass every test and fail only at the truck."""
     found = {name: hits for name, tree in sources().items() if (hits := starts_a_child_process(tree))}
+    assert found == {}
+
+
+# shutil's copies: copy2 (and copytree and move, which call it) copy through _winapi.CopyFile2, which raises no audit
+# event. pathlib's (Python 3.14) use it too. copyfile goes through open, but copies stay in one place: open.
+SHUTIL_COPIES = {"copy", "copy2", "copyfile", "copytree", "move"}
+PATH_COPIES = {"copy_into", "move", "move_into"}  # and copy, below: a dict or list has a copy() of its own
+
+
+def _rooted_in(node: ast.AST, names: dict[str, tuple[str, ...]], module: str) -> bool:
+    """Whether an expression is reached through an import of `module` (pathlib.Path, Path, shutil)."""
+    while isinstance(node, ast.Attribute | ast.Call | ast.Subscript):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    binding = names.get(node.id) if isinstance(node, ast.Name) else None
+    return binding is not None and binding[1] == module
+
+
+def copies_outside_open(tree: ast.Module) -> list[str]:
+    """Every way `tree` could copy or move a file other than by open(): shutil's copies, _winapi, and pathlib's
+    copy and move methods (review finding M1)."""
+    names = bindings(tree)
+    called_with_arguments = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call) and (node.args or node.keywords)}
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found += [f"import {alias.name}" for alias in node.names if alias.name.split(".")[0] == "_winapi"]
+        elif isinstance(node, ast.ImportFrom) and node.module == "_winapi":
+            found.append("from _winapi import ...")
+        elif isinstance(node, ast.ImportFrom) and node.module == "shutil":
+            found += [f"from shutil import {alias.name}" for alias in node.names if alias.name in SHUTIL_COPIES]
+        elif isinstance(node, ast.Attribute):
+            if node.attr in SHUTIL_COPIES and _rooted_in(node.value, names, "shutil"):
+                found.append(f"shutil.{node.attr}")
+            elif node.attr in PATH_COPIES:
+                found.append(f".{node.attr}")
+            elif node.attr == "copy" and not _rooted_in(node.value, names, "copy"):
+                # Path(...).copy(target), or pathlib's copy taken as a value; dict.copy() and list.copy() take nothing.
+                if id(node) in called_with_arguments or _rooted_in(node.value, names, "pathlib"):
+                    found.append(".copy(...)")
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) > 1:
+            name = node.args[1]
+            if isinstance(name, ast.Constant) and name.value in SHUTIL_COPIES | PATH_COPIES:
+                found.append(f"getattr(..., {name.value!r})")
+    return found
+
+
+@pytest.mark.parametrize(
+    ("snippet", "flagged"),
+    [
+        ("import shutil\nshutil.copy2(a, b)", True),
+        ("import shutil\nshutil.copy(a, b)", True),
+        ("import shutil\nshutil.copyfile(a, b)", True),
+        ("import shutil\nshutil.copytree(a, b)", True),
+        ("import shutil\nshutil.move(a, b)", True),
+        ("import shutil as s\ns.copytree(a, b)", True),
+        ("import shutil\ncopy = shutil.copy2", True),  # taken as a value
+        ("from shutil import copy2", True),
+        ("from shutil import move as relocate", True),
+        ("import shutil\ngetattr(shutil, 'copy2')(a, b)", True),
+        ("import _winapi", True),
+        ("import _winapi as w", True),
+        ("from _winapi import CopyFile2", True),
+        ("from pathlib import Path\nPath(a).copy(b)", True),
+        ("from pathlib import Path\nPath(a).copy_into(b)", True),
+        ("from pathlib import Path\nPath(a).move(b)", True),
+        ("from pathlib import Path\nPath(a).move_into(b)", True),
+        ("import pathlib\nfunction = pathlib.Path.copy", True),
+        ("from pathlib import Path\nfunction = Path.copy", True),
+        ("path.copy(target, preserve_metadata=True)", True),
+        ("import shutil\nshutil.disk_usage('.')", False),
+        ("import shutil\nshutil.copyfileobj(source, target)", False),  # both already open
+        ("import os\nsettings = os.environ.copy()", False),
+        ("items = list(values).copy()", False),
+        ("import copy\nduplicate = copy.copy(entry)", False),
+        ("import copy\nduplicate = copy.deepcopy(entry)", False),
+        ("from pathlib import Path\nPath(a).write_bytes(data)", False),
+        ("from pathlib import Path\nPath(a).replace(b)", False),
+    ],
+)
+def test_the_copy_check(snippet, flagged):
+    assert bool(copies_outside_open(ast.parse(snippet))) is flagged
+
+
+def test_nothing_in_src_copies_a_file_outside_open():
+    """Review finding M1: shutil.copy2 copies through _winapi.CopyFile2, which raises no audit event, so guard v2 never
+    sees the destination, which could be a device. copytree and a cross-volume move call copy2, and Python 3.14's
+    Path.copy, copy_into, and a cross-volume move or move_into call CopyFile2 for every local file. So src/ copies
+    through open(), which the guard checks, and imports nothing from _winapi."""
+    found = {name: hits for name, tree in sources().items() if (hits := copies_outside_open(tree))}
     assert found == {}
