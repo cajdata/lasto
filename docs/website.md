@@ -1,6 +1,38 @@
 # lasto.dev website plan
 
-Status: **W0 and W1 approved 2026-09-27. Phase 1 approved 2026-09-28, and `main` merged into `website` (section 0b). The site workflow fixed the same day (section 0c). Live at lasto.dev; W3 launch checks run 2026-09-28 (section 0d).** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`. How to build and edit the site is in `site/README.md`; the going-live steps are in section 10.
+Status: **W0 and W1 approved 2026-09-27. Phase 1 approved 2026-09-28, and `main` merged into `website` (section 0b). The site workflow fixed the same day (section 0c). Live at lasto.dev; W3 launch checks run 2026-09-28 (section 0d). Phase 2 approved 2026-10-01, with the first W2 docs (section 0e).** The decisions below override anything later in this document. The brief is `lasto-website-prompt.md`. How to build and edit the site is in `site/README.md`; the going-live steps are in section 10.
+
+## 0e. Phase 2 and the first W2 docs (2026-10-01)
+
+- **Merge:** `origin/main` at e805cf3 (Phase 2 approved) merged into `website` as a856230, then 04c1048 (the PCAN-Basic version tested, and 0x025's byte order, in `docs/architecture.md`) as da153a7, both with no conflicts. The three earlier commits (the lychee pin, the W3 record, the DNS table) go in the same pull request.
+- **Roadmap:** Phase 2 is done, built 2026-09-29, approved 2026-10-01, and public. Its delivers, its truck test, and its open item now say what actually shipped, and Phases 3 and 4 list what Phase 2 handed on (the serial guard review's wider scope, C1777, L6 and L7, the 17 broadcast IDs, saving on a kill).
+- **Safety pages:** updated for Phase 2's changes and checked claim by claim against the code. The 47 rewrites that check called for were rechecked by a second reviewer, and the 8 it still faulted were revised again. Their stamps follow Phase 2, and the stamp's truck clause now comes from the roadmap ("At the truck, Lasto has only listened so far").
+- **Chris's decisions (2026-10-03):** the pages name PCAN-Basic 5.1.0.1194, now recorded in `docs/architecture.md`, and 0x025's byte order from its section 4. Coverage is stated as the gates, never a current figure. A scrubbed real capture isn't promised on the site until one is published.
+- **W2, first increment:**
+  - `/docs/` lists the published docs and the ones still to come, generated from the pages and `roadmap.toml`, and Docs joined the nav.
+  - `/docs/passive-capture/`: `lasto drive`, armed mode, storage, `lasto log`, the step D results, and the provisional 0x025 steering angle layout, marked provisional pending Phases 3 and 5.
+  - Docs pages get a breadcrumb with a matching BreadcrumbList.
+  - The roadmap links the docs a done phase added, and the 404 page lists only docs still to come.
+- **Build changes:**
+  - `sitegen/appfacts.py` reads the capture's timings and limits from source, like the safety facts, with a bounded `**` in the evaluator.
+  - Every `lasto` command and `--option` shown in code must exist in `cli.py`.
+  - Fig. 2's pin labels come from `hardware.toml` (the 0a decision).
+  - The summaries in JSON-LD and the llms files take their tense from the roadmap.
+  - The stale-phrase check now also matches curly apostrophes, which the HTML has.
+  - The no-break rule keeps a hyphenated word on one line only when a part has a digit or is all capitals (OBD-II, K-line, 2026-09-26). Ordinary words like Read-only and Creader-assisted wrap again, which also fixed the roadmap's first table running 15 px into the margin at 375 px, already on the live site. Below 360 px, table cells get narrower side padding, so four-column tables fit at 320 px.
+  - The page contents on unnumbered pages (the roadmap) squeezed each entry into the empty number column, on the live site too. An entry with no number now takes the whole row.
+- **Pre-commit review, in three rounds:** four reviewers read the whole diff, then three read the fixes, then two read the fixes to those, and a skeptic checked each finding. Every confirmed problem was in this round's own code, and each was fixed test first. The third round's fixes weren't reviewed again.
+  - A docs page must sit at a path `roadmap.toml` reserves, so a near-miss name can't publish before its phase. A doc that belongs to no phase, like an FAQ, is reserved without one.
+  - Each phase gets a `live_tested` date, validated (a date, after the build, before approval, Phase 2's before Phase 4's). What the site says has run at the truck follows it, since a truck test comes before approval, and the build flags truck claims that go stale at each phase's truck test.
+  - The CLI check reads every page's rendered code (the first fix escaped the page body and checked only the lede; a build test now covers it). Each run of `lasto`, however it's shown (a prompt, `uv run`, `python -m`, a path, a continued line, after a shell separator), has its options checked against that command's own. The options per command come from `build_parser`, which must keep a shape the site can read exactly (no else, no other parser, no keyword that changes the options), or the build fails.
+  - Page dates follow data a page uses inside `{{ }}` or `{% %}`, so "in one capture." in prose no longer dates the Safety pages from the capture code, while a Preliminary stamp's truck sentence and an app page's summary date them from the roadmap.
+  - The source reader refuses a constant bound again by any statement (import, def, class, `except ... as`, a match capture, `:=` anywhere in the module's scope, `del`, `import *`), or changed in place, by the module or by a function or class in it, or through `globals()`. A line it can't evaluate is skipped instead of crashing the build, and no arithmetic can hang it.
+  - The capture figures the docs give as whole numbers must be whole, and Phase 2's roadmap numbers are tested against the source.
+  - More units (Hz, ms, s, MB, GB, kbit/s, minutes, days) stay with their numbers, and Fig. 2's caption and list get the no-break rules.
+  - The site workflow also runs when `docs/architecture.md` changes, since the passive capture page dates from it, and a test holds every page's `sources:` to the workflow's paths. `serve --watch` watches everything the site is built or dated from.
+  - Tests that pinned Phase 3, or passed on the nav instead of the breadcrumb, now check what they claim.
+- **Not built from section 5's gating plan:** `requires_phase`, the `doc:` link scheme, `--drafts`, gating sections inside a page, and the check on `--live` commands before Phase 2. Reserved paths still gate a doc by failing the build until its phase is done, which covers this increment.
+- **Still to come:** W3-style checks on the two new page types once they're deployed.
 
 ## 0d. W3 launch checks (2026-09-28)
 
@@ -273,7 +305,7 @@ Datasheet. The design itself makes the safety case (the service map shows defaul
 | JavaScript | none at launch | the 404 hints are a static list instead |
 | Dates shown | your local commit date from git; sitemap uses the full timestamp with offset | one source, no UTC/Denver mismatch |
 | Hardware facts | `site/data/hardware.toml` (adapters, chain) and `site/data/vehicles/lexus-gx470.toml` (pins, wires, nodes) | one source each for the diagram, tables, vehicle page, and llms.txt |
-| Example frames | standard OBD-II frames, always labeled, until a scrubbed Phase 2 capture replaces them | no invented truck data |
+| Example frames | standard OBD-II frames, always labeled; a scrubbed real capture replaces them only once one is published (0e) | no invented truck data |
 | Unpushed commits | never linked or printed on the site | they lead nowhere on GitHub |
 | Toyota documents | facts only (pins, wire colors, connector codes); every diagram drawn from scratch | they're copyrighted |
 
