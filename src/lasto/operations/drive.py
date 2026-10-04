@@ -116,7 +116,7 @@ def drive(
         raise ValueError("a simulated drive needs a time limit in seconds")
     root.ensure()
     allow_writes_in(root.path)  # guard v2: the data folder is where this process writes (the same folder again is fine)
-    awake =keep_awake if keep_awake is not None else (KeepAwake() if source.live else None)
+    awake = keep_awake if keep_awake is not None else (KeepAwake() if source.live else None)
     with CaptureLock.take(root):
         conn = capture_db.open_capture(root)
         try:
