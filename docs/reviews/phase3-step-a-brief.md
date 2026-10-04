@@ -1,5 +1,7 @@
 # Review brief: guard v2 and the rest of Phase 3, Step A
 
+*Amended after the review (`phase3-step-a-review.md`, 2026-10-03): C6, C20, Q5, Q6 and Q8 now say what the review found. The rest is as reviewed.*
+
 You're doing an independent, read-only review of lasto's Phase 3 Step A changes, for the project's owner. lasto is a read-only CAN data logger for the owner's 2006 Lexus GX470. Its safety core keeps the app from ever sending anything to the vehicle except allowlisted diagnostic reads. Step A rebuilt the guard that stops a lasto process from reaching the OBDLink MX+ adapter's serial port behind the safety core's back (review finding P2), and settled the other items blocking MX+ work. No MX+ code touches hardware until this review is done.
 
 ## Ground rules
@@ -76,7 +78,7 @@ You're doing an independent, read-only review of lasto's Phase 3 Step A changes,
 
 ### Writes: the four checks
 
-- **C6.** `write_problem(target, roots)` allows a write only if all of these hold, in order (the first three are lexical):
+- **C6.** `write_problem(target, roots)` allows a write only if all of these hold, in order. The first two are lexical; checks 3 and 4 call `realpath` and `stat`, and run only on a path that passed the first two, so neither ever touches a device path:
   1. After `os.path.abspath` (or, for an extended-length drive path, after stripping the extended-length prefix, with no other rewriting), the path is inside a registered root: its case-folded form starts with the root plus a separator.
   2. Every name below the root is a plain name. Its base (before the first dot, trailing spaces dropped) isn't a reserved device name, and it has no colon, other invalid character, trailing dot or trailing space.
   3. `os.path.realpath` of the path is the path itself, so no link or junction is on the way.
@@ -136,7 +138,8 @@ You're doing an independent, read-only review of lasto's Phase 3 Step A changes,
 - **C20.** The changes Step A made to what the scanner and `test_frozen` allow are these, and nothing else:
   - scanner exemptions (`tests/safety/test_structure_reach.py::EXEMPTIONS`): `change sys.dont_write_bytecode` in `serial_guard`, and `set_authorizer` in `lasto.storage.database`;
   - `test_frozen` process-wide stateful objects: the write guard (`GUARD`) and `PYSERIAL_IMPORT`;
-  - the test-run allowances for the write guard: its own folders, more than one root, child processes.
+  - the test-run allowances for the write guard: its own folders, more than one root, child processes;
+  - *added after the review:* the public API (`PUBLIC_API` in `tests/safety/test_structure_reach.py`) gained `serial_guard.allow_writes_in`, for `operations/data_folder.py` and `drive.py`.
 
 ## Open questions
 
@@ -146,8 +149,8 @@ Rate each as a finding or a non-issue.
 - **Q2. A dependency's own SQLite connection.** Only lasto's connections refuse `ATTACH`. One a dependency opened (none does today) could attach a file that `sqlite3.connect` never saw, a device name included.
 - **Q3. Reads of the adapter's port.** A read-only open sends no bytes. But opening a Bluetooth COM port connects the link, which may reboot the adapter. A device-interface path with no COM name in it isn't refused for reads (C14). Is either a transmit risk?
 - **Q4. Between check and open.** `write_problem` checks a path, and the open follows. Something that swaps a junction into the data folder in between gets past check 3. For the audit files, C15 catches the result. For the data folder's other files, the folder is the owner's own. Is that enough?
-- **Q5. The test-run signal (C8).** Setting the mark on `ctypes.CDLL.__init__` unlocks more than one root and child processes. It takes ctypes, which the scanner bans in `src/` outside the bindings.
-- **Q6. Sockets from a handle.** `socket.socket(fileno=...)` and `socket.fromshare` raise `socket.__new__` with the family they were given, not the handle's, so a Bluetooth socket handed in that way isn't caught. Getting one takes another process or ctypes.
+- **Q5. The test-run signal (C8).** Setting the mark on `ctypes.CDLL.__init__` unlocks more than one root and child processes. It takes ctypes, which the scanner bans in `src/` outside the bindings. *Recorded after the review:* the mark sits on the test plugin's wrapper that makes `PCANBasic.dll` fail to load, installed together with the pyserial stub, so a process that carries it can't reach hardware through lasto's bindings either.
+- **Q6. Sockets from a handle.** *Corrected after the review:* in CPython 3.13's `sock_initobj_impl`, the Windows branch skips the first `socket.__new__` audit whenever a `fileno` is given. For a shared socket from `socket.fromshare`, a second audit fires with the handle's real family, from its protocol info, so a shared Bluetooth socket is refused. For an integer `fileno`, no `socket.__new__` fires at all. Either way, getting such a handle takes another process or ctypes.
 - **Q7. pyserial after `stn_port` has imported it.** The module is cached, so a later `import serial` anywhere in the process gets a working pyserial. The scanner allows `import serial` only in `stn_port` within `src/`; a dependency isn't scanned.
 - **Q8. Events left alone on purpose.** Each of these was judged not to be a route to a port. Check that judgment.
   - `os.rename`, `os.remove`, `os.mkdir`, `os.link` and `os.symlink`. They don't open a device for I/O, and a link is caught by check 3 when it's opened.

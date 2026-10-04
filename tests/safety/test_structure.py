@@ -10,7 +10,11 @@
 - Only the session module imports the transmit binding and the gate.
 - Every argument parser disables option abbreviation, so nothing shorter than --live can enable it.
 - No eval/exec anywhere, and nothing in src/ starts a child process (guard v2 refuses one at runtime, except
-  in a test run).
+  in a test run) or creates a subinterpreter.
+- src/ copies a file only through open(): no shutil copies, no _winapi, none of pathlib's copy and move
+  methods (Step A review M1).
+- Only storage/database.py opens SQLite connections, each with an authorizer that refuses ATTACH, and no SQL
+  literal in src/ attaches another file (Step A review L14).
 """
 
 from __future__ import annotations
