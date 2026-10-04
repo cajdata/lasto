@@ -25,7 +25,9 @@ path forms got past it. So this guard turns the check around, to a short allow l
 - A child process runs without this process's hook, so outside a test run (which starts them) the guard
   refuses every way Python starts one: subprocess.Popen, _winapi.CreateProcess, os.system, os.startfile,
   os.spawn* and os.exec*. A Bluetooth socket could reach the MX+ with no COM port at all, so one is refused
-  everywhere, before it exists.
+  everywhere, before it exists. A subinterpreter runs with none of this interpreter's hooks, and creating one
+  raises no event a hook sees, so importing a module that creates them is refused (an ImportRefused, which is
+  an ImportError too, so an optional import carries on without it).
 - pyserial opens the adapter's port with CreateFileW through ctypes, and a ctypes call raises no event at
   all. Loading a library and looking a function up do, so ctypes may load only lasto's libraries and look
   up only PCANBasic's CAN_ functions and the kernel32 and user32 functions lasto binds (FOREIGN_FUNCTIONS).
@@ -51,7 +53,7 @@ from urllib import parse
 
 from lasto.safety._frozen import SealedType, freeze
 from lasto.safety.audit import refuse
-from lasto.safety.errors import SafetyViolation
+from lasto.safety.errors import ImportRefused, SafetyViolation
 from lasto.safety.pcan_dll import dll_path, hardware_firewall_installed
 
 # The audit events that open a file by name. The name is the first argument.
@@ -82,6 +84,10 @@ CHILD_PROCESS_EVENTS = frozenset(
     {"subprocess.Popen", "_winapi.CreateProcess", "os.system", "os.startfile", "os.startfile/2", "os.spawn", "os.exec"}
 )
 _AF_BLUETOOTH = 32  # socket.AF_BLUETOOTH on Windows
+# Modules that create subinterpreters, which run with none of this interpreter's Python-level audit hooks. Creating
+# one raises no event a hook sees (3.13 swaps the thread state to NULL first), so the import statement's `import`
+# event, on the first import, is where they're stopped.
+SUBINTERPRETER_MODULES = frozenset({"_interpreters", "_xxsubinterpreters", "_testcapi", "_testinternalcapi"})
 
 # What ctypes may look up, by library. PCANBasic.dll is the one in the system folder, by its path, and only its CAN_
 # functions: which of them lasto binds, and that only pcan_active binds the transmit one, is the structural tests'
@@ -367,7 +373,7 @@ def check_child_process(event: str, args: tuple[object, ...], *, test_run: bool)
 def guard_event(event: str, args: tuple[object, ...]) -> None:
     """The audit hook: every write-capable open must pass write_problem(); a read that names a serial device is
     refused; ctypes loads and looks up only what lasto binds; a child process starts only in a test run; a
-    Bluetooth socket never exists."""
+    Bluetooth socket never exists; nothing that creates a subinterpreter is imported."""
     if event == "open":
         target, mode, flags = args[0], args[1], args[2]
         if _opens_for_writing(mode, flags):
@@ -414,6 +420,12 @@ def guard_event(event: str, args: tuple[object, ...]) -> None:
             )
     elif event in CHILD_PROCESS_EVENTS:
         check_child_process(event, args, test_run=hardware_firewall_installed())
+    elif event == "import" and args[0] in SUBINTERPRETER_MODULES:
+        refuse(
+            ImportRefused("subinterpreter_refused", f"import {args[0]}: a subinterpreter runs without this process's hooks"),
+            transport="core",
+            request=f"import {args[0]}",
+        )
     elif event == "socket.__new__" and args[1] == _AF_BLUETOOTH:
         refuse(
             SafetyViolation("bluetooth_socket_refused", "a Bluetooth socket could reach the adapter with no serial port"),

@@ -18,6 +18,11 @@ class SafetyViolation(SafetyError):
         self.detail = detail
 
 
+class ImportRefused(SafetyViolation, ImportError):
+    """An import the safety core refuses. Also an ImportError, so an optional import (try: import x / except
+    ImportError) carries on without the module rather than failing (Step A review L13)."""
+
+
 class KillSwitchTripped(SafetyError):
     """Transmission was attempted after the kill switch latched."""
 

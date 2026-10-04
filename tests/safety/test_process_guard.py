@@ -19,7 +19,7 @@ from helpers import events
 
 from lasto.safety import serial_guard
 from lasto.safety.audit import REFUSALS
-from lasto.safety.errors import SafetyViolation
+from lasto.safety.errors import ImportRefused, SafetyViolation
 
 BLUETOOTH = (socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
 
@@ -98,6 +98,69 @@ def test_a_bluetooth_socket_is_refused_before_it_exists(auditor, sink):
     with pytest.raises(SafetyViolation):
         socket.socket(*BLUETOOTH)
     assert [record["request"] for record in events(sink, "rejected")] == ["socket.__new__ family 32"] * 2
+
+
+# ---- subinterpreters (Step A review L13) ----
+#
+# A subinterpreter runs code with none of this interpreter's Python-level audit hooks. Creating one raises no event a
+# hook can see: 3.13's _interpreters.create() swaps the thread state to NULL first, and CPython skips every hook then.
+# What does fire is the import statement's `import` event, on the first import of a module that creates them. The
+# refusal is an ImportError too, so an optional import (3.14's concurrent.futures) carries on without the module.
+
+SUBINTERPRETER_MODULES = ("_interpreters", "_xxsubinterpreters", "_testcapi", "_testinternalcapi")
+
+
+def test_importing_a_module_that_creates_subinterpreters_is_refused(auditor, sink):
+    REFUSALS.attach(auditor)
+    with pytest.raises(SafetyViolation) as refused:
+        import _interpreters  # noqa: F401
+    assert refused.value.reason == "subinterpreter_refused"
+    assert isinstance(refused.value, ImportError)
+    assert "_interpreters" not in sys.modules
+    assert [record["request"] for record in events(sink, "rejected")] == ["import _interpreters"]
+
+
+def test_an_optional_import_carries_on_without_the_module(auditor, sink):
+    """What 3.14's concurrent.futures does as it loads: try: import _interpreters / except ImportError."""
+    REFUSALS.attach(auditor)
+    try:
+        import _interpreters  # noqa: F401
+
+        available = True
+    except ImportError:
+        available = False
+    assert not available
+    assert [record["reason"] for record in events(sink, "rejected")] == ["subinterpreter_refused"]
+
+
+def test_cpythons_test_module_is_refused_too():
+    """_testcapi.run_in_subinterp creates a subinterpreter, with no event either."""
+    with pytest.raises(ImportError):
+        import _testcapi  # noqa: F401
+
+
+@pytest.mark.parametrize("module", SUBINTERPRETER_MODULES)
+def test_the_hook_refuses_each_module_that_creates_subinterpreters(auditor, sink, module):
+    """Called directly: coverage doesn't trace code while Python runs an audit hook."""
+    REFUSALS.attach(auditor)
+    with pytest.raises(ImportRefused) as refused:
+        serial_guard.guard_event("import", (module, None, [], [], []))
+    assert refused.value.reason == "subinterpreter_refused"
+    [refusal] = events(sink, "rejected")
+    assert (refusal["request"], refusal["transport"]) == (f"import {module}", "core")
+
+
+def test_the_hook_lets_other_imports_through(auditor, sink):
+    REFUSALS.attach(auditor)
+    serial_guard.guard_event("import", ("concurrent.futures", None, [], [], []))
+    assert events(sink, "rejected") == []
+
+
+def test_the_import_refusal_is_a_safety_violation_and_an_import_error():
+    assert issubclass(ImportRefused, SafetyViolation) and issubclass(ImportRefused, ImportError)
+    error = ImportRefused("subinterpreter_refused", "import _interpreters")
+    assert str(error) == "subinterpreter_refused: import _interpreters"
+    assert (error.reason, error.detail) == ("subinterpreter_refused", "import _interpreters")
 
 
 def test_the_hook_decides_a_socket(auditor, sink):

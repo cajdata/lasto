@@ -1,6 +1,6 @@
 # Review brief: guard v2 and the rest of Phase 3, Step A
 
-*Amended after the review (`phase3-step-a-review.md`, 2026-10-03): C6, C20, Q5, Q6 and Q8 now say what the review found. The rest is as reviewed.*
+*Amended after the review (`phase3-step-a-review.md`, 2026-10-03): C6, C20, Q1, Q5, Q6 and Q8 now say what the review found and what was done about it. The rest is as reviewed.*
 
 You're doing an independent, read-only review of lasto's Phase 3 Step A changes, for the project's owner. lasto is a read-only CAN data logger for the owner's 2006 Lexus GX470. Its safety core keeps the app from ever sending anything to the vehicle except allowlisted diagnostic reads. Step A rebuilt the guard that stops a lasto process from reaching the OBDLink MX+ adapter's serial port behind the safety core's back (review finding P2), and settled the other items blocking MX+ work. No MX+ code touches hardware until this review is done.
 
@@ -146,6 +146,7 @@ You're doing an independent, read-only review of lasto's Phase 3 Step A changes,
 Rate each as a finding or a non-issue.
 
 - **Q1. Subinterpreters.** Python-level audit hooks belong to one interpreter, so code in a new subinterpreter would run without guard v2's hook. Creating one raises `cpython.PyInterpreterState_New` in the calling interpreter, which the guard could refuse. Should it?
+  - *Resolved after the review (L13):* refusing that event was approved, then dropped, because no Python-level path fires it on 3.13. `_interpreters.create()` goes through `_PyXI_NewInterpreter`, which calls `PyThreadState_Swap(NULL)` before `Py_NewInterpreterFromConfig` (`Python/crossinterp.c`), and `sys_audit_tstate` skips every hook when the thread state is NULL (`Python/sysmodule.c`). `_testcapi.run_in_subinterp` swaps to NULL too, and a probe on 3.13.14 saw no event either way. Instead, the guard refuses the import statement's `import` event for `_interpreters`, `_xxsubinterpreters`, `_testcapi` and `_testinternalcapi`, as an `ImportRefused` (a `SafetyViolation` and an `ImportError`). Structural rules ban those modules, 3.14's `InterpreterPoolExecutor`, and the import routes with no event (`importlib.import_module`, `importlib.util.module_from_spec`, `_imp`) in `src/`. See §3.7.
 - **Q2. A dependency's own SQLite connection.** Only lasto's connections refuse `ATTACH`. One a dependency opened (none does today) could attach a file that `sqlite3.connect` never saw, a device name included.
 - **Q3. Reads of the adapter's port.** A read-only open sends no bytes. But opening a Bluetooth COM port connects the link, which may reboot the adapter. A device-interface path with no COM name in it isn't refused for reads (C14). Is either a transmit risk?
 - **Q4. Between check and open.** `write_problem` checks a path, and the open follows. Something that swaps a junction into the data folder in between gets past check 3. For the audit files, C15 catches the result. For the data folder's other files, the folder is the owner's own. Is that enough?

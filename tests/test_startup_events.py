@@ -6,7 +6,8 @@ checks the time before that. A sitecustomize on PYTHONPATH records every audit e
 earliest point Python runs code from outside its own startup, until the safety core's import begins. That's done for
 the lasto console script and for python -m lasto, with a command that reads (log) and one that captures (drive, in
 the simulator). None of the events may be a write-capable open or any other change to a file, a ctypes load or
-lookup, a socket or SQLite connection, or a child process.
+lookup, a socket or SQLite connection, a child process, or an import of a module that creates subinterpreters (the
+guard refuses that import, but only a first import raises the event).
 
 Python's own bytecode cache is off in these processes (PYTHONDONTWRITEBYTECODE): an install built with
 `uv sync --locked --compile-bytecode` leaves it nothing to write, and in a working tree a stale cache file would be
@@ -63,9 +64,14 @@ _CHANGES = {
 }  # fmt: skip
 # Native code (ctypes), the network, SQLite, and Win32 handles (_winapi.CreateFile, CreateProcess, and the like).
 _PREFIXES = ("ctypes.", "socket.", "sqlite3.", "_winapi.")
+# The guard refuses importing these (they create subinterpreters), but only a first import raises the event, so none
+# may be imported before the guard is in.
+_SUBINTERPRETER_MODULES = {"_interpreters", "_xxsubinterpreters", "_testcapi", "_testinternalcapi"}
 
 
 def forbidden(event: str, args: list[object]) -> bool:
+    if event == "import":
+        return args[0] in _SUBINTERPRETER_MODULES
     if event == "open":
         mode, flags = args[1], args[2]
         writes = isinstance(mode, str) and any(letter in mode for letter in "wax+")
@@ -88,6 +94,8 @@ def forbidden(event: str, args: list[object]) -> bool:
         ("os.mkdir", ["C:\\x", 511, None], True),
         ("subprocess.Popen", ["x", "x", None], True),
         ("import", ["lasto.cli", None, "[]"], False),
+        ("import", ["_interpreters", None, "[]"], True),
+        ("import", ["_testcapi", None, "[]"], True),
         ("os.listdir", ["C:\\lib"], False),
     ],
 )
