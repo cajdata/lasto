@@ -32,11 +32,14 @@ path forms got past it. So this guard turns the check around, to a short allow l
   pyserial's kernel32 bindings, CreateFileW among them, are allowed only while stn_port imports pyserial,
   on that thread (PYSERIAL_IMPORT). Which modules may use ctypes at all is checked by the scanner.
 
-From here on, Python writes no .pyc files (the data folder is the only place this process may write).
+From here on, Python writes no .pyc files (the data folder is the only place this process may write), and
+_winapi.CopyFile2 is gone: it copies a file with no audit event, so shutil.copy2 and Python 3.14's pathlib
+copies fall back to open(), which the hook checks.
 """
 
 from __future__ import annotations
 
+import _winapi
 import nturl2path
 import os
 import re
@@ -422,5 +425,8 @@ def guard_event(event: str, args: tuple[object, ...]) -> None:
 # The data folder is the only place this process may write, so from here on Python writes no .pyc files.
 # Install with `uv sync --locked --compile-bytecode`, so startup stays fast without them.
 sys.dont_write_bytecode = True
+# CopyFile2 copies with no audit event (Step A review finding M1). shutil looks it up at each call, so without it
+# copy2, copytree and move copy through copyfile's open(), which the hook checks; a direct caller fails.
+del _winapi.CopyFile2
 sys.addaudithook(guard_event)
 freeze(__name__)

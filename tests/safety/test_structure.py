@@ -790,11 +790,31 @@ def test_the_child_process_check(snippet, flagged):
     assert bool(starts_a_child_process(ast.parse(snippet))) is flagged
 
 
+# The one import of _winapi src/ may have: guard v2 removes CopyFile2 from it as it installs (Step A review M1,
+# approved). Each rule below lets through exactly that import, there, and nothing else.
+WINAPI_IMPORT = ("lasto.safety.serial_guard", "import _winapi")
+
+
+def _but_the_guards_winapi_import(name: str, hits: list[str], spelled: str) -> list[str]:
+    return [hit for hit in hits if (name, hit) != (WINAPI_IMPORT[0], spelled)]
+
+
 def test_nothing_in_src_starts_a_child_process():
     """Guard v2 (Phase 3, A3) refuses a child process at runtime, but not in a test run, which starts them. So src/
     is checked here: code that started one would pass every test and fail only at the truck."""
-    found = {name: hits for name, tree in sources().items() if (hits := starts_a_child_process(tree))}
+    found = {
+        name: hits
+        for name, tree in sources().items()
+        if (hits := _but_the_guards_winapi_import(name, starts_a_child_process(tree), "_winapi"))
+    }
     assert found == {}
+
+
+def test_the_guards_winapi_import_is_still_there():
+    """The allowance above is used, so it can't outlive the code it was made for."""
+    guard = sources()[WINAPI_IMPORT[0]]
+    assert "_winapi" in starts_a_child_process(guard)
+    assert WINAPI_IMPORT[1] in copies_outside_open(guard)
 
 
 # What creates a subinterpreter, where none of this interpreter's Python-level audit hooks runs (review finding L13).
@@ -937,6 +957,10 @@ def test_nothing_in_src_copies_a_file_outside_open():
     """Review finding M1: shutil.copy2 copies through _winapi.CopyFile2, which raises no audit event, so guard v2 never
     sees the destination, which could be a device. copytree and a cross-volume move call copy2, and Python 3.14's
     Path.copy, copy_into, and a cross-volume move or move_into call CopyFile2 for every local file. So src/ copies
-    through open(), which the guard checks, and imports nothing from _winapi."""
-    found = {name: hits for name, tree in sources().items() if (hits := copies_outside_open(tree))}
+    through open(), which the guard checks, and imports nothing from _winapi (but the guard, to remove CopyFile2)."""
+    found = {
+        name: hits
+        for name, tree in sources().items()
+        if (hits := _but_the_guards_winapi_import(name, copies_outside_open(tree), WINAPI_IMPORT[1]))
+    }
     assert found == {}

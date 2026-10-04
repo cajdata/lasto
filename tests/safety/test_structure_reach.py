@@ -64,6 +64,7 @@ EXEMPTIONS = {
     ("ctypes", "lasto.operations.keep_awake"): "kernel32 SetThreadExecutionState, so Windows doesn't sleep during a capture",
     ("change sys.dont_write_bytecode", "lasto.safety.serial_guard"): "no .pyc writes once the guard installs, so a process writes only to its data folder",
     ("set_authorizer", "lasto.storage.database"): "every connection lasto opens refuses ATTACH and VACUUM INTO, which open files the guard can't see",
+    ("change _winapi.CopyFile2", "lasto.safety.serial_guard"): "guard v2 removes CopyFile2, which copies with no audit event, so shutil's copies fall back to open() (Step A review M1)",
     ("ctypes", "lasto.sim.pytest_plugin"): "the test hardware firewall wraps ctypes.CDLL.__init__",
     ("sys.modules", "lasto.sim.pytest_plugin"): "the test hardware firewall replaces pyserial with a stub",
     ("change ctypes.CDLL.__init__", "lasto.sim.pytest_plugin"): "the test hardware firewall wraps ctypes.CDLL.__init__",
