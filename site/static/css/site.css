@@ -257,6 +257,7 @@ figcaption{margin-top:.625rem;max-width:var(--meas)}
 .contents ol{columns:3 15rem;column-gap:2.5rem;list-style:none;margin:0;padding:0;border-top:1px solid var(--hair)}
 .contents li{break-inside:avoid}
 .contents a{display:grid;grid-template-columns:2.25rem minmax(0,1fr);padding:.375rem 0;border-bottom:1px solid var(--hair);font-size:.875rem;line-height:1.35;text-decoration:none}
+.contents a>span:only-child{grid-column:1/-1}
 .contents a>span:last-child{text-decoration:underline 1px;text-underline-offset:3px}
 .contents a:hover>span:last-child{text-decoration-thickness:2px}
 .contents .n{position:static;width:auto;padding:0;text-align:left;color:var(--ink-2)}
