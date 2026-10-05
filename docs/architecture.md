@@ -525,10 +525,16 @@ The bench tests are the only time either adapter transmits on purpose, and only 
 
 | Test | How | Expected |
 |---|---|---|
-| **B1: PCAN listen-only doesn't ACK** | PCAN-View in listen-only at 500 k. In a serial terminal on the MX+: `ATZ`, `ATSP6`, `ATSH7E0`, `0100`. Repeat with `lasto drive --live` capturing (Phase 2's code). | The MX+ reports `CAN ERROR`, and the 0x7E0 frame repeats as it's retransmitted. The PCAN never transmits. |
-| **B2: when the MX+ ACKs** | PCAN-View in normal mode sends 0x123 every 100 ms. The MX+ is checked unplugged (the baseline), idle after power-up, after `ATZ`, after `ATSP6`, after `STP23`, and monitoring after `STCMM0`. Positive control: monitoring after `STCMM1`, which must ACK. | ACK errors in every state but the control. **Rule (confirmed 2026-10-05):** if the MX+ acknowledges frames while idle, it stays off the truck's splitter until lasto has configured it. |
+| **B1: PCAN listen-only doesn't ACK** | PCAN-View in listen-only at 500 k. In a serial terminal on the MX+: `ATZ`, `ATDPN` (note the saved protocol), `ATM0`, `ATTP6`, `ATSH7E0`, `0100`. Repeat with `lasto drive --live` capturing (Phase 2's code). | The MX+ reports `CAN ERROR`, and the 0x7E0 frame repeats as it's retransmitted. The PCAN never transmits. |
+| **B2: when the MX+ ACKs** | PCAN-View in normal mode sends 0x123 every 100 ms. The MX+ is checked unplugged (the baseline), idle after power-up, after `ATZ`, after `ATM0` and `ATTP6`, after `STP23`, and monitoring after `STCMM0`. Positive control: monitoring after `STCMM1`, which must ACK. | ACK errors in every state but the control. **Rule (confirmed 2026-10-05):** if the MX+ acknowledges frames while idle, it stays off the truck's splitter until lasto has configured it. |
 | **B3: lasto's MX+ code** | `lasto adapter --live --port COMn [--monitor can\|kline] [--seconds N]`, after power-cycling the MX+. | The banner wait works, and B3 measures the settle time (provisional 3 s) and the banner's form. The CAN monitor shows PCAN-View's frames while PCAN-View still sees ACK errors. The backspace stop returns the prompt. In K-line mode the MX+ stays silent on CAN. Turning Bluetooth off mid-monitor stops the run cleanly, with no retry. |
 | **B4: K-line stays silent (standalone, later)** | A KKL cable with a pull-up listens on pin 7 while lasto's K-line monitor starts and stops. | Zero bytes on the K-line. |
+
+**Selecting protocol 6 without saving it (B1, B2).** `ATSP6` would save protocol 6 as the adapter's default ("Set Protocol to h and save it"), which changes its saved settings, as lasto's own STN policy refuses to do, and would change the OBDLink app's default too. The ELM327 datasheet's `AT TP h` is "identical to the SP command, except that the protocol that you select is not immediately saved in internal EEPROM memory, so does not change the default setting". With memory on (`AT M1`), though, a tried protocol that works is saved after all, so `ATM0` comes first ("If the memory function is not enabled, protocols found during a session will not be memorized"). Use `ATTP6`, never `ATTPA6`, which searches the other protocols if 6 fails. `STP` isn't among the commands that write the adapter's memory either (the denied list above). To be sure nothing changed:
+- note what `ATDPN` reports right after the first `ATZ`;
+- after B1 and B2, power-cycle the MX+, which also clears `STCMM1`, and check that `ATDPN` reports the same.
+
+If it doesn't, `ATSP` with the noted value restores it, an `A` included: `ATSPA6` if it reported `A6`.
 
 B4 runs only if K-line is needed, which is undecided (2026-10-05): a Creader session will show which modules don't answer on CAN. It needs nothing from B1 to B3 and can run later on its own.
 
