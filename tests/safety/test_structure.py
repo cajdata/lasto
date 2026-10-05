@@ -938,8 +938,10 @@ def test_the_guards_winapi_import_is_still_there():
 # CPython's test modules can too (_testcapi.run_in_subinterp), and none of them raises an audit event in 3.13.
 SUBINTERPRETER_MODULES = ("_interpreters", "_xxsubinterpreters", "concurrent.interpreters", "_testcapi", "_testinternalcapi")
 # Guard v2 refuses importing those modules at the import statement's `import` event, which these load a module
-# without: importlib.import_module, importlib.util.module_from_spec, and _imp itself.
+# without: importlib.import_module, importlib.util.module_from_spec, _imp itself, and importlib's bootstrap under its
+# builtin names, importable without the importlib the scanner bans (re-review note N1).
 IMPORT_EVENT_BYPASSES = {"import_module", "module_from_spec"}
+IMPORT_MACHINERY = ("_imp", "_frozen_importlib", "_frozen_importlib_external")
 
 
 def creates_a_subinterpreter(tree: ast.Module) -> list[str]:
@@ -947,10 +949,10 @@ def creates_a_subinterpreter(tree: ast.Module) -> list[str]:
     a module that the guard's import refusal wouldn't see."""
 
     def banned(module: str) -> bool:
-        return any(module == name or module.startswith(name + ".") for name in (*SUBINTERPRETER_MODULES, "_imp"))
+        return _within(module, (*SUBINTERPRETER_MODULES, *IMPORT_MACHINERY))
 
     names = bindings(tree)
-    found = reexports(tree, names, (*SUBINTERPRETER_MODULES, "_imp"))
+    found = reexports(tree, names, (*SUBINTERPRETER_MODULES, *IMPORT_MACHINERY))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found += [alias.name for alias in node.names if banned(alias.name)]
@@ -991,6 +993,11 @@ def creates_a_subinterpreter(tree: ast.Module) -> list[str]:
         ("from importlib import util\nutil.module_from_spec(spec)", True),
         ("import _imp", True),
         ("from _imp import create_builtin", True),
+        # importlib's bootstrap under its builtin names, whose loaders raise no event either (re-review note N1).
+        ("import _frozen_importlib", True),
+        ("import _frozen_importlib_external as bootstrap", True),
+        ("from _frozen_importlib_external import SourceFileLoader", True),
+        ("from _frozen_importlib import BuiltinImporter", True),
         ("from concurrent.futures import ThreadPoolExecutor", False),
         ("import concurrent.futures", False),
         ("import threading", False),
