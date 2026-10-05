@@ -134,9 +134,11 @@ def test_an_optional_import_carries_on_without_the_module(auditor, sink):
 
 
 def test_cpythons_test_module_is_refused_too():
-    """_testcapi.run_in_subinterp creates a subinterpreter, with no event either."""
-    with pytest.raises(ImportError):
+    """_testcapi.run_in_subinterp creates a subinterpreter, with no event either. The guard's refusal, not any
+    ImportError: on a Python without _testcapi, a plain ModuleNotFoundError must not pass this (re-review note N3)."""
+    with pytest.raises(ImportRefused) as refused:
         import _testcapi  # noqa: F401
+    assert refused.value.reason == "subinterpreter_refused"
 
 
 @pytest.mark.parametrize("module", SUBINTERPRETER_MODULES)
