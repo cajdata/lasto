@@ -96,18 +96,18 @@ def archive(name: str, key: tuple[str, str] | None = None) -> tuple[str, bytes, 
 
 
 def _member(data: bytes, asset: str, member: str) -> bytes:
-    """One named file out of a release archive."""
+    """One named file out of a release archive, read while the archive is still open."""
     try:
         if asset.endswith(".zip"):
             with zipfile.ZipFile(io.BytesIO(data)) as z:
                 return z.read(member)
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as t:
             f = t.extractfile(member)
+            if f is not None:  # None: not a regular file
+                return f.read()
     except KeyError:
-        f = None
-    if f is None:  # missing, or not a regular file
-        raise ToolError(f"{asset} has no file {member}")
-    return f.read()
+        pass
+    raise ToolError(f"{asset} has no file {member}")
 
 
 def fetch(name: str) -> Path:
