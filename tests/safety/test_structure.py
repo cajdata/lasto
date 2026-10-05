@@ -852,6 +852,81 @@ def test_nothing_in_src_starts_a_child_process():
     assert found == {}
 
 
+def winapi_use_problems(tree: ast.Module) -> list[str]:
+    """What's wrong with how a module uses _winapi, by the guard's rule: one `del _winapi.CopyFile2`, at module level,
+    before sys.addaudithook, and no other use of the module at all."""
+    names = {name for name, binding in bindings(tree).items() if binding == ("module", "_winapi")}
+
+    def deletes_copyfile2(statement: ast.stmt) -> bool:
+        if not (isinstance(statement, ast.Delete) and len(statement.targets) == 1):
+            return False
+        target = statement.targets[0]
+        return isinstance(target, ast.Attribute) and target.attr == "CopyFile2" and isinstance(target.value, ast.Name) and target.value.id in names
+
+    deletions = [index for index, statement in enumerate(tree.body) if deletes_copyfile2(statement)]
+    hooks = [
+        index
+        for index, statement in enumerate(tree.body)
+        if any(isinstance(node, ast.Call) and ast.unparse(node.func) == "sys.addaudithook" for node in ast.walk(statement))
+    ]
+    allowed = {id(tree.body[index].targets[0].value) for index in deletions[:1]}  # type: ignore[attr-defined]
+    problems = [
+        f"line {node.lineno}: _winapi used other than to delete CopyFile2"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id in names and id(node) not in allowed
+    ]
+    problems += [f"line {node.lineno}: from _winapi import" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module == "_winapi"]
+    if len(deletions) != 1:
+        problems.append(f"CopyFile2 deleted at module level {len(deletions)} times, not once")
+    if not hooks:
+        problems.append("no sys.addaudithook at module level")
+    elif deletions and deletions[0] > hooks[0]:
+        problems.append("CopyFile2 deleted after the hook installs")
+    return problems
+
+
+WINAPI_GUARD_VALID = """
+import sys
+import _winapi
+
+
+def guard_event(event, args):
+    pass
+
+
+del _winapi.CopyFile2
+sys.addaudithook(guard_event)
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "valid"),
+    [
+        (WINAPI_GUARD_VALID, True),
+        (WINAPI_GUARD_VALID.replace("import _winapi", "import _winapi as w").replace("del _winapi", "del w"), True),
+        # The re-review's scenario: a copy above the deletion runs with no event, and the import allowance passes it.
+        (WINAPI_GUARD_VALID.replace("del _winapi", "_winapi.CopyFile2(held, backup, 0)\ndel _winapi"), False),
+        (WINAPI_GUARD_VALID.replace("del _winapi.CopyFile2\nsys.addaudithook(guard_event)", "sys.addaudithook(guard_event)\ndel _winapi.CopyFile2"), False),
+        (WINAPI_GUARD_VALID.replace("    pass", "    _winapi.CreateFile(args[0], 0, 0, None, 3, 0, None)"), False),
+        (WINAPI_GUARD_VALID + "copier = getattr(_winapi, 'CopyFile2', None)\n", False),
+        (WINAPI_GUARD_VALID.replace("del _winapi.CopyFile2", "kept = _winapi\ndel _winapi.CopyFile2"), False),
+        (WINAPI_GUARD_VALID.replace("del _winapi.CopyFile2", "del _winapi.CopyFile2\ndel _winapi.CopyFile2"), False),
+        (WINAPI_GUARD_VALID.replace("del _winapi.CopyFile2", "if True:\n    del _winapi.CopyFile2"), False),
+        (WINAPI_GUARD_VALID.replace("del _winapi.CopyFile2\n", ""), False),
+        (WINAPI_GUARD_VALID + "from _winapi import CopyFile2\n", False),
+    ],
+)
+def test_the_guards_winapi_use_check(source, valid):
+    assert (winapi_use_problems(ast.parse(source)) == []) is valid
+
+
+def test_the_guard_uses_winapi_only_to_delete_copyfile2_before_the_hook_installs():
+    """Re-review finding L15: the import allowance is per import, so a _winapi.CopyFile2 call added above the deletion
+    would pass the copy and child-process rules and copy with no event. The guard's only use of _winapi is the one
+    deletion, at module level, before sys.addaudithook."""
+    assert winapi_use_problems(sources()[WINAPI_IMPORT[0]]) == []
+
+
 def test_the_guards_winapi_import_is_still_there():
     """The allowance above is used, so it can't outlive the code it was made for."""
     guard = sources()[WINAPI_IMPORT[0]]
