@@ -1,6 +1,6 @@
 # lasto architecture
 
-Status: **Phase 0 approved 2026-09-26. Phase 1 approved 2026-09-28,** with an independent review of the serial guard recorded as a Phase 3 blocker (§13). Decisions are in §0 and override anything below that says *(open)*. Facts about the truck are hypotheses from documentation research until a capture confirms them.
+Status: **Phase 0 approved 2026-09-26. Phase 1 approved 2026-09-28,** with an independent review of the serial guard recorded as a Phase 3 blocker (§13). **Phase 2 approved 2026-10-01. Phase 3 Step A approved 2026-10-05** (§11). Decisions are in §0 and override anything below that says *(open)*. Facts about the truck are hypotheses from documentation research until a capture confirms them.
 
 ## 0. Decisions (Phase 0, 2026-09-26)
 
@@ -490,6 +490,8 @@ Safety core for both transports, `FakePcanDll`, `FakeStnPort`, the minimal vehic
 The STN transport in Phase 1 has **no path that puts anything on the vehicle bus**. It covers reset, identification, voltage reads, CAN silent monitoring, and K-line passive monitoring (needed in Phase 3). The only bus-facing use it would ever have is K-line polling, which needs the Phase 7 decision on 0x81 anyway. Until then every hex-only request line is denied, and the tests prove it.
 
 **Phase 2 (approved 2026-10-01, after the step D live tests at the truck; results in §4):** passive capture and storage (§4), `lasto drive` and `lasto log` (§9), and the §14.8 prerequisites for the GUI. Two safety core changes, each its own commit: on real hardware a session refuses an audit log that doesn't keep its records on disk (finding L5, §3.3), and held audit records go to a file as they're held. One new scanner exemption, its own commit: ctypes in `operations/keep_awake.py`. The bench test is optional for the passive tests (owner's decision, 2026-09-28). The independent Phase 2 review (2026-09-29) found nothing High or Medium, and six Lows: L8 to L11 are fixed (§4, §7), and L6 and L7, both in the safety core, are Phase 4 blockers in §13.
+
+**Phase 3, Step A (approved 2026-10-05, under the stopping rule: the re-review found nothing High or Medium):** guard v2 (§3.7), which closes the serial guard blocker: a process writes only inside its data folder, SQLite, child processes, Bluetooth sockets, foreign functions, audit files that must be regular files, `CopyFile2`, and subinterpreters. Also: nothing happens before the CLI imports the safety core, and the STN adapter waits out the bootloader window (finding E) and fixes L4 and the second close. The independent review (`docs/reviews/phase3-step-a-review.md`) found one Medium, M1, and Lows L12 to L14. All were fixed or accepted (`phase3-step-a-fixes-review.md` checked the fixes). Steps B (bench), C (mapping) and D (live tests) follow.
 
 ## 12. Verification you run (never Claude)
 
