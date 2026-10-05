@@ -14,6 +14,7 @@ authors = [{ name = "Chris Johnson" }]
 classifiers = [
     "Development Status :: 1 - Planning",
     "Environment :: Console",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.13",
