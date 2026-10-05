@@ -1,0 +1,44 @@
+# Re-review: the Step A review fixes
+
+Targeted re-review against `docs/reviews/phase3-step-a-fixes-brief.md`, of `6ff8a1e..2da9081`. Saved verbatim from the reviewer's report.
+
+Review complete. Everything below is from reading the range, one run of the suite, CPython's 3.13 and 3.14 branch sources, and three read-only probes on this interpreter that opened no hardware and imported nothing from lasto. Nothing was edited or committed.
+
+**Verdict: approvable.** All eight claims hold, including both checks F2 asked for. The suite run matched the brief, with the thorough Hypothesis profile not rerun:
+
+| Suite | Result |
+|---|---|
+| `uv run pytest` | 2159 passed in 41 s |
+| Coverage gates | safety 100%, capture 100%, storage 100% |
+
+Two Lows, both tests-only, neither touching the safety core. R1 and R3 are non-issues. R2 is verified from source, but 3.14 still deserves one real run.
+
+## Claims
+
+- **F1 Verified.** Each listed form is flagged by `copies_outside_open`, the parametrized cases cover them, and `src/` passes. The exception is one hit string in one module, and `test_the_guards_winapi_import_is_still_there` pins it. Two things the rule doesn't reach are L15 and L16.
+- **F2 Verified.** The deletion is the last statement before the hook installs and runs unconditionally. My probe on 3.13.14 matched the docs exactly: after the deletion, a second import statement and `importlib.reload` leave CopyFile2 gone. Only removing the module from `sys.modules` and importing again brings it back, as a new object, and shutil keeps the stripped one. Check (a): the 3.13 stdlib names CopyFile2 only inside `copy2`, with `hasattr` at call time. The import log of a `lasto log` run shows argparse loads shutil before the core, which is harmless for that reason, and pathlib first loads after the core from `lasto.storage.root`. Check (b): a missing CopyFile2 raises AttributeError inside the core's import, so the CLI dies before any command. The dependency claims hold too: no locked package uses `_winapi` or a shutil copy. colorama's hit is a local function named `_winapi_test`, and pip, which does copy, isn't in the lock.
+- **F3 Verified.** Every listed form is flagged, annotations pass, and eight modules import sqlite3 while only database.py connects. The "each with an authorizer" half of the rule's docstring is still by inspection plus the runtime test, see note N2. Re-exports are L16.
+- **F4 Verified** from the 3.13 branch. `_PyXI_NewInterpreter` swaps the thread state to NULL before `Py_NewInterpreterFromConfig`. `_PyInterpreterState_New` audits only when its tstate is non-NULL, and `sys_audit_tstate` returns without running hooks on a NULL state. `_testcapi.run_in_subinterp` swaps to NULL before `Py_NewInterpreter`. `interp_create` goes through `_PyXI_NewInterpreter`, and that module never audits. I replicated the probe: no event of any kind fired during `_interpreters.create()` or `destroy()`.
+- **F5 Verified.** The MRO is as stated and instantiation works, per the test. `CANNOT_START` includes SafetyError, the gate catches SafetyError, and nothing in `src/` catches ImportError. No file in site-packages, text or binary, mentions any of the four names, and the `log` run's import log shows none. For 3.14, the branch source confirms `concurrent/futures/__init__.py` imports `_interpreters` inside `try/except ImportError` at load, and exports the executor only if that succeeded. Note that `concurrent/interpreters/__init__.py` imports `_interpreters` unguarded, so a direct import of it raises the refusal as a SafetyViolation, which is the right outcome.
+- **F6 Verified** by probe: an import statement raised the event, `importlib.import_module` did not. One unlisted no-event route is note N1.
+- **F7 Verified.** The rule is simple and correct, and `src/` has no star import.
+- **F8 Verified.** The docs match the code and my probes, down to the `.pth` contents and the CopyFile2 comeback claims. The first brief's amended sections say what the review found. One phrase worth adding is note N6.
+
+## Findings and notes
+
+- **L15 (Low): the `_winapi` allowance is per import, not per use.** File [test_structure.py:830](tests/safety/test_structure.py:830), `_but_the_guards_winapi_import`. Scenario: a future session editing the guard adds a `_winapi.CopyFile2` call above the deletion, say to back up the held-records file. I ran that snippet through the rules. The copy rule reports only the exempt import, the child-process rule likewise, and the scanner sees a call rather than a change. The copy runs with no event. Mitigations: it's a safety-core edit behind the ask rule, and anything placed after the deletion fails. Fix, tests only: assert the only attribute use of `_winapi` in the guard is the one deletion of CopyFile2, and that it precedes the hook install.
+- **L16 (Low): the new rules don't follow re-exports, the L11 shape.** File [test_structure.py:932](tests/safety/test_structure.py:932), `_rooted_in`. Scenario: a Phase 8 export writes `from lasto.storage.retention import shutil` then calls its copy2, or `from lasto.storage.database import sqlite3` then connects, getting a connection with no authorizer. Probed: the copy, SQLite, subinterpreter and child-process rules, the scanner's deliberate routes, and the public-API check all return nothing for these, and for `_winapi` reached through the guard from outside the core. The scanner already follows re-exports for its banned modules and serial, so this is the gap L11 closed, reopened for the modules the new rules name. Fix, tests only: resolve the root binding through `scan.resolve_binding` inside `_rooted_in`, or add shutil, `_winapi`, sqlite3, `_sqlite3`, subprocess and the subinterpreter modules to `REEXPORT_WATCHED`.
+- **N1.** `_frozen_importlib` and `_frozen_importlib_external` are importlib's bootstrap under builtin names, importable without the `importlib` root the scanner bans. Their loaders raise no event. Outside the core the scanner catches a call as a private attribute; inside it would not. Deliberate-only, one line to add to the subinterpreter rule's banned list.
+- **N2.** database.py has two connects and two `set_authorizer` calls at [database.py:62](src/lasto/storage/database.py:62) and [database.py:76](src/lasto/storage/database.py:76). A count assertion would make that pairing structural rather than inspected.
+- **N3.** `test_cpythons_test_module_is_refused_too` passes on any ImportError, so it would also pass on a Python without `_testcapi`. The direct hook test covers the path. Asserting ImportRefused would make it say what its name says.
+- **N4.** The exemption string also covers an assignment to CopyFile2, not only its deletion. `test_the_guard_removes_copyfile2` fails on any assignment, so this is covered at runtime.
+- **N5.** [stepA.diff](docs/reviews/stepA.diff) is untracked, a saved diff of the first review's range. Not in scope, just housekeeping.
+- **N6.** §3.7 says pathlib isn't loaded until after the core, which is true. It could add that shutil is loaded before it by argparse and that this doesn't matter, since shutil looks CopyFile2 up at call time on one shared module object.
+
+## Questions, and what I couldn't check
+
+- **R1: non-issue.** Rebinding a module by assignment or receiving it as a parameter is deliberate indirection, not a convenient idiom. An optional tightening: flag `copy2`, `copyfile` and `copytree` by attribute name regardless of root, as `.move`, `.copy_into` and the child-process names already are. `connect` and `Connection` are too common for that.
+- **R2: verified from the 3.14 branch, still worth one run.** All four 3.14 claims match that branch's source today: shutil's call-time `hasattr`, pathlib choosing its copy method at class definition and failing closed if CopyFile2 vanished later, and the two concurrent modules as described. The branch moves, so run the suite once on 3.14 before claiming it, with `test_startup_events`, `test_copy_guard` and `test_process_guard` as the ones to watch. Nothing in `src/` imports concurrent.futures, so no production refusal fires on 3.14. A test process might import it at startup and record one refusal, and the autouse fixture at [conftest.py:54](tests/conftest.py:54) resets held refusals per test, so that can't leak into assertions.
+- **R3: non-issue.** No sitecustomize or usercustomize module exists, user site is disabled in the venv, the only `.pth` files are the two documented, and the only `PYTHON*` variable set is `PYTHONDONTWRITEBYTECODE`. The startup test covers both entry points, and a 3.14 run of it would catch any pre-core import of the four. The gui command never imports the core, which is the §14.1 boundary rather than this one.
+
+Not checked: 3.14 at runtime, the thorough Hypothesis profile, the brief's full-run recording hook beyond one `log` run's import log, and CopyFile2 against a device, which must not be tested.
