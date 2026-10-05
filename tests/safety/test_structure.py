@@ -23,11 +23,12 @@ import ast
 import re
 import subprocess
 import sys
+from collections.abc import Iterable
 from functools import cache
 from pathlib import Path
 
 import pytest
-from scan import bindings
+from scan import bindings, resolve_binding, resolve_member
 
 import lasto
 
@@ -664,14 +665,12 @@ def opens_sqlite_connections(tree: ast.Module) -> list[str]:
     """Every way `tree` could open an SQLite connection: connect under any name, a Connection built or subclassed
     (an annotation is fine), or the _sqlite3 module (review finding L14)."""
     names = bindings(tree)
-    connection_names = {name for name, binding in names.items() if binding[0] == "from" and binding[1] in SQLITE_MODULES and binding[2] == "Connection"}
 
     def is_connection_class(node: ast.AST) -> bool:
-        if isinstance(node, ast.Name):
-            return node.id in connection_names
-        return isinstance(node, ast.Attribute) and node.attr == "Connection" and _from_sqlite(node.value, names)
+        target = _resolved(node, names) if isinstance(node, ast.Name | ast.Attribute) else None
+        return target is not None and target[0] == "name" and target[2] == "Connection" and _within(target[1], SQLITE_MODULES)
 
-    found = []
+    found = reexports(tree, names, ("_sqlite3",))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found += [f"import {alias.name}" for alias in node.names if alias.name == "_sqlite3"]
@@ -708,6 +707,12 @@ def opens_sqlite_connections(tree: ast.Module) -> list[str]:
         ("from sqlite3 import Connection as Plain\nPlain(path)", True),
         ("import sqlite3\nclass Mine(sqlite3.Connection):\n    pass", True),
         ("import sqlite3\ngetattr(sqlite3, 'connect')(path)", True),
+        # Through a lasto module's own import (review finding L16, the L11 shape).
+        ("from lasto.storage.database import sqlite3\nsqlite3.connect(path)", True),
+        ("from lasto.storage import database\ndatabase.sqlite3.connect(path)", True),
+        ("import lasto.storage.database as db\ndb.sqlite3.Connection(path)", True),
+        ("from lasto.storage.database import sqlite3\nclass Mine(sqlite3.Connection):\n    pass", True),
+        ("from lasto.storage.database import connect\nconnect(path)", False),  # lasto's own, with the authorizer
         ("import sqlite3\nconn: sqlite3.Connection | None = None", False),
         ("from sqlite3 import Connection\ndef use(conn: Connection) -> None:\n    pass", False),
         ("import sqlite3\nsqlite3.SQLITE_DENY", False),
@@ -780,8 +785,9 @@ def _child_process_module(module: str) -> bool:
 
 
 def starts_a_child_process(tree: ast.Module) -> list[str]:
-    """Every import or name in `tree` that could start a child process."""
-    found = []
+    """Every import or name in `tree` that could start a child process, the modules reached through a lasto module's
+    own import of them included."""
+    found = reexports(tree, bindings(tree), CHILD_PROCESS_MODULES)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found += [alias.name for alias in node.names if _child_process_module(alias.name)]
@@ -813,6 +819,10 @@ def starts_a_child_process(tree: ast.Module) -> list[str]:
         ("import asyncio\nasyncio.create_subprocess_exec('x')", True),
         ("import webbrowser", True),
         ("import _winapi", True),
+        # Through a lasto module's own import (review finding L16): the guard's _winapi, from outside the core.
+        ("from lasto.safety.serial_guard import _winapi", True),
+        ("from lasto.safety import serial_guard\nserial_guard._winapi", True),
+        ("import lasto.safety.serial_guard as guard\nguard._winapi", True),
         ("import os\nos.environ.get('X')", False),
         ("from concurrent.futures import ThreadPoolExecutor", False),
         ("import threading", False),
@@ -865,7 +875,7 @@ def creates_a_subinterpreter(tree: ast.Module) -> list[str]:
         return any(module == name or module.startswith(name + ".") for name in (*SUBINTERPRETER_MODULES, "_imp"))
 
     names = bindings(tree)
-    found = []
+    found = reexports(tree, names, (*SUBINTERPRETER_MODULES, "_imp"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found += [alias.name for alias in node.names if banned(alias.name)]
@@ -929,12 +939,49 @@ SHUTIL_COPIES = {"copy", "copy2", "copyfile", "copytree", "move"}
 PATH_COPIES = {"copy_into", "move", "move_into"}  # and copy, below: a dict or list has a copy() of its own
 
 
-def _rooted_in(node: ast.AST, names: dict[str, tuple[str, ...]], module: str) -> bool:
-    """Whether an expression is reached through an import of `module` (pathlib.Path, Path, shutil)."""
-    while isinstance(node, ast.Attribute | ast.Call | ast.Subscript):
-        node = node.func if isinstance(node, ast.Call) else node.value
+def _within(module: str, packages: Iterable[str]) -> bool:
+    return any(module == package or module.startswith(package + ".") for package in packages)
+
+
+def _resolved(node: ast.AST, names: dict[str, tuple[str, ...]]) -> tuple[str, ...] | None:
+    """What an expression reaches, followed through its module's imports and every lasto module's own imports
+    (scan.resolve_binding), so `from lasto.storage.database import sqlite3` reaches sqlite3 (review finding L16, the
+    L11 shape). A call or a subscript is looked through to what it's made from: Path(a).parent reaches pathlib."""
+    if isinstance(node, ast.Call):
+        return _resolved(node.func, names)
+    if isinstance(node, ast.Subscript):
+        return _resolved(node.value, names)
+    if isinstance(node, ast.Attribute):
+        base = _resolved(node.value, names)
+        return resolve_member(base[1], node.attr) if base is not None and base[0] == "module" else base
     binding = names.get(node.id) if isinstance(node, ast.Name) else None
-    return binding is not None and binding[1] == module
+    return None if binding is None else resolve_binding(binding)
+
+
+def _rooted_in(node: ast.AST, names: dict[str, tuple[str, ...]], module: str) -> bool:
+    """Whether an expression is reached through an import of `module`, directly or through a lasto module's
+    (pathlib.Path, Path(a), shutil, retention.shutil)."""
+    target = _resolved(node, names)
+    return target is not None and _within(target[1], (module,))
+
+
+def reexports(tree: ast.Module, names: dict[str, tuple[str, ...]], modules: Iterable[str]) -> list[str]:
+    """Every import or attribute in `tree` that reaches one of `modules` only through a lasto module's own import of it:
+    `from lasto.safety.serial_guard import _winapi`, or `serial_guard._winapi` (review finding L16)."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0 and _within(node.module, ("lasto",)):
+            found += [
+                f"from {node.module} import {alias.name}"
+                for alias in node.names
+                if _within(resolve_binding(("from", node.module, alias.name))[1], modules)
+            ]
+        elif isinstance(node, ast.Attribute):
+            base = _resolved(node.value, names)
+            if base is not None and base[0] == "module" and _within(base[1], ("lasto",)):
+                if _within(resolve_member(base[1], node.attr)[1], modules):
+                    found.append(ast.unparse(node))
+    return found
 
 
 def copies_outside_open(tree: ast.Module) -> list[str]:
@@ -942,7 +989,7 @@ def copies_outside_open(tree: ast.Module) -> list[str]:
     copy and move methods (review finding M1)."""
     names = bindings(tree)
     called_with_arguments = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call) and (node.args or node.keywords)}
-    found = []
+    found = reexports(tree, names, ("_winapi",))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found += [f"import {alias.name}" for alias in node.names if alias.name.split(".")[0] == "_winapi"]
@@ -989,6 +1036,13 @@ def copies_outside_open(tree: ast.Module) -> list[str]:
         ("import pathlib\nfunction = pathlib.Path.copy", True),
         ("from pathlib import Path\nfunction = Path.copy", True),
         ("path.copy(target, preserve_metadata=True)", True),
+        # Through a lasto module's own import (review finding L16, the L11 shape).
+        ("from lasto.storage.retention import shutil\nshutil.copy2(a, b)", True),
+        ("from lasto.storage import retention\nretention.shutil.copytree(a, b)", True),
+        ("import lasto.storage.retention as r\nr.shutil.copyfile(a, b)", True),
+        ("from lasto.safety.serial_guard import _winapi", True),
+        ("from lasto.safety import serial_guard\nserial_guard._winapi.CopyFile2(a, b, 0)", True),
+        ("from lasto.storage.retention import shutil\nshutil.disk_usage('.')", False),
         ("import shutil\nshutil.disk_usage('.')", False),
         ("import shutil\nshutil.copyfileobj(source, target)", False),  # both already open
         ("import os\nsettings = os.environ.copy()", False),
