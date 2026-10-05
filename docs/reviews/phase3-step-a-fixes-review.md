@@ -56,5 +56,8 @@ Step A was approved on 2026-10-05 under the stopping rule. These fixes for this 
 | 2617dac | N1: `_frozen_importlib` and `_frozen_importlib_external` join the subinterpreter rule |
 | 020c021 | N2: each connect in `storage/database.py` is paired with its authorizer, the very next statement |
 | 7da3e40 | N3: the `_testcapi` test asserts `ImportRefused` |
+| 7f89f08 | `pytest -s` works under guard v2: the test plugin asks for its temp folder as it loads (found during the 3.14 run) |
+| 171c5fa | The first-import `_interpreters` tests run in a fresh process (they failed on 3.14, where a test run loads `_interpreters` early) |
+| 4484647 | The startup-events test also forbids asyncio, `concurrent.futures` and `concurrent.interpreters` before the core |
 
 N6 and R1 are recorded in architecture §3.7. R1 is accepted with this reason: with `CopyFile2` removed, every copy goes through the guarded `open`, however the module is reached.
