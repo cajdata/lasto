@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import subprocess
 import sys
@@ -109,28 +110,51 @@ def test_a_bluetooth_socket_is_refused_before_it_exists(auditor, sink):
 
 SUBINTERPRETER_MODULES = ("_interpreters", "_xxsubinterpreters", "_testcapi", "_testinternalcapi")
 
+# A first import is only a first import in a fresh process. A test run has loaded _interpreters long before the guard
+# on Python 3.14: hypothesis imports unittest.mock, which imports asyncio, which imports concurrent.futures, which tries
+# _interpreters as it loads. So these run where nothing but the guard is loaded, as in lasto's own processes.
+FIRST_IMPORT = r"""
+import json, sys
+import lasto.safety
+from lasto.safety.audit import REFUSALS, Auditor, MemoryAuditSink
+from lasto.safety.clock import SystemClock
+from lasto.safety.errors import SafetyViolation
 
-def test_importing_a_module_that_creates_subinterpreters_is_refused(auditor, sink):
-    REFUSALS.attach(auditor)
-    with pytest.raises(SafetyViolation) as refused:
-        import _interpreters  # noqa: F401
-    assert refused.value.reason == "subinterpreter_refused"
-    assert isinstance(refused.value, ImportError)
-    assert "_interpreters" not in sys.modules
-    assert [record["request"] for record in events(sink, "rejected")] == ["import _interpreters"]
+sink = MemoryAuditSink()
+REFUSALS.attach(Auditor(sink, SystemClock()))
+seen = {"loaded_before": "_interpreters" in sys.modules}
+try:
+    import _interpreters
+    seen["statement"] = "imported"
+except SafetyViolation as exc:
+    seen["statement"] = [exc.reason, isinstance(exc, ImportError)]
+try:  # what 3.14's concurrent.futures does as it loads
+    import _interpreters
+    seen["optional_import"] = "imported"
+except ImportError:
+    seen["optional_import"] = "carried on without it"
+seen["loaded_after"] = "_interpreters" in sys.modules
+seen["refusals"] = [[r["reason"], r["request"]] for r in sink.records if r["event"] == "rejected"]
+print(json.dumps(seen))
+"""
 
 
-def test_an_optional_import_carries_on_without_the_module(auditor, sink):
-    """What 3.14's concurrent.futures does as it loads: try: import _interpreters / except ImportError."""
-    REFUSALS.attach(auditor)
-    try:
-        import _interpreters  # noqa: F401
+@pytest.fixture(scope="module")
+def first_import() -> dict:
+    done = subprocess.run([sys.executable, "-c", FIRST_IMPORT], capture_output=True, text=True, check=True)
+    return json.loads(done.stdout)
 
-        available = True
-    except ImportError:
-        available = False
-    assert not available
-    assert [record["reason"] for record in events(sink, "rejected")] == ["subinterpreter_refused"]
+
+def test_importing_a_module_that_creates_subinterpreters_is_refused(first_import):
+    assert first_import["loaded_before"] is False  # a first import, or this proves nothing
+    assert first_import["statement"] == ["subinterpreter_refused", True]  # a SafetyViolation, and an ImportError
+    assert first_import["loaded_after"] is False
+    assert first_import["refusals"][0] == ["subinterpreter_refused", "import _interpreters"]
+
+
+def test_an_optional_import_carries_on_without_the_module(first_import):
+    assert first_import["optional_import"] == "carried on without it"
+    assert first_import["refusals"] == [["subinterpreter_refused", "import _interpreters"]] * 2
 
 
 def test_cpythons_test_module_is_refused_too():
