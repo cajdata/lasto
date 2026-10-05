@@ -385,6 +385,23 @@ def test_a_collection_error_is_reported_as_one(pytester):
     assert (pytester.path / ".pytest_cache").is_dir()
 
 
+def test_a_run_without_output_capture_registers_its_folders(pytester):
+    """pytest -s: with capture off, nothing has asked tempfile for its folder when the session starts, and
+    tempfile.gettempdir() checks the folder by writing a file in it, which guard v2 refuses until the folder is
+    registered. The plugin asks as it loads, before the safety core can be imported."""
+    pytester.makepyfile(
+        """
+        import lasto.safety  # installs guard v2
+
+        def test_writes_in_its_temp_folder(tmp_path):
+            (tmp_path / "written.txt").write_text("ok", encoding="utf-8")
+        """
+    )
+    result = pytester.runpytest_subprocess("-p", "lasto.sim.pytest_plugin", "-p", "no:cacheprovider", "-s")
+    assert "write_outside_the_data_folder" not in result.stdout.str() + result.stderr.str()
+    result.assert_outcomes(passed=1)
+
+
 def test_plugin_installs_the_firewall_in_a_fresh_run(pytester):
     pytester.makepyfile(
         """

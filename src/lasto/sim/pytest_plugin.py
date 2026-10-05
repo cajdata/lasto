@@ -21,6 +21,7 @@ import ctypes
 import os
 import re
 import sys
+import tempfile
 import types
 from collections.abc import Iterator
 
@@ -76,6 +77,11 @@ def install_firewall() -> None:
 
 install_firewall()
 
+# The test run's temp folder, asked now, as the plugin loads and before anything can import the safety core:
+# tempfile.gettempdir() checks the folder by writing a file in it, which guard v2 refuses until the folder is
+# registered. With output capture on, pytest asks first anyway; with -s, nothing would.
+_TEMP_FOLDER = os.path.realpath(tempfile.gettempdir())
+
 
 def fresh_kill_switch() -> None:
     """Clear the process kill switch. For a test that runs many examples in one test (Hypothesis)."""
@@ -97,11 +103,9 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
     Done as the session starts, after coverage has started measuring and before collection, so a run whose
     collection fails still writes pytest's cache and reports its error."""
-    import tempfile
-
     from lasto.safety.serial_guard import allow_writes_in
 
-    allow_writes_in(os.path.realpath(tempfile.gettempdir()))
+    allow_writes_in(_TEMP_FOLDER)
     for name in (".pytest_cache", ".hypothesis"):
         folder = session.config.rootpath / name
         folder.mkdir(exist_ok=True)
