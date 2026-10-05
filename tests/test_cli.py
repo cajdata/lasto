@@ -1,6 +1,6 @@
 """The CLI: simulator by default, --live only with an explicit channel or port, no abbreviations.
 
-Commands that aren't built yet print which phase brings them. drive and log have their own tests
+Commands that aren't built yet print which phase brings them. drive, log and adapter have their own tests
 (test_cli_commands.py); no test here runs them.
 """
 
@@ -19,7 +19,8 @@ def run(*argv):
 
 
 def test_what_is_built():
-    assert cli.BUILT == {"drive", "log"}
+    assert cli.BUILT == {"drive", "log", "adapter"}
+    assert "adapter" in cli.HARDWARE_COMMANDS
 
 
 @pytest.mark.parametrize("command", NOT_BUILT_YET)

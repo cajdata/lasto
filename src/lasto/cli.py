@@ -42,12 +42,14 @@ COMMANDS = {
     "export": ("Export pack: CSV, Parquet, and summary JSON", 8),
     "verify": ("Confirm solver candidates as verified definitions", 3),
     "gui": ("Local web GUI for reviewing drives, mapping, and definitions", 9),
+    "adapter": ("Check the OBDLink MX+ on the bench: open it, reset and identify it, and listen (bench test B3)", 3),
 }
-BUILT = frozenset({"drive", "log"})
-HARDWARE_COMMANDS = frozenset({"drive", "map", "snapshot", "identify", "discover"})
+BUILT = frozenset({"drive", "log", "adapter"})
+HARDWARE_COMMANDS = frozenset({"drive", "map", "snapshot", "identify", "discover", "adapter"})
 # Commands whose process must never import the safety core (docs/architecture.md §14.4).
 SAFETY_CORE_FREE_COMMANDS = frozenset({"gui"})
 SIMULATED_SECONDS = 60.0
+SIMULATED_MONITOR_SECONDS = 10.0
 MAX_CAN_ID = 0x1FFFFFFF  # 29 bits, an extended ID
 MAX_STANDARD_ID = 0x7FF
 
@@ -117,6 +119,18 @@ def build_parser() -> argparse.ArgumentParser:
             )
             sub.add_argument("--from", dest="start", type=_offset, metavar="S", help="with --id: from this many seconds in")
             sub.add_argument("--to", dest="end", type=_offset, metavar="S", help="with --id: up to this many seconds in")
+        if name == "adapter":
+            sub.add_argument(
+                "--monitor",
+                choices=("can", "kline"),
+                help="listen after the checks: CAN silently (no ACKs), or the K-line with no initialization",
+            )
+            sub.add_argument(
+                "--seconds",
+                type=_seconds,
+                help="with --monitor: stop after this long (simulated seconds in the simulator, default"
+                f" {SIMULATED_MONITOR_SECONDS:g}; on the bench, until Ctrl+C unless given)",
+            )
     return parser
 
 
@@ -151,6 +165,13 @@ def _check_drive_arguments(parser: argparse.ArgumentParser, args: argparse.Names
         parser.error("polled logging profiles (--profile) come in Phase 4; drive is passive until then")
 
 
+def _check_adapter_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.channel:
+        parser.error("adapter checks the OBDLink MX+ on --port COMn, not a PCAN channel")
+    if args.seconds is not None and args.monitor is None:
+        parser.error("--seconds needs --monitor: it's how long to listen")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -163,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
         _check_drive_arguments(parser, args)
     if args.command == "log":
         _check_log_arguments(parser, args)
+    if args.command == "adapter":
+        _check_adapter_arguments(parser, args)
     return _dispatch(args)
 
 
@@ -171,6 +194,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _drive(args)
     if args.command == "log":
         return _log(args)
+    if args.command == "adapter":
+        return _adapter(args)
     _help, phase = COMMANDS[args.command]
     mode = "real hardware" if getattr(args, "live", False) else "the simulator"
     print(f"lasto {__version__}: '{args.command}' with {mode} arrives in Phase {phase}. Nothing is captured yet.")
@@ -209,6 +234,34 @@ def _drive(args: argparse.Namespace) -> int:
     except capture.CANNOT_START as exc:
         return _fail(str(exc))
     return 1 if result.end_reason in ("channel_lost", "storage_error") else 0
+
+
+# ---- adapter ----
+
+
+def _adapter(args: argparse.Namespace) -> int:
+    from lasto.operations import adapter as bench_check
+    from lasto.operations import data_folder
+    from lasto.services.data import data_root
+
+    try:
+        root = data_root(args.data)
+    except ValueError as exc:
+        return _fail(str(exc))
+    data_folder.use_data_folder(root)
+    if args.live:
+        source = bench_check.bench(args.port)
+        seconds = args.seconds
+        print(
+            f"lasto adapter: the OBDLink MX+ on {args.port}. Power-cycle the MX+ first."
+            f" Stop with Ctrl+C or Ctrl+Break. Data: {root.path}"
+        )
+    else:
+        source = bench_check.simulated(monitor=args.monitor)
+        seconds = SIMULATED_MONITOR_SECONDS if args.monitor is not None and args.seconds is None else args.seconds
+        print(f"lasto adapter: the simulated OBDLink MX+. Data: {root.path}")
+    result = bench_check.check(root, source, monitor=args.monitor, seconds=seconds, report=print)
+    return 1 if result.end_reason == "adapter_error" else 0
 
 
 # ---- log ----

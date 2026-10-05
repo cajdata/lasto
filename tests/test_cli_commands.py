@@ -1,6 +1,6 @@
-"""lasto drive and lasto log from the command line.
+"""lasto drive, lasto log and lasto adapter from the command line.
 
-drive runs the simulator here, in a temporary data folder. Where a test gives --live, the operation is
+drive and adapter run the simulator here, in a temporary data folder. Where a test gives --live, the operation is
 replaced with a stand-in first, so no test ever reaches a driver: it checks only what the CLI asks for.
 """
 
@@ -13,6 +13,7 @@ import pytest
 
 from lasto import cli
 from lasto.capture.recovery import Recovery
+from lasto.operations import adapter as adapter_operation
 from lasto.operations import data_folder
 from lasto.operations import drive as drive_operation
 from lasto.operations.drive import DriveResult
@@ -102,7 +103,7 @@ def test_a_run_that_lost_its_channel_or_its_storage_exits_with_an_error(data, mo
     assert run("drive", "--seconds", "3", "--data", data) == 1
 
 
-@pytest.mark.parametrize("command", ["drive", "log"])
+@pytest.mark.parametrize("command", ["drive", "log", "adapter"])
 def test_a_data_folder_that_names_a_device_is_refused(command, capsys):
     assert run(command, "--data", "NUL") == 1
     assert "names a device" in capsys.readouterr().err
@@ -284,3 +285,70 @@ def test_log_says_when_a_capture_is_running(data, monkeypatch, capsys):
     assert run("log", "--data", data) == 0
     out = capsys.readouterr().out
     assert "A capture is running on PCAN_USBBUS1" in out and "90,000 frames" in out and "300 a second" in out
+
+
+# ---- adapter (bench test B3) ----
+
+
+def test_adapter_checks_the_simulated_mx_plus_by_default(data, capsys):
+    assert run("adapter", "--data", data) == 0
+    out = capsys.readouterr().out
+    assert "the simulated OBDLink MX+" in out
+    assert "ELM327 v1.4b" in out and "OBDLink MX+ r3.2.1" in out and "12.63 V" in out
+    assert "Stopped (done)" in out
+    assert (DataRoot(data).audit_dir / "held.jsonl").exists()  # the data folder is set up as for a drive
+
+
+def test_adapter_monitors_in_the_simulator(data, capsys):
+    assert run("adapter", "--monitor", "can", "--seconds", "5", "--data", data) == 0
+    out = capsys.readouterr().out
+    assert "CAN, silently" in out and "Stopped (time_limit)" in out
+
+
+@pytest.fixture
+def adapter_asked(monkeypatch) -> list[tuple]:
+    """Stand-ins for the adapter operation: they record what the CLI asked for, and open nothing."""
+    calls: list[tuple] = []
+
+    def fake_check(root, source, *, monitor, seconds, report):
+        calls.append(("check", root.path, source, monitor, seconds))
+        return adapter_operation.AdapterResult("ctrl_c", 2.5, "ELM327 v1.4b", {}, 12.6, 40)
+
+    monkeypatch.setattr(adapter_operation, "check", fake_check)
+    monkeypatch.setattr(adapter_operation, "bench", lambda port: ("bench", port))
+    monkeypatch.setattr(data_folder, "use_data_folder", lambda root: calls.append(("held", root.path)))
+    return calls
+
+
+@pytest.mark.parametrize(("extra", "monitor", "seconds"), [((), None, None), (("--monitor", "kline", "--seconds", "30"), "kline", 30.0)])
+def test_adapter_live_asks_for_the_port_given(data, adapter_asked, capsys, extra, monitor, seconds):
+    assert run("adapter", "--live", "--port", "COM7", "--data", data, *extra) == 0
+    [held, (_, _, source, asked_monitor, asked_seconds)] = adapter_asked
+    assert held[0] == "held"
+    assert source == ("bench", "COM7") and asked_monitor == monitor and asked_seconds == seconds
+    assert "Power-cycle the MX+ first" in capsys.readouterr().out
+
+
+def test_an_adapter_check_that_failed_exits_with_an_error(data, monkeypatch, capsys):
+    def failed(root, source, *, monitor, seconds, report):
+        report("the link to the adapter failed; it's closed, and nothing retries it")
+        return adapter_operation.AdapterResult("adapter_error", 3.0, "", {}, None, 0)
+
+    monkeypatch.setattr(adapter_operation, "check", failed)
+    assert run("adapter", "--data", data) == 1
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (("adapter", "--seconds", "5"), "--seconds needs --monitor"),
+        (("adapter", "--live", "--channel", "PCAN_USBBUS1"), "adapter checks the OBDLink MX+"),
+        (("adapter", "--live", "--channel", "PCAN_USBBUS1", "--port", "COM5"), "adapter checks the OBDLink MX+"),
+        (("adapter", "--monitor", "obd"), "invalid choice"),
+        (("adapter", "--port", "COM5"), "need --live"),
+    ],
+)
+def test_adapter_refuses_arguments_it_cant_use(argv, message, capsys):
+    with pytest.raises(SystemExit) as exited:
+        run(*argv)
+    assert exited.value.code == 2 and message in capsys.readouterr().err

@@ -15,8 +15,10 @@ import re
 from collections import deque
 from collections.abc import Iterable
 
+from lasto.sim.clock import FakeClock
 from lasto.sim.violations import VIOLATIONS
 
+REPLY_SECONDS = 0.02  # how long a read that finds its answer takes, on a clock
 _HEX = re.compile(r"[0-9A-F]+")
 # Commands that transmit on the vehicle bus, disable silent mode, or write the adapter's memory.
 _DANGEROUS = (
@@ -44,9 +46,14 @@ class FakeStnPort:
         banner: str = "ELM327 v1.4b",
         protocol_report: str | None = None,
         on_open: str = "",
+        clock: FakeClock | None = None,
     ) -> None:
         """on_open is output already waiting when the link opens. If there is any, opening the link rebooted the
-        adapter, and its bootloader window lasts until it has sent a prompt."""
+        adapter, and its bootloader window lasts until it has sent a prompt.
+
+        With a clock, reads take time: one that finds what it waits for moves the clock on by REPLY_SECONDS, and
+        one that doesn't waits out the port's timeout, as a real port does."""
+        self.clock = clock
         self.timeout: float | None = 2.0
         self.write_timeout: float | None = 2.0
         self.closed = False
@@ -91,6 +98,8 @@ class FakeStnPort:
             del self._out[: index + len(expected)]
         if self._bootloader_window and data.endswith(b">"):
             self._bootloader_window = False
+        if self.clock is not None:
+            self.clock.advance(REPLY_SECONDS if data.endswith(expected) else (self.timeout or 0.0))
         return data
 
     def reset_input_buffer(self) -> None:

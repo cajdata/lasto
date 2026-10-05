@@ -429,6 +429,7 @@ src/lasto/
     safety_config.py  data.py  sessions.py      # the snapshot, the data folder, sessions for lasto log
   operations/                # hardware-facing work; the only code outside the core that opens its sessions
     drive.py                 # lasto drive: passive capture in armed mode
+    adapter.py               # lasto adapter: the OBDLink MX+ on its own, for bench test B3
     keep_awake.py            # SetThreadExecutionState: ctypes outside the core (exemption; the test firewall is the other)
   capture/                   # convert.py (core types to records), recorder.py, rollups.py, recovery.py
   storage/                   # root.py (data folder), database.py, capture_db.py, workbench_db.py, ids.py,
@@ -443,12 +444,20 @@ docs/architecture.md
 
 ## 9. CLI
 
-- **Entry point:** one command, `lasto`, with subcommands `drive`, `map`, `snapshot`, `identify`, `log`, `view`, `discover`, `decode`, `report`, `export`, `verify`.
+- **Entry point:** one command, `lasto`, with subcommands `drive`, `map`, `snapshot`, `identify`, `log`, `view`, `discover`, `decode`, `report`, `export`, `verify`, and `adapter`.
 - **Simulator by default:** real hardware needs `--live` plus `--channel PCAN_USBBUSn` or `--port COMn`, typed every time. Config holds no default channel.
 - **No abbreviations:** every parser sets `allow_abbrev=False`, so `--liv` can't mean `--live`.
 - **Drive modes:** `drive` alone is passive; `drive --profile NAME` is polled (Phase 4).
 - **`lasto drive [--live --channel PCAN_USBBUSn] [--seconds N] [--data DIR]` (Phase 2):** passive capture in armed mode (§4). The simulator runs `--seconds` simulated seconds (60 by default); on the truck `--seconds` is an optional time limit. `--port` and `--profile` are refused with a message until the phases that bring them. Before anything else, it sends held refusals to `audit/held.jsonl` in the data folder (B2). It exits with 1 if another capture is running, if the safety core refuses the channel, if the channel is lost, or if storage fails.
 - **`lasto log [SESSION|last] [--bus] [--data DIR]` (Phase 2):** without a session, every session newest first: start (UTC), length, state, end reason, frames, IDs, stored size, and MB per hour. With a session (its ID, its first characters, or `last`), the session's run and adapter, its events, the run's events while no session was open, and the run's audit log. `--bus` adds every CAN ID: frames, rate, mean period, smallest and largest gap, DLC, which data bits changed (8 bytes, hex), and first and last seen. `--id HEX [--from S] [--to S]` (added after step D, to read 0x025 for C1777) prints one ID's raw frames over time instead: seconds after the session's first frame by the adapter's clock, UTC, DLC, and data bytes, read from the segments for only the seconds the per-second rollups say hold that ID. Error frames are left out, and a second that can't be read is named. It says so when a capture is running, from the capture lock and the live feed.
+- **`lasto adapter [--live --port COMn] [--monitor can|kline] [--seconds N] [--data DIR]` (Phase 3, for bench test B3; CLI only):** the OBDLink MX+ on its own.
+  - **What it does:** opens the adapter, reports how long it took to settle, then resets and identifies it and reads the battery voltage. With `--monitor`, it listens and prints every line it hears with its time, until `--seconds` pass or Ctrl+C or Ctrl+Break, then stops the monitor with a backspace and closes the adapter.
+  - **What it sends:** everything goes through the safety core's STN link (§3.7). CAN monitoring is silent, and K-line monitoring starts no initialization and sends no keep-alives.
+  - **Settle time:** it's the whole provisional settle time (3 s) if the adapter stayed quiet, and less if the adapter sent its prompt, which is what B3 measures.
+  - **Simulator:** without `--live`, the simulated MX+ runs on its own clock, and a monitor runs 10 simulated seconds unless `--seconds` says otherwise.
+  - **The audit log** is a new file in the data folder's `audit/` folder, and held refusals go to `audit/held.jsonl`, as for `drive`.
+  - **Arguments:** `--channel` and `--seconds` without `--monitor` are refused.
+  - **Errors:** it exits with 1 if the safety core stops the check: the adapter won't settle or answer as it should, or the link drops. Nothing retries it.
 - **Data folder:** `--data`, then `LASTO_DATA`, then `%LOCALAPPDATA%\lasto` (§4). The tests always use a temporary one.
 - **Raw console:** exists only as `lasto sim console`, which has no `--live` option.
 - **GUI (Phase 9):** `lasto gui` starts the local web GUI and opens the browser (§14). The CLI keeps every capability; the GUI is another front end over the same service layer.
@@ -493,7 +502,7 @@ The STN transport in Phase 1 has **no path that puts anything on the vehicle bus
 
 **Phase 2 (approved 2026-10-01, after the step D live tests at the truck; results in §4):** passive capture and storage (§4), `lasto drive` and `lasto log` (§9), and the §14.8 prerequisites for the GUI. Two safety core changes, each its own commit: on real hardware a session refuses an audit log that doesn't keep its records on disk (finding L5, §3.3), and held audit records go to a file as they're held. One new scanner exemption, its own commit: ctypes in `operations/keep_awake.py`. The bench test is optional for the passive tests (owner's decision, 2026-09-28). The independent Phase 2 review (2026-09-29) found nothing High or Medium, and six Lows: L8 to L11 are fixed (§4, §7), and L6 and L7, both in the safety core, are Phase 4 blockers in §13.
 
-**Phase 3, Step A (approved 2026-10-05, under the stopping rule: the re-review found nothing High or Medium):** guard v2 (§3.7), which closes the serial guard blocker: a process writes only inside its data folder, SQLite, child processes, Bluetooth sockets, foreign functions, audit files that must be regular files, `CopyFile2`, and subinterpreters. Also: nothing happens before the CLI imports the safety core, and the STN adapter waits out the bootloader window (finding E) and fixes L4 and the second close. The independent review (`docs/reviews/phase3-step-a-review.md`) found one Medium, M1, and Lows L12 to L14. All were fixed or accepted (`phase3-step-a-fixes-review.md` checked the fixes). The re-review's own Lows and notes (L15, L16, N1 to N3) were fixed after approval, tests only, and weren't re-reviewed. Steps B (bench), C (mapping) and D (live tests) follow.
+**Phase 3, Step A (approved 2026-10-05, under the stopping rule: the re-review found nothing High or Medium):** guard v2 (§3.7), which closes the serial guard blocker: a process writes only inside its data folder, SQLite, child processes, Bluetooth sockets, foreign functions, audit files that must be regular files, `CopyFile2`, and subinterpreters. Also: nothing happens before the CLI imports the safety core, and the STN adapter waits out the bootloader window (finding E) and fixes L4 and the second close. The independent review (`docs/reviews/phase3-step-a-review.md`) found one Medium, M1, and Lows L12 to L14. All were fixed or accepted (`phase3-step-a-fixes-review.md` checked the fixes). The re-review's own Lows and notes (L15, L16, N1 to N3) were fixed after approval, tests only, and weren't re-reviewed. Steps B (bench), C (mapping) and D (live tests) follow. For B3, `lasto adapter` (§9) was built after approval, CLI only and tested against the simulated MX+. It has no review of its own before B3, since the bench has no truck on it. It's reviewed with the rest of Phase 3 before it ever runs at the truck (owner's decision, 2026-10-05).
 
 ## 12. Verification you run (never Claude)
 
