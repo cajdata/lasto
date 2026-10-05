@@ -9,6 +9,7 @@ on:
     paths:
       - "site/**"
       - "src/lasto/**"  # the Safety page and service map read the safety core's source
+      - "docs/architecture.md"  # a docs page's date follows it (its sources:)
       - "pyproject.toml"  # requires-python, for the "Runs on" line
       - ".python-version"  # the Python this workflow sets up
       - ".github/**"  # the site tests check every workflow and dependabot.yml
@@ -16,6 +17,7 @@ on:
     paths:
       - "site/**"
       - "src/lasto/**"
+      - "docs/architecture.md"
       - "pyproject.toml"
       - ".python-version"
       - ".github/**"
@@ -60,13 +62,10 @@ jobs:
       - name: Build and check the site
         run: python site/build.py build --strict
 
-      # Note: the lychee action downloads lychee without checking a hash. Pinning lychee by
-      # sha256, as the site tests do for actionlint, is a follow-up.
+      # lychee is pinned by version and sha256 in site/sitegen/tools.py, like actionlint, and
+      # checked before it runs.
       - name: Check internal links
-        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
-        with:
-          args: --offline --no-progress --include-fragments --index-files index.html --root-dir ${{ github.workspace }}/site/dist 'site/dist/**/*.html'
-          fail: true
+        run: python site/build.py links
 
       # The last step, so a build that fails never leaves a github-pages artifact behind: a
       # re-run would upload a second one, and deploy-pages refuses to choose between them.

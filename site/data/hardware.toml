@@ -1,8 +1,8 @@
-# The planned hardware chain, from the truck's OBD-II port to the laptop.
-# One source for Fig. 2, its text list, and the quick reference table on the home page.
-# None of it has run at the truck yet.
+# The hardware chain, from the truck's OBD-II port to the laptop.
+# One source for Fig. 2 (its pin labels included), its text list, and the quick reference table on the home page.
+# The PCAN-USB has run at the truck in listen-only mode (Phase 2); the MX+ and the Creader's leg join in Phase 3.
 
-planned_note = "The planned setup. None of it has run at the truck yet."
+planned_note = "The PCAN-USB has run at the truck in listen-only mode, with Phase 2. The OBDLink MX+ joins in Phase 3."
 
 [vehicle]
 name = "2006 Lexus GX470"

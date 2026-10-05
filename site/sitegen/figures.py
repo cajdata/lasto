@@ -322,11 +322,11 @@ def chain_items(hw: dict) -> list[tuple[str, str]]:
     for p in hw["port"]["pins"]:
         if p.get("wire"):
             pins.append(f"pin {p['pin']} {p['signal'][:3]}-{p['signal'][3:]} on a {p['wire_name']} ({p['wire']}) wire")
-    by = {p["pin"]: p for p in hw["port"]["pins"]}
+    by = pins_by_signal(hw)
     port = (
         f"{hw['port']['description']}: " + ", ".join(pins)
-        + f", pin 7 the K-line ({by[7]['signal']}), pin 16 battery power (live with the key off), "
-        f"pins 4 ({by[4]['signal']}) and 5 ({by[5]['signal']}) ground."
+        + f", pin {by['SIL']['pin']} the K-line (SIL), pin {by['BAT']['pin']} battery power (live with the key off), "
+        f"pins {by['CG']['pin']} (CG) and {by['SG']['pin']} (SG) ground."
     )
     items = [(hw["port"]["name"], port), ("Splitter", hw["splitter"]["description"] + ".")]
     for leg in hw["legs"]:
@@ -337,10 +337,19 @@ def chain_items(hw: dict) -> list[tuple[str, str]]:
     return items
 
 
+def pins_by_signal(hw: dict) -> dict[str, dict]:
+    """The DLC3 pins keyed by signal (CANH, CANL, SIL, BAT, CG, SG), so the diagram's labels come from hardware.toml."""
+    by = {p["signal"]: p for p in hw["port"]["pins"]}
+    missing = {"CANH", "CANL", "SIL", "BAT", "CG", "SG"} - by.keys()
+    if missing:
+        raise BuildError(f"hardware.toml has no pin for {', '.join(sorted(missing))}; Fig. 2 labels them")
+    return by
+
+
 def chain(ctx: dict, number: int) -> Figure:
     hw = ctx["hardware"]
     items = chain_items(hw)
-    out = ctx["render_partial"]("figures/chain.html", number=number, hw=hw, items=items)
+    out = ctx["render_partial"]("figures/chain.html", number=number, hw=hw, items=items, pins=pins_by_signal(hw))
     md = f"Fig. {number}. How it connects. {hw['planned_note']}\n\n" + "\n".join(
         f"{i}. {label}: {text}" for i, (label, text) in enumerate(items, 1)
     ) + "\n"

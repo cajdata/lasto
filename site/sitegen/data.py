@@ -42,11 +42,18 @@ class Phase:
     open: tuple[str, ...]
     built: dt.date | None = None
     approved: dt.date | None = None
+    # The day its test at the truck finished. Truck tests come before approval, so what the site says
+    # has run at the truck follows this, never `done`.
+    live_tested: dt.date | None = None
     site_note: str = ""
 
     @property
     def done(self) -> bool:
         return self.status == "done"
+
+    @property
+    def tested_at_truck(self) -> bool:
+        return self.live_tested is not None
 
     @property
     def anchor(self) -> str:
@@ -65,7 +72,7 @@ class Phase:
 class Reserved:
     path: str
     title: str
-    phase: int
+    phase: int | None  # None for a doc that belongs to no phase, like an FAQ: it publishes whenever it's written
 
 
 @dataclass
@@ -91,9 +98,9 @@ class Roadmap:
             where = f"Phase {working[-1].number} is in progress"
         else:
             where = f"Phase {done[-1].number} is done" if done else "nothing is built yet"
-        if not self.phase(2).done:
+        if not self.phase(2).tested_at_truck:
             tail = ", and nothing runs at the truck yet."
-        elif not self.phase(4).done:
+        elif not self.phase(4).tested_at_truck:
             tail = ", and at the truck Lasto only listens so far."
         else:
             tail = "."
@@ -119,12 +126,16 @@ def load_roadmap(path: Path | None = None) -> Roadmap:
                 open=tuple(p["open"]),
                 built=p.get("built"),
                 approved=p.get("approved"),
+                live_tested=p.get("live_tested"),
                 site_note=p.get("site_note", ""),
             )
         except KeyError as exc:
             raise BuildError(f"roadmap.toml phase {p.get('number')} is missing {exc}") from None
         phases.append(phase)
-    reserved = [Reserved(r["path"], r["title"], r["phase"]) for r in raw.get("reserved", [])]
+    try:
+        reserved = [Reserved(r["path"], r["title"], r.get("phase")) for r in raw.get("reserved", [])]
+    except KeyError as exc:
+        raise BuildError(f"a [[reserved]] entry in roadmap.toml is missing {exc}") from None
     roadmap = Roadmap(raw["project_status"], phases, reserved)
     validate_roadmap(roadmap)
     return roadmap
@@ -146,6 +157,23 @@ def validate_roadmap(roadmap: Roadmap) -> None:
             raise BuildError(f"phase {p.number}: public = true needs a built phase")
         if p.approved and p.built and p.approved < p.built:
             raise BuildError(f"phase {p.number}: approved before it was built")
+        if p.live_tested is not None:
+            if type(p.live_tested) is not dt.date:
+                raise BuildError(f"phase {p.number}: live_tested must be a date, like 2026-10-01")
+            if p.status == "planned":
+                raise BuildError(f"phase {p.number}: live_tested is set, but the phase hasn't started")
+            if p.built and p.live_tested < p.built:
+                raise BuildError(f"phase {p.number}: live_tested comes before it was built")
+            if p.approved and p.live_tested > p.approved:
+                raise BuildError(f"phase {p.number}: live_tested comes after its approval; the truck test comes first")
+        has_truck_test = bool(p.live_test.strip()) and not p.live_test.startswith("None")
+        if p.done and has_truck_test and p.live_tested is None:
+            raise BuildError(f"phase {p.number}: done with a test at the truck, so it needs live_tested")
+        if p.live_test.startswith("Done") and p.live_tested is None:
+            raise BuildError(f"phase {p.number}: its live_test says it's done, so it needs live_tested")
+    numbers_tested = {p.number for p in roadmap.phases if p.live_tested is not None}
+    if 4 in numbers_tested and 2 not in numbers_tested:
+        raise BuildError("roadmap.toml: Phase 4 has a live_tested date but Phase 2 doesn't; passive capture runs at the truck first")
     if sum(p.status == "in-progress" for p in roadmap.phases) > 1:
         raise BuildError("roadmap.toml: at most one phase can be in progress")
     seen = set()
@@ -155,7 +183,8 @@ def validate_roadmap(roadmap: Roadmap) -> None:
         seen.add(r.path)
         if not (r.path.startswith("/docs/") and r.path.endswith("/")):
             raise BuildError(f"reserved path {r.path} must look like /docs/name/")
-        roadmap.phase(r.phase)
+        if r.phase is not None:
+            roadmap.phase(r.phase)
 
 
 def load_site() -> dict:

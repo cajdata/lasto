@@ -120,12 +120,7 @@ def llms_txt(pages: list["Page"], ctx: dict) -> str:
         "",
         f"Built by {site['author']}. {ctx['status_sentence']}",
         "",
-        "Lasto is free software under GPL-3.0-or-later, with no warranty. It's built for one truck first: a 2006 Lexus GX470 "
-        "(2UZ-FE V8, A750F automatic, KDSS). Passive mode, arriving in Phase 2, opens a PEAK PCAN-USB interface in hardware "
-        "listen-only mode, confirms it, keeps checking it while it records, and sends nothing. Polled mode, arriving in "
-        "Phase 4, will send only read-only diagnostic requests through allowlists, rate limits, and a kill switch, and one "
-        "write function checks every frame again before it goes out. Nothing runs at the truck until those phases ship. "
-        "Each page below is also available as Markdown.",
+        ctx["llms_intro"],
         "",
         "## Pages",
         "",

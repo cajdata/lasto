@@ -48,7 +48,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 def _mtimes(roots: list[Path]) -> dict[Path, int]:
     out: dict[Path, int] = {}
     for root in roots:
-        for p in root.rglob("*"):
+        for p in [root] if root.is_file() else root.rglob("*"):
             if p.is_file() and ".cache" not in p.parts and "dist" not in p.parts:
                 out[p] = p.stat().st_mtime_ns
     return out

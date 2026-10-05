@@ -4,6 +4,8 @@ import datetime as dt
 import json
 import re
 
+import pytest
+
 from sitegen import figures, safety
 
 
@@ -174,12 +176,111 @@ def test_reserved_docs_path_cant_publish_before_its_phase(tmp_path, monkeypatch)
     from sitegen.data import BuildError
     from sitegen.pages import build
 
+    from sitegen.data import load_roadmap
+
+    # The first reserved path whose phase isn't done, so approving a phase never breaks this test.
+    roadmap = load_roadmap()
+    target = next((r for r in roadmap.reserved if r.phase is not None and not roadmap.phase(r.phase).done), None)
+    if target is None:
+        pytest.skip("every reserved docs path's phase is done")
     content = tmp_path / "content"
     shutil.copytree(paths.CONTENT, content)
-    (content / "docs").mkdir()
-    (content / "docs" / "passive-capture.md").write_text("---\nh1: Passive capture\ndescription: x\n---\n\n## A {#a}\n", encoding="utf-8")
+    name = target.path.strip("/").split("/")[-1]
+    (content / "docs" / f"{name}.md").write_text("---\nh1: A doc\ndescription: x\n---\n\n## A {#a}\n", encoding="utf-8")
     monkeypatch.setattr(paths, "CONTENT", content)
-    with pytest.raises(BuildError, match="belongs to Phase 2"):
+    with pytest.raises(BuildError, match=f"belongs to Phase {target.phase}"):
+        build(tmp_path / "dist")
+
+
+@pytest.mark.parametrize("bad, match", [("Run `lasto drive --turbo`.", "--turbo"), ("```\nlasto fly\n```", "lasto fly")])
+def test_a_page_body_showing_a_command_cli_py_lacks_fails_the_build(tmp_path, monkeypatch, bad, match):
+    import shutil
+
+    from sitegen import paths
+    from sitegen.data import BuildError
+    from sitegen.pages import build
+
+    # The real pipeline, on a page that has a lede, so the body and the lede are both checked.
+    content = tmp_path / "content"
+    shutil.copytree(paths.CONTENT, content)
+    doc = content / "docs" / "passive-capture.md"
+    doc.write_text(doc.read_text(encoding="utf-8") + f"\n{bad}\n", encoding="utf-8")
+    monkeypatch.setattr(paths, "CONTENT", content)
+    with pytest.raises(BuildError, match=match):
+        build(tmp_path / "dist")
+
+
+def test_a_reserved_docs_path_without_a_phase_publishes(tmp_path, monkeypatch):
+    import shutil
+
+    from sitegen import paths
+    from sitegen.pages import build
+
+    # Docs that belong to no phase, like an FAQ, are reserved without one and publish whenever they're written.
+    content, data_dir = tmp_path / "content", tmp_path / "data"
+    shutil.copytree(paths.CONTENT, content)
+    shutil.copytree(paths.DATA, data_dir)
+    roadmap = data_dir / "roadmap.toml"
+    roadmap.write_text(roadmap.read_text(encoding="utf-8") + '\n[[reserved]]\npath = "/docs/faq/"\ntitle = "FAQ"\n',
+                       encoding="utf-8")
+    (content / "docs" / "faq.md").write_text("---\nh1: FAQ\ndescription: Questions.\nlede: Answers.\n---\n\n## One {#one}\n\nYes.\n",
+                                             encoding="utf-8")
+    monkeypatch.setattr(paths, "CONTENT", content)
+    monkeypatch.setattr(paths, "DATA", data_dir)
+    out = tmp_path / "dist"
+    build(out)
+    assert 'href="/docs/faq/"' in (out / "docs" / "index.html").read_text(encoding="utf-8")
+    assert "/docs/faq/" not in (out / "404.html").read_text(encoding="utf-8")
+
+
+def test_serve_watches_the_app_files_the_docs_read(tmp_path):
+    from sitegen import appfacts, paths
+    from sitegen.cli import watch_roots
+    from sitegen.serve import _mtimes
+
+    one = tmp_path / "one.py"
+    one.write_text("x", encoding="utf-8")
+    assert one in _mtimes([one])  # a single file, as well as folders
+    roots = watch_roots()
+    assert paths.SAFETY in roots and all(paths.APP / rel in roots for rel in appfacts.FILES)
+    # And everything else a page is built or dated from: requires-python, and each page's sources:.
+    assert paths.ROOT / "pyproject.toml" in roots
+    assert paths.ROOT / "docs" / "architecture.md" in roots and paths.APP / "capture" / "recovery.py" in roots
+
+
+def test_the_workflow_runs_when_a_page_s_sources_change():
+    import fnmatch
+
+    import yaml
+
+    from sitegen import paths
+    from sitegen.pages import FRONT_MATTER
+
+    # A page's date follows its sources:, so a change to one must rebuild and redeploy the site.
+    on = yaml.safe_load((paths.ROOT / ".github" / "workflows" / "site.yml").read_text(encoding="utf-8"))[True]
+    for event in ("push", "pull_request"):
+        patterns = on[event]["paths"]
+        for page in paths.CONTENT.rglob("*.md"):
+            meta = yaml.safe_load(FRONT_MATTER.match(page.read_text(encoding="utf-8").replace("\r\n", "\n")).group(1))
+            for source in meta.get("sources", []):
+                assert any(fnmatch.fnmatch(source, p) for p in patterns), (event, page.name, source)
+
+
+def test_a_docs_page_needs_a_path_the_roadmap_reserves(tmp_path, monkeypatch):
+    import shutil
+
+    import pytest
+
+    from sitegen import paths
+    from sitegen.data import BuildError
+    from sitegen.pages import build
+
+    # Otherwise a doc for an unfinished phase could publish under a slightly different name.
+    content = tmp_path / "content"
+    shutil.copytree(paths.CONTENT, content)
+    (content / "docs" / "polled.md").write_text("---\nh1: Polled\ndescription: x\n---\n\n## A {#a}\n", encoding="utf-8")
+    monkeypatch.setattr(paths, "CONTENT", content)
+    with pytest.raises(BuildError, match="reserve"):
         build(tmp_path / "dist")
 
 

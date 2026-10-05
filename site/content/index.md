@@ -4,7 +4,7 @@ stamp: objective
 order: 1
 title: "Lasto: a read-only data logger for a 2006 Lexus GX470"
 h1: A read-only data logger for a 2006 Lexus GX470
-description: "Lasto is a free, read-only data logger being built for a 2006 Lexus GX470. Passive mode sends nothing. Pre-alpha: nothing runs at the truck yet."
+description: "Lasto is a free, read-only data logger being built for a 2006 Lexus GX470. Its passive mode sends nothing and has recorded the truck's bus. Pre-alpha."
 lede: "Lasto is being built to record what a GX470's modules say on the OBD-II port, and to ask read-only questions for data the truck may not broadcast, like transmission temperature on a long grade."
 og_text: "Passive mode sends nothing. Polled mode will ask read-only questions, and only through the allowlist."
 page_type: WebPage
@@ -23,14 +23,14 @@ Lasto is being built with two modes, and both use a PEAK PCAN-USB interface on t
 
 In passive mode, Lasto puts the PCAN-USB in hardware listen-only mode, reads the setting back, and won't record if it can't confirm it. While it records, it reads the setting again every {{ facts.status_interval|num }} seconds. In listen-only mode the adapter's CAN controller sends nothing on the bus. It doesn't even send the acknowledge bit every other module sends.
 
-[What isn't proven yet](/safety/#not-proven)
+Passive capture is built, and it has run at the truck: listen-only held on every run, with no error frames. [How passive capture works](/docs/passive-capture/), and [what isn't proven yet](/safety/#not-proven).
 
 ### Polled mode {#polled tag="Phase 4"}
 
 Polled mode arrives in Phase 4. It sends read-only diagnostic requests, plus the flow-control frame a module needs before a long answer, and every one goes through allowlists, rate limits, and a kill switch first.
 
 ```frames
-caption: Example frames in standard OBD-II format, made up for this page, since there's no capture from this truck yet. A request for engine speed, and the engine computer's answer.
+caption: Example frames in standard OBD-II format, made up for this page: Lasto has recorded the truck's own traffic, but it hasn't asked the truck anything yet. A request for engine speed, and the engine computer's answer.
 7DF#02010C0000000000  request: engine speed
 7E8#04410C0AF0000000  answer: 0x0AF0 / 4 = 700 rpm
 ```
@@ -52,7 +52,7 @@ Table: Quick reference data
 | Sends in passive mode | Nothing. The passive code path has no transmit call |
 | Request rate, polled mode | Up to {{ facts.rates.logging|num }} per second while logging, {{ facts.rates.discovery|num }} during discovery, never more than {{ facts.ceiling|num }} per second in total |
 | Addresses it may ask | Standard OBD-II requests: `0x{{ facts.functional_id|hex3 }}`, which every OBD-II module answers. Everything else: {% for e in facts.ecus %}the {{ e.name }} computer, requests on `0x{{ e.request_id|hex3 }}` and answers on `0x{{ e.response_id|hex3 }}`{% if not loop.last %}; {% endif %}{% endfor %} |
-| Broadcast IDs | None recorded yet (Phase 2) |
+| Broadcast IDs | 17 seen at the truck with the key on, about 520 to 540 frames a second. What each one carries is provisional ([the list](/docs/passive-capture/#bus)) |
 | Runs on | Windows, {{ python_req }} |
 | License | {{ site.license }}, no warranty |
 

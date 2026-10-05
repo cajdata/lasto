@@ -1,84 +1,38 @@
 """GitHub rejects an invalid workflow file before it runs anything, so the same checks run here first.
 
-actionlint is the official release binary, downloaded once into site/.cache and checked against
-the sha256 from its release before every run. shellcheck comes from shellcheck-py, hash-pinned
+actionlint is the official release binary, pinned in sitegen/tools.py: downloaded once into
+site/.cache and checked against the sha256 from its release before every run. shellcheck comes from shellcheck-py, hash-pinned
 in requirements-test.txt, and is handed to actionlint by path, so every machine checks run:
 scripts with the same shellcheck. None of these checks skip: a skipped check would pass a
 broken workflow.
 """
 
-import hashlib
-import io
-import platform
 import re
 import subprocess
 import sys
-import tarfile
-import urllib.request
-import zipfile
 from importlib import metadata
 from pathlib import Path
 
 import pytest
 import yaml
 
-from sitegen import paths
+from sitegen import paths, tools
 
 GITHUB = paths.ROOT / ".github"
 WORKFLOWS = sorted([*(GITHUB / "workflows").glob("*.yml"), *(GITHUB / "workflows").glob("*.yaml")])
-
-# From actionlint_1.7.12_checksums.txt on https://github.com/rhysd/actionlint/releases/tag/v1.7.12.
-# To update, change the version and copy both lines from the new release's checksums file.
-ACTIONLINT_VERSION = "1.7.12"
-ACTIONLINT = {
-    ("win32", "AMD64"): ("windows_amd64.zip", "6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f6e9", "actionlint.exe"),
-    ("linux", "x86_64"): ("linux_amd64.tar.gz", "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8", "actionlint"),
-}
 
 # Dependabot's schedule intervals, and what each ecosystem in dependabot.yml reads in its directory.
 INTERVALS = {"daily", "weekly", "monthly", "quarterly", "semiannually", "yearly", "cron"}
 READS = {"github-actions": ".github/workflows/*.yml", "pip": "requirements*.txt"}
 
 
-def _sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def _member(archive: bytes, name: str, member: str) -> bytes:
-    """One named file out of the release archive."""
-    if name.endswith(".zip"):
-        with zipfile.ZipFile(io.BytesIO(archive)) as z:
-            return z.read(member)
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as t:
-        f = t.extractfile(member)
-        if f is None:
-            pytest.fail(f"{name} has no file {member}")
-        return f.read()
-
-
 @pytest.fixture(scope="session")
 def actionlint() -> Path:
     """The pinned actionlint for this machine, extracted from an archive whose sha256 was checked this run."""
-    key = (sys.platform, platform.machine())
-    if key not in ACTIONLINT:
-        pytest.fail(f"no pinned actionlint for {key}; add it from the release's checksums file")
-    suffix, sha256, member = ACTIONLINT[key]
-    name = f"actionlint_{ACTIONLINT_VERSION}_{suffix}"
-    cache = paths.SITE / ".cache" / "actionlint" / ACTIONLINT_VERSION
-    archive = cache / name
-    data = archive.read_bytes() if archive.exists() else b""
-    if _sha256(data) != sha256:
-        url = f"https://github.com/rhysd/actionlint/releases/download/v{ACTIONLINT_VERSION}/{name}"
-        with urllib.request.urlopen(url, timeout=60) as response:
-            data = response.read()
-        if _sha256(data) != sha256:
-            pytest.fail(f"{url} doesn't match its pinned sha256")
-        cache.mkdir(parents=True, exist_ok=True)
-        archive.write_bytes(data)
-    exe = cache / member
-    exe.write_bytes(_member(data, name, member))  # every run, so only the checked archive's copy ever runs
-    exe.chmod(0o755)
-    return exe
+    try:
+        return tools.fetch("actionlint")
+    except tools.ToolError as exc:
+        pytest.fail(str(exc))
 
 
 @pytest.fixture(scope="session")
@@ -117,7 +71,7 @@ def test_file_is_valid_yaml(path):
 
 def test_actionlint_is_the_pinned_version(actionlint):
     out = _run([str(actionlint), "-version"], check=True).stdout
-    assert out.splitlines()[0] == ACTIONLINT_VERSION
+    assert out.splitlines()[0] == tools.TOOLS["actionlint"].version
 
 
 def test_shellcheck_is_the_pinned_version(shellcheck):
