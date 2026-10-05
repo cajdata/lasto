@@ -42,3 +42,19 @@ Two Lows, both tests-only, neither touching the safety core. R1 and R3 are non-i
 - **R3: non-issue.** No sitecustomize or usercustomize module exists, user site is disabled in the venv, the only `.pth` files are the two documented, and the only `PYTHON*` variable set is `PYTHONDONTWRITEBYTECODE`. The startup test covers both entry points, and a 3.14 run of it would catch any pre-core import of the four. The gui command never imports the core, which is the §14.1 boundary rather than this one.
 
 Not checked: 3.14 at runtime, the thorough Hypothesis profile, the brief's full-run recording hook beyond one `log` run's import log, and CopyFile2 against a device, which must not be tested.
+
+---
+
+## After approval
+
+Step A was approved on 2026-10-05 under the stopping rule. These fixes for this review's findings landed after that approval, all tests only, and weren't re-reviewed:
+
+| Commit | What |
+|---|---|
+| 06d0681 | L16: the copy, SQLite, subinterpreter and child-process rules follow re-exports through lasto modules (`scan.resolve_binding`) |
+| 7f3b0d8 | L15: the guard's only use of `_winapi` is one module-level deletion of `CopyFile2`, before the hook installs |
+| 2617dac | N1: `_frozen_importlib` and `_frozen_importlib_external` join the subinterpreter rule |
+| 020c021 | N2: each connect in `storage/database.py` is paired with its authorizer, the very next statement |
+| 7da3e40 | N3: the `_testcapi` test asserts `ImportRefused` |
+
+N6 and R1 are recorded in architecture §3.7. R1 is accepted with this reason: with `CopyFile2` removed, every copy goes through the guarded `open`, however the module is reached.
