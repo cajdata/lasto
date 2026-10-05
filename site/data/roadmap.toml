@@ -6,9 +6,12 @@
 # public     true once the phase's commits are on GitHub main. Links to code need it.
 # transmits  what the phase adds on the wire, as shown in the roadmap table.
 # commands   must match the COMMANDS table in src/lasto/cli.py; the build checks it.
+# live_tested  the day the phase's test at the truck finished. What the site says has run
+#            at the truck follows this, since the truck test comes before approval.
 #
-# When a phase is approved: set status = "done", add approved = YYYY-MM-DD, and set
-# public = true once its commits are pushed.
+# When a phase's truck test is done: add live_tested = YYYY-MM-DD. When a phase is
+# approved: set status = "done", add approved = YYYY-MM-DD, and set public = true once its
+# commits are pushed.
 
 project_status = "pre-alpha"
 
@@ -55,22 +58,24 @@ open = []
 number = 2
 slug = "passive-capture"
 name = "Passive drive capture and storage"
-status = "planned"
-public = false
+status = "done"
+built = 2026-09-29
+live_tested = 2026-10-01
+approved = 2026-10-01
+public = true
 transmits = "No"
 summary = "Record everything on the high-speed CAN bus in listen-only mode, and keep it safe through a pulled cable or a crash."
 delivers = [
-  "Passive capture that starts when the bus wakes up and ends 60 seconds after it goes quiet",
-  "Storage: compressed candump segments plus a SQLite index, with recovery after a crash",
-  "A session list and an audit log viewer",
+  "`lasto drive`: passive capture in armed mode, where the first frame starts a session and 60 seconds without one ends it",
+  "Storage: compressed candump segments and a SQLite capture database. The next start recovers what a crash or power loss left, and a pulled adapter cable ends the run with every frame it heard kept, unless it's plugged back in within a few seconds",
+  "`lasto log`: the session list, each session's events and audit log, per-ID bus statistics, and one ID's raw frames",
+  "Two safety core changes: on real hardware the audit log must be the kind that syncs each record to disk, and records held while no log is open go to a file too",
   "A service layer the command line and the Phase 9 GUI both build on",
-  "The serial guard in place before any hardware command runs",
+  "The serial guard installed before every command except the GUI",
 ]
 commands = ["lasto drive", "lasto log"]
-live_test = "Key on with the engine off, then a short drive. I run both at the truck."
-open = ["The disk budget and retention, set once the first capture shows how much data a drive makes."]
-site_note = "A scrubbed real capture replaces the example frames on this site."
-
+live_test = "Done 2026-09-30 to 10-01: key off, key on with the engine off, and a drive. Listen-only held on every run, with no error frames or overruns."
+open = ["Deleting old raw data comes after Phase 5, under a 20 GB budget. Until then nothing is deleted, and lasto drive warns as it starts if the disk has under 2 GB free or the data folder is over budget."]
 [[phase]]
 number = 3
 slug = "mapping"
@@ -88,8 +93,9 @@ delivers = [
 commands = ["lasto map", "lasto verify"]
 live_test = "A Creader engine data stream, then a KDSS data stream."
 open = [
-  "An independent review of the serial guard, before any MX+ code touches hardware.",
+  "An independent review of the serial guard, before any MX+ code touches hardware. Since Phase 2 it also covers SQLite opening its own files, the two audit files the safety core opens by name, and when the CLI installs the guard.",
   "Whether the Creader Elite V3.0 T reaches the KDSS module on a 2006 GX470.",
+  "How the stability control's steering angle reading relates to 0x025, provisionally the steering angle sensor Phase 2 found, for trouble code C1777.",
 ]
 
 [[phase]]
@@ -109,7 +115,10 @@ delivers = [
 ]
 commands = ["lasto identify", "lasto snapshot", "lasto view", "lasto drive --profile"]
 live_test = "Parked first, then a drive with the grades profile."
-open = []
+open = [
+  "Before the first polled test at the truck: wire in the Ctrl+Alt+K hotkey, handle a kill listener that raises (L2), close two audit log gaps from the Phase 2 review (L6 and L7), and add the 17 IDs the truck broadcasts to the gate's list of IDs it never sends on.",
+  "Saving and reporting on a kill, through the stop path Phase 2 built.",
+]
 
 [[phase]]
 number = 5
@@ -195,7 +204,9 @@ live_test = ""
 open = []
 
 # Docs pages whose URLs are reserved now and published when their phase is done.
-# The roadmap lists them under their phase, and the 404 page explains them.
+# The roadmap lists them under their phase, and the 404 page explains them. A docs page
+# must sit at one of these paths. One that belongs to no phase, like an FAQ, leaves out
+# `phase` and publishes whenever it's written.
 [[reserved]]
 path = "/docs/passive-capture/"
 title = "Passive capture"

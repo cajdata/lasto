@@ -19,7 +19,8 @@ def phase(n: int, status: str = "planned", **kw) -> Phase:
         summary="s", delivers=(), commands=(), live_test="", open=(),
     )
     if status == "done":
-        fields.update(built=D, approved=D, public=True)
+        # Phases 2 and 4 are the ones tested at the truck.
+        fields.update(built=D, approved=D, public=True, live_tested=D if n in (2, 4) else None)
     elif status == "awaiting-approval":
         fields.update(built=D)
     fields.update(kw)
@@ -45,6 +46,94 @@ def test_phase_1_is_approved_and_public_and_the_gui_is_planned():
     assert one.done and one.public and one.approved == dt.date(2026, 9, 28)
     assert gui.slug == "gui" and gui.status == "planned" and not gui.public
     assert gui.transmits == "No"
+
+
+def test_phase_2_is_approved_and_public():
+    two = data.load_roadmap().phase(2)
+    assert two.done and two.public and two.approved == dt.date(2026, 10, 1)
+    assert two.live_tested == dt.date(2026, 10, 1)
+
+
+def test_a_truck_test_date_needs_a_phase_that_has_started():
+    r = Roadmap("pre-alpha", [phase(0, "done"), phase(1, live_tested=D)] + [phase(i) for i in range(2, 9)])
+    with pytest.raises(BuildError, match="live_tested"):
+        data.validate_roadmap(r)
+
+
+def test_a_done_phase_with_a_truck_test_needs_its_date():
+    r = Roadmap("pre-alpha", [phase(0, "done", live_test="A short drive.")] + [phase(i) for i in range(1, 9)])
+    with pytest.raises(BuildError, match="live_tested"):
+        data.validate_roadmap(r)
+    r = Roadmap("pre-alpha", [phase(0, "done", live_test="None. Nothing touches the truck.")] + [phase(i) for i in range(1, 9)])
+    data.validate_roadmap(r)
+
+
+def test_a_truck_test_comes_before_approval():
+    late = D + dt.timedelta(days=1)
+    r = Roadmap("pre-alpha", [phase(0, "done", live_test="A drive.", live_tested=late)] + [phase(i) for i in range(1, 9)])
+    with pytest.raises(BuildError, match="live_tested"):
+        data.validate_roadmap(r)
+
+
+def test_truck_claims_go_stale_when_polled_mode_runs_at_the_truck():
+    from sitegen import checks
+
+    text = "Only passive capture has run at the truck."
+    assert checks._stale("page", text, roadmap("done", "done", "done", "done", *NINE[4:])) == []
+    tested = Roadmap("pre-alpha", [phase(i, "done") for i in range(4)] + [phase(4, "awaiting-approval", live_tested=D)]
+                     + [phase(i) for i in range(5, 10)])
+    assert checks._stale("page", text, tested) == [
+        'page: says "only passive capture has run at the truck", but Phase 4 has run at the truck'
+    ]
+    assert checks._stale("page", "Lasto hasn’t asked the truck anything yet.", tested) == [
+        'page: says "hasn\'t asked the truck anything yet", but Phase 4 has run at the truck'
+    ]
+
+
+def test_truck_claims_go_stale_at_each_phase_s_truck_test_not_its_approval():
+    from sitegen import checks
+
+    two = Roadmap("pre-alpha", [phase(0, "done"), phase(1, "done"), phase(2, "awaiting-approval", live_tested=D)]
+                  + [phase(i) for i in range(3, 10)])
+    assert checks._stale("page", "Nothing runs at the truck yet.", two) == [
+        'page: says "nothing runs at the truck", but Phase 2 has run at the truck'
+    ]
+    three = Roadmap("pre-alpha", [phase(i, "done") for i in range(3)] + [phase(3, "awaiting-approval", live_tested=D)]
+                    + [phase(i) for i in range(4, 10)])
+    assert checks._stale("page", "Polled mode and the MX+ haven’t.", three) == [
+        'page: says "polled mode and the mx+ haven\'t", but Phase 3 has run at the truck'
+    ]
+
+
+def test_a_truck_test_date_is_a_date_after_the_build():
+    for bad in ["yes", False, D - dt.timedelta(days=1)]:
+        r = Roadmap("pre-alpha", [phase(0, "done"), phase(1, "awaiting-approval", live_tested=bad)]
+                    + [phase(i) for i in range(2, 9)])
+        with pytest.raises(BuildError, match="live_tested"):
+            data.validate_roadmap(r)
+
+
+def test_polled_mode_cant_be_tested_at_the_truck_before_passive_mode():
+    r = Roadmap("pre-alpha", [phase(i, "done") for i in range(2)] + [phase(2, "in-progress"), phase(3),
+                phase(4, "awaiting-approval", live_tested=D)] + [phase(i) for i in range(5, 10)])
+    with pytest.raises(BuildError, match="Phase 2"):
+        data.validate_roadmap(r)
+
+
+def test_a_finished_truck_test_needs_its_date_before_approval_too():
+    r = Roadmap("pre-alpha", [phase(0, "done"), phase(1, "awaiting-approval", live_test="Done 2026-09-26: a drive.")]
+                + [phase(i) for i in range(2, 9)])
+    with pytest.raises(BuildError, match="live_tested"):
+        data.validate_roadmap(r)
+
+
+def test_stale_phrases_are_caught_with_curly_apostrophes():
+    from sitegen import checks
+
+    r = roadmap("done", "done", "done", *NINE[3:])
+    assert checks._stale("page", "The bench test hasn’t been done yet.", r) == [
+        "page: says \"hasn't been done yet\", but Phase 2 is done"
+    ]
 
 
 def test_copy_that_counts_the_phases_must_match_the_roadmap():

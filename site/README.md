@@ -11,27 +11,33 @@ uv venv .venv-site
 uv pip install --python .venv-site/Scripts/python.exe --require-hashes --only-binary :all: -r site/requirements.txt -r site/requirements-test.txt
 .venv-site/Scripts/python site/build.py build
 .venv-site/Scripts/python site/build.py serve --watch
+.venv-site/Scripts/python site/build.py links
 .venv-site/Scripts/python -m pytest -c site/pytest.ini site/tests
 ```
 
-`serve` builds, then serves `site/dist` at http://127.0.0.1:8000/ and rebuilds when content, data, templates, static files, or the safety core source change. Every build runs the checks in `sitegen/checks.py`, and any problem fails it. CI installs the same files with `pip --require-hashes` and adds `--strict`, which also needs full git history and committed sources.
+`links` checks every link and anchor in the built site with lychee, offline, as CI does. Add `--online` to check links to other sites too.
+
+`serve` builds, then serves `site/dist` at http://127.0.0.1:8000/ and rebuilds when content, data, templates, static files, the safety core source, the other app files the site reads (in `sitegen/appfacts.py`), `pyproject.toml`, or any page's `sources:` change. Every build runs the checks in `sitegen/checks.py`, and any problem fails it. CI installs the same files with `pip --require-hashes` and adds `--strict`, which also needs full git history and committed sources.
 
 The tests use their own config, so the app's pytest settings (the simulator plugin and the 100 percent coverage gate on `lasto.safety`) never apply to the site, and never get loosened for it.
 
-The tests also run actionlint on every workflow in `.github/workflows`, so a workflow GitHub would reject fails here first. `tests/test_workflows.py` downloads the official actionlint release once into `site/.cache` and checks its sha256 before every run, so the first run needs network access. To update actionlint, change `ACTIONLINT_VERSION` and copy the two checksum lines from the new release's checksums file.
+The tests also run actionlint on every workflow in `.github/workflows`, so a workflow GitHub would reject fails here first.
+
+actionlint and lychee are pinned in `sitegen/tools.py`: each is its project's official release, pinned by version and by the sha256 the release publishes. The first use downloads it into `site/.cache`, so it needs network access; every use checks the archive's sha256 and compares the binary with the archive's copy, so only a checked copy ever runs. Dependabot can't see these pins. To update one, change its version and copy the two hashes (Windows and Linux) from the new release.
 
 ## Where things are
 
 | Path | What it is |
 |---|---|
 | `content/*.md` | Pages. Front matter, then Markdown, rendered through Jinja first so pages can use the data below. |
+| `content/docs.md`, `content/docs/*.md` | The docs index at `/docs/`, and one file per doc. A doc's URL must be a path `roadmap.toml` reserves (the build refuses any other), and it publishes only once its phase is done. A doc that belongs to no phase, like an FAQ, is reserved without one. |
 | `data/site.toml` | Site name, URLs, navigation, credit, the name note, and the trademark list. |
-| `data/roadmap.toml` | Phase status. The roadmap, the status lines, page stamps, and the 404 page read it. |
+| `data/roadmap.toml` | Phase status, truck test dates, and the reserved docs paths. The roadmap, the status lines, page stamps, the docs index, the 404 page, and the summaries in JSON-LD and the llms files read it. |
 | `data/services.toml` | Plain words for each service byte. Which services are allowed comes from the safety core source, never from here. |
-| `data/hardware.toml` | The planned hardware chain, for Fig. 2 and the quick reference table. |
+| `data/hardware.toml` | The hardware chain, for Fig. 2 (its pin labels included) and the quick reference table. |
 | `templates/` | Jinja templates: `base.html`, `home.html`, `page.html`, the chain figure, and the social image. |
 | `static/` | CSS, the favicon, and the font sources with their licenses. |
-| `sitegen/` | The build. `safety.py` reads the safety core with `ast` and never imports it. |
+| `sitegen/` | The build. `safety.py` reads the safety core with `ast` and never imports it, and `appfacts.py` reads the capture's timings and limits the same way. `tools.py` pins actionlint and lychee, and `links.py` runs the link check. |
 
 ## Content conventions
 
@@ -41,12 +47,16 @@ The tests also run actionlint on every workflow in `.github/workflows`, so a wor
 - ```` ```figure service-map ````, ```` ```figure chain ````, and ```` ```figure ack-slot FRAME ```` insert generated figures. A ```` ```frames ```` block holds example CAN frames, with a `caption:` first line.
 - Jinja comments are `{%# ... #%}`, because `{#` marks heading ids.
 - No em or en dashes, no hype words. The build checks both.
+- Numbers come from the source: `facts.*` from the safety core, `capture.*` from the capture code. Every `lasto` command and `--option` shown in code must exist in `cli.py`, and an option shown with a command must be one that command takes, or the build fails.
+- Hyphenated identifiers (OBD-II, K-line, 2026-09-26) and numbers with their units stay on one line in Markdown text. Template text, like Fig. 2's caption, gets the same rules through the `nobreak` filter.
+- A page's date follows the data it uses inside `{{ }}` or `{% %}`, so the same word in prose doesn't count. Docs pages get a breadcrumb and a matching BreadcrumbList on their own. `crumb:` in the front matter shortens the last crumb, and `sources:` lists other repo files a page's date should follow.
 
 ## When an app phase ships
 
-1. In `data/roadmap.toml`, set the phase's `status = "done"` and `approved = YYYY-MM-DD`, and `public = true` once its commits are on `main`.
-2. Update anything the build flags as stale (it knows which phrases stop being true after Phase 2, and checks that "built in N phases" matches the roadmap).
-3. Write or publish the docs the phase adds (W2 adds the docs section and its gating).
+1. In `data/roadmap.toml`, add `live_tested = YYYY-MM-DD` once its test at the truck is done: what the site says has run at the truck follows that date, since the truck test comes before approval. Then set the phase's `status = "done"` and `approved = YYYY-MM-DD`, and `public = true` once its commits are on `main`. Update its `live_test`, `open`, and `delivers` to what actually happened.
+2. Update anything the build flags as stale (it knows which phrases stop being true once a phase is done or has run at the truck, and checks that "built in N phases" matches the roadmap). Stamps, the status sentence, and the summaries in the llms files and JSON-LD follow Phases 2 and 4 on their own; anything else needs reading.
+3. Add the docs the phase brings as `content/docs/<slug>.md`, at the path the roadmap reserves. The docs index, the roadmap's links, and the 404 page's list pick them up; the nav's Docs link is fixed.
+4. Update the Safety pages for whatever the phase changed in the safety core, and check each changed claim against the code.
 
 Phase 1 is public, so the Safety page's "Enforced in" notes are permalinks to the exact lines in the safety core, at the commit that last changed each file.
 

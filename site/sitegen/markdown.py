@@ -37,17 +37,24 @@ EXT_SVG = (
 )
 NBSP = "\u00a0"
 
-# Keep things that must be read as one token on one line: identifiers with hyphens that
-# contain a capital or a digit (IPEH-002022, OBD-II, 2UZ-FE, GPL-3.0-or-later), dates,
-# "Phase 4", and a number with its unit.
-_NOBREAK_WORD = re.compile(r"(?<![\w-])(?=[\w.]*[A-Z0-9])[\w.]+(?:-[\w.]+)+(?![\w-])")
+# Keep things that must be read as one token on one line: hyphenated identifiers, where a part
+# has a digit or is all capitals (IPEH-002022, OBD-II, K-line, 2UZ-FE, GPL-3.0-or-later), dates,
+# "Phase 4", and a number with its unit. A word that's only capitalized, like Read-only, still
+# breaks at its hyphen.
+_NOBREAK_WORD = re.compile(r"(?<![\w-])[\w.]+(?:-[\w.]+)+(?![\w-])")
 _NBSP_AFTER = re.compile(r"\b(Phase|Table|Fig\.|Ex\.|rev\.|Rev\.) (?=\d|[A-Z]\b)")
-_NBSP_UNIT = re.compile(r"(\d) (?=(?:°F|°C|V|kbps|mph|rpm|ohms|seconds?|bytes|bits?|percent|per second)\b|°)")
+_NBSP_UNIT = re.compile(
+    r"(\d) (?=(?:°F|°C|V|kbps|kbit/s|Hz|ms|s|MB|GB|mph|rpm|ohms|seconds?|minutes?|days?|bytes|bits?|percent|per second)\b|°)"
+)
+
+
+def _identifier(word: str) -> bool:
+    return len(word) <= 32 and any(part.isupper() or any(c.isdigit() for c in part) for part in word.split("-"))
 
 
 def nobreak(escaped: str) -> str:
     """Apply no-break rules to text that is already HTML-escaped."""
-    escaped = _NOBREAK_WORD.sub(lambda m: f'<span class="nw">{m.group(0)}</span>' if len(m.group(0)) <= 32 else m.group(0), escaped)
+    escaped = _NOBREAK_WORD.sub(lambda m: f'<span class="nw">{m.group(0)}</span>' if _identifier(m.group(0)) else m.group(0), escaped)
     escaped = _NBSP_AFTER.sub(lambda m: m.group(1) + NBSP, escaped)
     return _NBSP_UNIT.sub(lambda m: m.group(1) + NBSP, escaped)
 

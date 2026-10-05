@@ -2,6 +2,7 @@
 
     python site/build.py build [--strict] [--out DIR]
     python site/build.py serve [--port 8000] [--watch]
+    python site/build.py links [--online] [--dist DIR]
 
 Needs the packages in site/requirements.txt. Never imports the lasto app.
 """

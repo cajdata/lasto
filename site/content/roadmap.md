@@ -45,7 +45,7 @@ Table: Phase {{ p.number }} at a glance
 | Sends anything? | {{ p.transmits }} |
 | Commands | {% if p.commands %}{% for c in p.commands %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}{% else %}None{% endif %} |
 | Test at the truck | {{ p.live_test or "Set when the phase starts." }} |
-{% set docs = roadmap.reserved|selectattr("phase", "equalto", p.number)|list %}{% if docs %}| Docs it adds | {% for r in docs %}{% if loop.first %}{{ r.title }}{% else %}{{ r.title[:1]|lower }}{{ r.title[1:] }}{% endif %}{% if not loop.last %}{{ " and " if loop.revindex == 2 else ", " }}{% endif %}{% endfor %} |
+{% set phase_docs = roadmap.reserved|selectattr("phase", "equalto", p.number)|list %}{% if phase_docs %}| {{ "Docs it added" if p.done else "Docs it adds" }} | {% for r in phase_docs %}{% set t = r.title if loop.first else r.title[:1]|lower ~ r.title[1:] %}{% if p.done %}[{{ t }}]({{ r.path }}){% else %}{{ t }}{% endif %}{% if not loop.last %}{{ " and " if loop.revindex == 2 else ", " }}{% endif %}{% endfor %} |
 {% endif %}
 {% for o in p.open %}
 
