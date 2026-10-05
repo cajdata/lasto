@@ -7,7 +7,8 @@ earliest point Python runs code from outside its own startup, until the safety c
 the lasto console script and for python -m lasto, with a command that reads (log) and one that captures (drive, in
 the simulator). None of the events may be a write-capable open or any other change to a file, a ctypes load or
 lookup, a socket or SQLite connection, a child process, or an import of a module that creates subinterpreters (the
-guard refuses that import, but only a first import raises the event).
+guard refuses that import, but only a first import raises the event), or of asyncio or concurrent.futures, which load
+one on Python 3.14.
 
 Python's own bytecode cache is off in these processes (PYTHONDONTWRITEBYTECODE): an install built with
 `uv sync --locked --compile-bytecode` leaves it nothing to write, and in a working tree a stale cache file would be
@@ -65,13 +66,16 @@ _CHANGES = {
 # Native code (ctypes), the network, SQLite, and Win32 handles (_winapi.CreateFile, CreateProcess, and the like).
 _PREFIXES = ("ctypes.", "socket.", "sqlite3.", "_winapi.")
 # The guard refuses importing these (they create subinterpreters), but only a first import raises the event, so none
-# may be imported before the guard is in.
+# may be imported before the guard is in. Nor may what loads one on Python 3.14: asyncio imports concurrent.futures,
+# which tries _interpreters as it loads. On 3.13 neither loads it, so without them here only a 3.14 run would catch a
+# dependency that starts importing asyncio before the core.
 _SUBINTERPRETER_MODULES = {"_interpreters", "_xxsubinterpreters", "_testcapi", "_testinternalcapi"}
+_LOADS_ONE_ON_3_14 = {"asyncio", "concurrent.futures", "concurrent.interpreters"}
 
 
 def forbidden(event: str, args: list[object]) -> bool:
     if event == "import":
-        return args[0] in _SUBINTERPRETER_MODULES
+        return args[0] in _SUBINTERPRETER_MODULES | _LOADS_ONE_ON_3_14
     if event == "open":
         mode, flags = args[1], args[2]
         writes = isinstance(mode, str) and any(letter in mode for letter in "wax+")
@@ -96,6 +100,11 @@ def forbidden(event: str, args: list[object]) -> bool:
         ("import", ["lasto.cli", None, "[]"], False),
         ("import", ["_interpreters", None, "[]"], True),
         ("import", ["_testcapi", None, "[]"], True),
+        ("import", ["asyncio", None, "[]"], True),
+        ("import", ["concurrent.futures", None, "[]"], True),
+        ("import", ["concurrent.interpreters", None, "[]"], True),
+        ("import", ["concurrent", None, "[]"], False),
+        ("import", ["asyncio_helpers", None, "[]"], False),
         ("os.listdir", ["C:\\lib"], False),
     ],
 )
