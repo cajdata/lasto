@@ -23,7 +23,7 @@ import ast
 import re
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from functools import cache
 from pathlib import Path
 
@@ -730,6 +730,103 @@ def test_only_storage_database_opens_sqlite_connections():
     Connection, would have none."""
     found = {name: hits for name, tree in sources().items() if (hits := opens_sqlite_connections(tree))}
     assert set(found) == {"lasto.storage.database"}, found
+
+
+def _statement_lists(tree: ast.AST) -> Iterator[list[ast.stmt]]:
+    for node in ast.walk(tree):
+        for field in ("body", "orelse", "finalbody"):
+            value = getattr(node, field, None)
+            if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
+                yield value
+
+
+def unpaired_connections(tree: ast.Module) -> list[str]:
+    """Each sqlite3.connect assigned to a name, the next statement `<name>.set_authorizer(_no_other_files)`, and no
+    other set_authorizer call: what's wrong with a module's connections by that rule."""
+    names = bindings(tree)
+    connects = {
+        id(node): node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and _from_sqlite(node.func.value, names)
+    }
+    assigned: set[int] = set()
+    paired: set[int] = set()
+    problems = []
+    for statements in _statement_lists(tree):
+        for index, statement in enumerate(statements):
+            if not (isinstance(statement, ast.Assign) and id(statement.value) in connects):
+                continue
+            assigned.add(id(statement.value))
+            target = statement.targets[0] if len(statement.targets) == 1 and isinstance(statement.targets[0], ast.Name) else None
+            following = statements[index + 1] if index + 1 < len(statements) else None
+            call = following.value if isinstance(following, ast.Expr) and isinstance(following.value, ast.Call) else None
+            if (
+                target is not None
+                and call is not None
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "set_authorizer"
+                and ast.unparse(call.func.value) == target.id
+                and [ast.unparse(argument) for argument in call.args] == ["_no_other_files"]
+                and not call.keywords
+            ):
+                paired.add(id(call))
+            else:
+                problems.append(f"line {statement.lineno}: the statement after this connect isn't its set_authorizer(_no_other_files)")
+    problems += [f"line {node.lineno}: a connect not assigned to a name" for key, node in connects.items() if key not in assigned]
+    problems += [
+        f"line {node.lineno}: a set_authorizer that isn't a connect's pair"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "set_authorizer" and id(node) not in paired
+    ]
+    if not connects:
+        problems.append("no connections to pair")
+    return problems
+
+
+DATABASE_VALID = """
+import sqlite3
+
+
+def _no_other_files(action, *details):
+    return 0
+
+
+def connect(path):
+    conn = sqlite3.connect(path)
+    conn.set_authorizer(_no_other_files)
+    return conn
+
+
+def connect_read_only(path):
+    conn = sqlite3.connect(path, uri=True)
+    conn.set_authorizer(_no_other_files)
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "valid"),
+    [
+        (DATABASE_VALID, True),
+        (DATABASE_VALID.replace("import sqlite3", "import sqlite3 as db").replace("sqlite3.connect", "db.connect"), True),
+        (DATABASE_VALID.replace("    conn.set_authorizer(_no_other_files)\n    return conn\n\n\ndef connect_read_only", "    return conn\n\n\ndef connect_read_only"), False),
+        (DATABASE_VALID.replace("conn = sqlite3.connect(path)\n    conn.set_authorizer", "conn = sqlite3.connect(path)\n    conn.execute('ATTACH ? AS x', (p,))\n    conn.set_authorizer"), False),
+        (DATABASE_VALID.replace("conn = sqlite3.connect(path)\n    conn.set_authorizer(_no_other_files)\n    return conn", "return sqlite3.connect(path)"), False),
+        (DATABASE_VALID.replace("conn.set_authorizer(_no_other_files)\n    return conn\n\n\ndef connect_read_only", "conn.set_authorizer(None)\n    return conn\n\n\ndef connect_read_only"), False),
+        (DATABASE_VALID.replace("conn.set_authorizer(_no_other_files)\n    return conn\n\n\ndef connect_read_only", "other.set_authorizer(_no_other_files)\n    return conn\n\n\ndef connect_read_only"), False),
+        (DATABASE_VALID + "\n\ndef loosen(conn):\n    conn.set_authorizer(None)\n", False),
+        ("import sqlite3\n", False),  # no connection at all: the rule would be pairing nothing
+    ],
+)
+def test_the_connection_pairing_check(source, valid):
+    assert (unpaired_connections(ast.parse(source)) == []) is valid
+
+
+def test_every_connection_lasto_opens_gets_the_authorizer():
+    """Re-review note N2: storage.database's connects and set_authorizer calls pair one to one, each authorizer the
+    statement right after its connect, so no connection is used before it refuses ATTACH and VACUUM INTO."""
+    assert unpaired_connections(sources()["lasto.storage.database"]) == []
 
 
 def test_every_argument_parser_disables_abbreviation():
