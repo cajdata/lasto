@@ -1,11 +1,12 @@
 """The site reads the safety core's allowlist from source. These tests pin that down.
 
-Tests that change the app's source change a copy, and find what they change by name (source_edit),
-so they keep working as the code they edit moves on.
+They read the frozen fixture (tests/fixtures/README.md), with its values written out here, so they
+test the extractor and never follow the live app; the strict build checks the live pages. Only the
+CLAUDE.md rules and the services.toml cross-check read the live source, since only a real break
+can fail them. Tests that change source change a copy of the fixture, found by name (source_edit).
 """
 
 import ast
-import shutil
 from pathlib import Path
 
 import pytest
@@ -20,12 +21,8 @@ FILES = ["safety/policy.py", "safety/ecus.py", "safety/ratelimit.py", "safety/ki
 
 @pytest.fixture
 def tree(tmp_path: Path) -> Path:
-    """A copy of just the app files the site reads, to edit safely in a test."""
-    for rel in FILES:
-        dst = tmp_path / "src" / "lasto" / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(paths.APP / rel, dst)
-    return tmp_path
+    """A copy of the frozen fixture's app files (tests/fixtures/README.md), to edit safely in a test."""
+    return se.copy_fixture(tmp_path, FILES)
 
 
 # The service lists in CLAUDE.md's rule 3. The safety core may allow fewer (Phase 3 trims the
@@ -45,20 +42,42 @@ def test_the_service_lists_follow_the_rules_in_claude_md():
     assert not f.allowed_services & f.never_services
 
 
-def test_other_facts_come_from_source():
+def test_other_facts_follow_the_rules_in_claude_md():
+    # On the live source, like the service lists: rules, which only a real break can fail.
     f = safety.load_facts()
-    assert f.functional_id == 0x7DF
+    assert f.functional_id == 0x7DF  # rule 2
     # The engine computer, and any module a Creader capture confirms later: each with its own request and answer IDs.
     ecus = [(e.request_id, e.response_id) for e in f.ecus]
     assert (0x7E0, 0x7E8) in ecus
     assert len(set(ecus)) == len(ecus) and all(request != response for request, response in ecus)
-    assert f.rates["logging"] == 20 and f.rates["discovery"] == 5 and f.ceiling == 20
+    assert f.rates["logging"] <= 20 and f.rates["discovery"] <= 5  # rule 6's defaults, never loosened
+    assert f.min_engine_off_voltage >= 12.0  # rule 9
+
+
+# The tests below read the frozen fixture (tests/fixtures/README.md), with its values written out, so
+# they test the extractor and never follow the live app. The strict build checks the live pages.
+
+
+def test_the_extractor_reads_the_lists_limits_and_hotkey():
+    f = safety.load_facts(se.FIXTURE)
+    assert f.obd_services == {0x01, 0x02, 0x03, 0x06, 0x07, 0x09, 0x0A}
+    assert f.manufacturer_services == {0x13, 0x17, 0x18, 0x19, 0x1A, 0x21, 0x22}
+    assert f.never_services == {
+        0x04, 0x08, 0x10, 0x11, 0x14, 0x23, 0x27, 0x28, 0x2C, 0x2E, 0x2F, 0x30, 0x31,
+        0x34, 0x35, 0x36, 0x37, 0x38, 0x3B, 0x3D, 0x3E, 0x85,
+    }
+    assert f.dtc_read_services == {0x03, 0x07, 0x0A, 0x13, 0x17, 0x18, 0x19} and f.probe_pids == {0x0C, 0x0D, 0x42}
+    assert f.functional_id == 0x7DF and f.padding_byte == 0x00
+    assert [(e.name, e.kind, e.request_id, e.response_id) for e in f.ecus] == [("engine", "engine", 0x7E0, 0x7E8)]
+    assert f.rates == {"logging": 20.0, "snapshot": 5.0, "identify": 5.0, "discovery": 5.0, "interlock_probe": 2.0}
+    assert f.ceiling == 20.0 and f.backoff_start == 0.2 and f.backoff_max == 5.0
+    assert f.nrc_consecutive == 3 and f.nrc_window_limit == 10 and f.nrc_window_seconds == 30.0 and f.timeout_limit == 5
     assert f.min_engine_off_voltage == 12.0
     assert f.hotkey == "Ctrl+Alt+K"
 
 
 def test_writer_ceiling_and_passive_trust_come_from_source():
-    f = safety.load_facts()
+    f = safety.load_facts(se.FIXTURE)
     # The Writer's own backstop: CEILING_FRAMES request frames in any CEILING_WINDOW seconds.
     assert f.ceiling_frames == 20 and f.ceiling_window == 1.0
     # The gate refuses a request whose rate slot is further away than this.
@@ -84,9 +103,8 @@ def test_counts_must_be_whole_numbers(tree):
 
 
 def test_a_whole_number_float_is_a_count(tree):
-    limit = safety.load_facts(tree).nrc_window_limit
     se.rebind(tree, "safety/killswitch.py", "WINDOW_NRC_LIMIT", lambda v: f"({v}) * 10 / 10")
-    assert safety.load_facts(tree).nrc_window_limit == limit
+    assert safety.load_facts(tree).nrc_window_limit == 10  # the fixture's 10, as a float
 
 
 def test_a_constant_computed_from_an_unstable_one_fails_the_build(tree):
@@ -125,7 +143,7 @@ def test_powers_are_evaluated_within_bounds():
 
 
 def test_cli_options_come_from_source():
-    f = safety.load_facts()
+    f = safety.load_facts(se.FIXTURE)
     assert {"--live", "--channel", "--port", "--data", "--profile", "--seconds", "--bus", "--id", "--from", "--to"} <= f.cli_options
     assert all(o.startswith("--") for o in f.cli_options)
     by = f.cli_options_by_command
@@ -240,13 +258,9 @@ def test_services_file_agrees_with_source():
 
 
 def test_each_phase_lists_its_commands_from_cli_py():
-    f, r = safety.load_facts(), data.load_roadmap()
-    by_phase = safety.phase_commands(f, r)
-    bare = [c for commands in by_phase.values() for c in commands if len(c.split()) == 2]
-    assert sorted(bare) == sorted(f"lasto {name}" for name in f.commands)  # every command, under one phase
-    for p in r.phases:  # the phase's own, in cli.py's order, then roadmap.toml's extras
-        own = [f"lasto {name}" for name, (_help, phase) in f.commands.items() if phase == p.number]
-        assert by_phase[p.number] == (*own, *p.extra_commands)
+    # The fixture's cli.py, and the real roadmap.toml (its one extra, Phase 4's): each phase's own
+    # commands in cli.py's order, then the extras.
+    assert safety.phase_commands(safety.load_facts(se.FIXTURE), data.load_roadmap()) == se.FIXTURE_COMMANDS_BY_PHASE
 
 
 def _add_command(tree: Path, name: str, phase: int) -> None:
@@ -277,7 +291,7 @@ def test_a_roadmap_extra_must_name_a_real_command(extra, match):
     r = data.load_roadmap()
     r.phases[5] = dataclasses.replace(r.phases[5], extra_commands=(extra,))
     with pytest.raises(BuildError, match=match):
-        safety.phase_commands(safety.load_facts(), r)
+        safety.phase_commands(safety.load_facts(se.FIXTURE), r)
 
 
 def test_a_new_allowed_service_changes_the_facts(tree):
@@ -290,11 +304,9 @@ def test_a_new_allowed_service_changes_the_facts(tree):
 
 def test_a_trimmed_allowlist_needs_no_edit_to_services_toml(tree):
     # Phase 3 trims the manufacturer allowlist to what the Creader shows; the site follows with no data edit.
-    kept = sorted(safety.load_facts(tree).manufacturer_services)[:-1]
-    se.rebind(tree, "safety/policy.py", "MANUFACTURER_READ_SERVICES",
-              lambda v: "frozenset({" + ", ".join(f"0x{s:02X}" for s in kept) + "})")
+    se.rebind(tree, "safety/policy.py", "MANUFACTURER_READ_SERVICES", lambda v: "frozenset({0x13, 0x1A, 0x21})")
     f = safety.load_facts(tree)
-    assert f.manufacturer_services == set(kept)
+    assert f.manufacturer_services == {0x13, 0x1A, 0x21}
     safety.check_services(f, data.load_services())  # a spare description is fine; a missing one isn't
 
 
@@ -345,15 +357,13 @@ def test_site_never_imports_the_app():
 
 
 def test_hotkey_comes_from_the_register_call(tree):
-    key = safety.load_facts(tree).hotkey.rsplit("+", 1)[1]
-
     def modifiers(t: ast.Module) -> ast.AST:  # the RegisterHotKey call's third argument
         return se.one((n.args[2] for n in ast.walk(t) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
                        and n.func.attr == "RegisterHotKey"), "RegisterHotKey call")
 
     se.replace(tree, "safety/hotkey.py", modifiers, lambda s: "MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT")
     se.insert_after(tree, "safety/hotkey.py", se.assignment("MOD_ALT"), "MOD_SHIFT = 0x0004")
-    assert safety.load_facts(tree).hotkey == f"Ctrl+Shift+{key}"
+    assert safety.load_facts(tree).hotkey == "Ctrl+Shift+K"  # the fixture's K, with Shift for Alt
 
 
 def test_augmented_constant_fails_the_build(tree):
@@ -369,6 +379,6 @@ def test_conditionally_redefined_constant_fails_the_build(tree):
 
 
 def test_listen_window_and_response_pending_come_from_source():
-    f = safety.load_facts()
+    f = safety.load_facts(se.FIXTURE)
     assert f.listen_window == 2.0
     assert f.response_pending_max == 10 and f.response_pending_wait == 5.0

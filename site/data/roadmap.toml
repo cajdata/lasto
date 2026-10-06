@@ -11,6 +11,8 @@
 #            name a command cli.py has, and the page checks its options against that command.
 # live_tested  the day the phase's test at the truck finished. What the site says has run
 #            at the truck follows this, since the truck test comes before approval.
+# Text (summary, delivers, live_test, open, site_note) is rendered like page content, so it
+# can quote the app's numbers, like "{{ capture.silence|num }} seconds", and follow the app.
 #
 # When a phase's truck test is done: add live_tested = YYYY-MM-DD. When a phase is
 # approved: set status = "done", add approved = YYYY-MM-DD, and set public = true once its
@@ -67,7 +69,7 @@ public = true
 transmits = "No"
 summary = "Record everything on the high-speed CAN bus in listen-only mode, and keep it safe through a pulled cable or a crash."
 delivers = [
-  "`lasto drive`: passive capture in armed mode, where the first frame starts a session and 60 seconds without one ends it",
+  "`lasto drive`: passive capture in armed mode, where the first frame starts a session and {{ capture.silence|num }} seconds without one ends it",
   "Storage: compressed candump segments and a SQLite capture database. The next start recovers what a crash or power loss left, and a pulled adapter cable ends the run with every frame it heard kept, unless it's plugged back in within a few seconds",
   "`lasto log`: the session list, each session's events and audit log, per-ID bus statistics, and one ID's raw frames",
   "Two safety core changes: on real hardware the audit log must be the kind that syncs each record to disk, and records held while no log is open go to a file too",
@@ -75,7 +77,7 @@ delivers = [
   "The serial guard installed before every command except the GUI",
 ]
 live_test = "Done 2026-09-30 to 10-01: key off, key on with the engine off, and a drive. Listen-only held on every run, with no error frames or overruns."
-open = ["Deleting old raw data comes after Phase 5, under a 20 GB budget. Until then nothing is deleted, and lasto drive warns as it starts if the disk has under 2 GB free or the data folder is over budget."]
+open = ["Deleting old raw data comes after Phase 5, under a {{ capture.budget_gb }} GB budget. Until then nothing is deleted, and lasto drive warns as it starts if the disk has under {{ capture.low_free_gb }} GB free or the data folder is over budget."]
 [[phase]]
 number = 3
 slug = "mapping"

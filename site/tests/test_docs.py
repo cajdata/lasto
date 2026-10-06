@@ -36,15 +36,12 @@ def _roadmap(*done: int, waiting: tuple[int, ...] = (), tested: tuple[int, ...] 
 
 
 def _copy_app(tmp_path):
-    for rel in appfacts.FILES:
-        dst = tmp_path / "src" / "lasto" / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text((paths.APP / rel).read_text(encoding="utf-8"), encoding="utf-8")
-    return tmp_path
+    return se.copy_fixture(tmp_path, appfacts.FILES)
 
 
 def test_capture_facts_come_from_source():
-    f = appfacts.load_capture_facts()
+    # The frozen fixture's values, written out here (tests/fixtures/README.md); the live app's are the build's to check.
+    f = appfacts.load_capture_facts(se.FIXTURE)
     assert f.silence == 60.0 and f.poll == 0.01 and f.tick == 1.0 and f.progress == 10.0
     assert f.flush_after == 1.5 and f.segment_seconds == 3600 and f.anchor_every == 60.0
     assert f.budget_gb == 20 and f.low_free_gb == 2 and f.newest_kept_days == 30
@@ -54,9 +51,8 @@ def test_capture_facts_come_from_source():
 
 def test_capture_facts_follow_a_change_in_the_source(tmp_path):
     root = _copy_app(tmp_path)
-    budget = appfacts.load_capture_facts(root).budget_gb
     se.rebind(root, "storage/retention.py", "BUDGET_BYTES", lambda v: f"({v}) + 5 * GIB")
-    assert appfacts.load_capture_facts(root).budget_gb == budget + 5
+    assert appfacts.load_capture_facts(root).budget_gb == 25  # the fixture's 20, plus 5
 
 
 @pytest.mark.parametrize("rel, name, nudge", [
@@ -77,16 +73,30 @@ def test_the_budget_must_be_in_gib(tmp_path):
         appfacts.load_capture_facts(root)
 
 
-def test_phase_2_roadmap_numbers_match_the_source():
-    # roadmap.toml isn't templated, so its numbers are checked here; the site tests run when the app changes.
-    f, two = appfacts.load_capture_facts(), data.load_roadmap().phase(2)
-    assert f"{f.silence:g} seconds without one ends it" in two.delivers[0]
-    assert f"under a {f.budget_gb} GB budget" in two.open[0]
-    assert f"under {f.low_free_gb} GB free" in two.open[0]
+def test_roadmap_text_quotes_the_app_s_numbers_from_source():
+    # Phase 2's roadmap text quotes capture numbers as placeholders, so it follows the app with no edit.
+    two = data.load_roadmap().phase(2)
+    assert "{{ capture.silence|num }} seconds without one ends it" in two.delivers[0]
+    assert "under a {{ capture.budget_gb }} GB budget" in two.open[0]
+    assert "under {{ capture.low_free_gb }} GB free" in two.open[0]
+
+
+def test_roadmap_text_renders_with_the_app_s_numbers():
+    from sitegen.pages import Builder
+
+    b = Builder()
+    b.ctx["capture"] = appfacts.load_capture_facts(se.FIXTURE)
+    assert b.render_text("{{ capture.silence|num }} s, {{ capture.budget_gb }} GB, {{ capture.low_free_gb }} GB") == "60 s, 20 GB, 2 GB"
+
+
+def test_the_roadmap_page_has_no_unrendered_placeholders(built):
+    out, _, _ = built
+    page = (out / "roadmap" / "index.html").read_text(encoding="utf-8")
+    assert "{{" not in page and "{%" not in page
 
 
 def test_a_page_naming_a_flag_or_command_cli_py_lacks_fails():
-    facts = safety.load_facts()
+    facts = safety.load_facts(se.FIXTURE)  # the frozen fixture's cli.py, so an app change can't move the cases
     check_cli_mentions(
         "<p>Run <code>lasto drive --live --channel PCAN_USBBUS1</code>, then <code>lasto log last --bus</code>,"
         " or give <code>--seconds</code> or <code>--help</code>.</p>"
@@ -202,6 +212,17 @@ def test_page_dates_follow_only_the_data_a_page_uses():
     assert docs and docs <= set(page_dependencies({"body": "{% for d in docs %}{% endfor %}"}))
     # The roadmap's command lists come from cli.py.
     assert paths.CLI in page_dependencies({"body": "{% set commands = phase_commands[p.number] %}"})
+
+def test_a_page_rendering_roadmap_text_dates_from_what_the_text_quotes(tmp_path, monkeypatch):
+    app = {paths.APP / rel for rel in appfacts.FILES}
+    body = {"body": "{% for d in p.delivers %}{{ render_text(d) }}{% endfor %}"}
+    # Only roadmap.toml's strings count: a comment that shows a placeholder as an example isn't a use.
+    (tmp_path / "roadmap.toml").write_text('# Text can quote "{{ capture.silence|num }}".\n[[phase]]\nsummary = "Plain."\n',
+                                           encoding="utf-8")
+    monkeypatch.setattr(paths, "DATA", tmp_path)
+    assert not app & set(page_dependencies(body))
+    (tmp_path / "roadmap.toml").write_text('[[phase]]\ndelivers = ["{{ capture.silence|num }} seconds"]\n', encoding="utf-8")
+    assert app <= set(page_dependencies(body))
     # A Preliminary stamp's truck sentence and an app page's JSON-LD summary both come from the roadmap.
     assert paths.DATA / "roadmap.toml" in page_dependencies({"body": "Prose.", "stamp": "preliminary", "phase": 2})
     assert paths.DATA / "roadmap.toml" in page_dependencies({"body": "Prose.", "about_app": True})
@@ -244,15 +265,21 @@ def test_404_lists_only_docs_still_to_come(built):
         assert (f"<code>{r.path}</code>" in page) == waiting, r.path
 
 
-def test_the_roadmap_shows_each_phase_s_commands_from_cli_py(built):
-    out, b, _ = built
-    page = (out / "roadmap" / "index.html").read_text(encoding="utf-8")
-    by_phase = safety.phase_commands(b.facts, b.roadmap)
+def test_the_roadmap_shows_each_phase_s_commands_from_cli_py(tmp_path):
+    # The roadmap page rendered with the frozen fixture's commands, against the lists written out in source_edit.
+    from sitegen.pages import Builder
+
+    b = Builder(tmp_path / "dist")
+    b.phase_commands = b.ctx["phase_commands"] = safety.phase_commands(safety.load_facts(se.FIXTURE), b.roadmap)
+    b.load()
+    b.render()
+    page = next(p for p in b.pages if p.url == "/roadmap/").body_html
     for p in b.roadmap.phases:
         section = re.search(rf'id="{p.anchor}".*?(?=<h2|\Z)', page, re.S).group(0)
         shown = re.search(r"<th[^>]*>Commands</th>\s*<td>(.*?)</td>", section, re.S).group(1)
-        assert re.findall(r"<code>([^<]*)</code>", shown) == list(by_phase[p.number]), p.number
-        assert by_phase[p.number] or shown.strip() == "None"
+        expected = se.FIXTURE_COMMANDS_BY_PHASE[p.number]
+        assert re.findall(r"<code>([^<]*)</code>", shown) == list(expected), p.number
+        assert expected or shown.strip() == "None"
 
 
 def test_roadmap_links_the_docs_a_done_phase_added(built):
