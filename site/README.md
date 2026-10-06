@@ -23,6 +23,8 @@ The tests use their own config, so the app's pytest settings (the simulator plug
 
 The tests also run actionlint on every workflow in `.github/workflows`, so a workflow GitHub would reject fails here first.
 
+Tests that change the app's source change a copy, and find what they change by name or structure with `tests/source_edit.py`, never by today's text, so app changes on `main` don't break them for no reason. The tests that compare facts with the app (`test_safety_facts.py`, `test_docs.py`) check the rules where CLAUDE.md gives one (the allowlist stays within CLAUDE.md's, the never-list contains it) and today's values elsewhere; a failure there means a page may need a look.
+
 actionlint and lychee are pinned in `sitegen/tools.py`: each is its project's official release, pinned by version and by the sha256 the release publishes. The first use downloads it into `site/.cache`, so it needs network access; every use checks the archive's sha256 and compares the binary with the archive's copy, so only a checked copy ever runs. Dependabot can't see these pins. To update one, change its version and copy the two hashes (Windows and Linux) from the new release.
 
 ## Where things are
@@ -32,8 +34,8 @@ actionlint and lychee are pinned in `sitegen/tools.py`: each is its project's of
 | `content/*.md` | Pages. Front matter, then Markdown, rendered through Jinja first so pages can use the data below. |
 | `content/docs.md`, `content/docs/*.md` | The docs index at `/docs/`, and one file per doc. A doc's URL must be a path `roadmap.toml` reserves (the build refuses any other), and it publishes only once its phase is done. A doc that belongs to no phase, like an FAQ, is reserved without one. |
 | `data/site.toml` | Site name, URLs, navigation, credit, the name note, and the trademark list. |
-| `data/roadmap.toml` | Phase status, truck test dates, and the reserved docs paths. The roadmap, the status lines, page stamps, the docs index, the 404 page, and the summaries in JSON-LD and the llms files read it. |
-| `data/services.toml` | Plain words for each service byte. Which services are allowed comes from the safety core source, never from here. |
+| `data/roadmap.toml` | Phase status, truck test dates, and the reserved docs paths. The roadmap, the status lines, page stamps, the docs index, the 404 page, and the summaries in JSON-LD and the llms files read it. A phase's commands aren't listed here: the roadmap takes them from `cli.py`'s `COMMANDS`, and `extra_commands` adds longer command lines like `lasto drive --profile`. |
+| `data/services.toml` | Plain words for each service byte. Which services are allowed comes from the safety core source, never from here. It must describe every service the source lists; a spare description, like one left over after the allowlist is trimmed, is fine. |
 | `data/hardware.toml` | The hardware chain, for Fig. 2 (its pin labels included) and the quick reference table. |
 | `templates/` | Jinja templates: `base.html`, `home.html`, `page.html`, the chain figure, and the social image. |
 | `static/` | CSS, the favicon, and the font sources with their licenses. |
@@ -53,7 +55,7 @@ actionlint and lychee are pinned in `sitegen/tools.py`: each is its project's of
 
 ## When an app phase ships
 
-1. In `data/roadmap.toml`, add `live_tested = YYYY-MM-DD` once its test at the truck is done: what the site says has run at the truck follows that date, since the truck test comes before approval. Then set the phase's `status = "done"` and `approved = YYYY-MM-DD`, and `public = true` once its commits are on `main`. Update its `live_test`, `open`, and `delivers` to what actually happened.
+1. In `data/roadmap.toml`, add `live_tested = YYYY-MM-DD` once its test at the truck is done: what the site says has run at the truck follows that date, since the truck test comes before approval. Then set the phase's `status = "done"` and `approved = YYYY-MM-DD`, and `public = true` once its commits are on `main`. Update its `live_test`, `open`, and `delivers` to what actually happened. Its commands follow `cli.py` on their own.
 2. Update anything the build flags as stale (it knows which phrases stop being true once a phase is done or has run at the truck, and checks that "built in N phases" matches the roadmap). Stamps, the status sentence, and the summaries in the llms files and JSON-LD follow Phases 2 and 4 on their own; anything else needs reading.
 3. Add the docs the phase brings as `content/docs/<slug>.md`, at the path the roadmap reserves. The docs index, the roadmap's links, and the 404 page's list pick them up; the nav's Docs link is fixed.
 4. Update the Safety pages for whatever the phase changed in the safety core, and check each changed claim against the code.
