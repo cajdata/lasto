@@ -241,6 +241,9 @@ def page_dependencies(meta: dict) -> list[Path]:
         deps.add(paths.DATA / "site.toml")
     if "python_req" in body:
         deps.add(paths.ROOT / "pyproject.toml")
+    if "phase_commands" in body:
+        deps.add(paths.CLI)  # the commands come from its COMMANDS
+        deps.add(paths.DATA / "roadmap.toml")  # and the extras from here
     if uses("capture"):
         deps.update(paths.APP / rel for rel in appfacts.FILES)  # cli.py among them
     if re.search(r"\{%[^%]*\bin\s+docs\b", body):
@@ -278,7 +281,7 @@ class Builder:
         self.facts = safety.load_facts()
         self.capture = appfacts.load_capture_facts()
         safety.check_services(self.facts, self.services)
-        safety.check_commands(self.facts, self.roadmap)
+        self.phase_commands = safety.phase_commands(self.facts, self.roadmap)
         self.html_env = jinja2.Environment(
             loader=jinja2.FileSystemLoader(paths.TEMPLATES),
             autoescape=jinja2.select_autoescape(enabled_extensions=("html", "j2")),
@@ -311,6 +314,7 @@ class Builder:
             "services": self.services,
             "hardware": self.hardware,
             "capture": self.capture,
+            "phase_commands": self.phase_commands,  # each phase's commands: cli.py's own, then roadmap.toml's extras
             "status_sentence": self.roadmap.status_sentence(),
             "roadmap_summary": app_summary(self.roadmap),
             "llms_intro": llms_intro(self.roadmap),

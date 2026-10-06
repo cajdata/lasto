@@ -34,8 +34,10 @@ def test_service_map_is_generated_from_source(built):
     never = re.search(r'<path class="never" d="([^"]+)"', fig.html).group(1)
     assert allow.count("z") == len(f.allowed_services)
     assert never.count("z") == len(f.never_services)
-    # 0x22 is row 2, column 2: x = 28 + 2 + 18*2, y = 18 + 2 + 18*2
-    assert "M66 56h14v14h-14z" in allow
+    # Each allowed service's square sits at its row (high nibble) and column (low nibble):
+    # x = 28 + 2 + 18*column, y = 18 + 2 + 18*row. 0x22 is M66 56.
+    for s in f.allowed_services:
+        assert f"M{30 + 18 * (s & 15)} {20 + 18 * (s >> 4)}h14v14h-14z" in allow, hex(s)
     home = (out / "index.html").read_text(encoding="utf-8")
     assert f"<span>{len(f.allowed_services)} of 256</span>" in home
 

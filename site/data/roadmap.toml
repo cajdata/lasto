@@ -5,7 +5,10 @@
 #            "done" means Chris signed the phase off. Only "done" publishes a phase's docs.
 # public     true once the phase's commits are on GitHub main. Links to code need it.
 # transmits  what the phase adds on the wire, as shown in the roadmap table.
-# commands   must match the COMMANDS table in src/lasto/cli.py; the build checks it.
+# Each phase's commands come from the COMMANDS table in src/lasto/cli.py, so a new command
+# shows up under its phase with no edit here.
+# extra_commands  longer command lines to show too, like "lasto drive --profile". Each must
+#            name a command cli.py has, and the page checks its options against that command.
 # live_tested  the day the phase's test at the truck finished. What the site says has run
 #            at the truck follows this, since the truck test comes before approval.
 #
@@ -30,7 +33,6 @@ delivers = [
   "Development guardrails that block anything aimed at a real PCAN channel or COM port",
   "A bench parts list for proving listen-only and silent mode",
 ]
-commands = []
 live_test = "None"
 open = []
 
@@ -50,7 +52,6 @@ delivers = [
   "Unit, property-based, and structural tests, with the test command set to fail below 100 percent branch coverage on the safety core",
   "A command-line skeleton where every command says which phase delivers it",
 ]
-commands = []
 live_test = "None. Nothing in this phase touches the truck."
 open = []
 
@@ -73,7 +74,6 @@ delivers = [
   "A service layer the command line and the Phase 9 GUI both build on",
   "The serial guard installed before every command except the GUI",
 ]
-commands = ["lasto drive", "lasto log"]
 live_test = "Done 2026-09-30 to 10-01: key off, key on with the engine off, and a drive. Listen-only held on every run, with no error frames or overruns."
 open = ["Deleting old raw data comes after Phase 5, under a 20 GB budget. Until then nothing is deleted, and lasto drive warns as it starts if the disk has under 2 GB free or the data folder is over budget."]
 [[phase]]
@@ -90,7 +90,6 @@ delivers = [
   "A solver that finds byte positions, scale, and offset, and ranks the candidates",
   "Definitions files for the signals that check out",
 ]
-commands = ["lasto map", "lasto verify"]
 live_test = "A Creader engine data stream, then a KDSS data stream."
 open = [
   "An independent review of the serial guard, before any MX+ code touches hardware. Since Phase 2 it also covers SQLite opening its own files, the two audit files the safety core opens by name, and when the CLI installs the guard.",
@@ -113,7 +112,7 @@ delivers = [
   "A live view with alarms: transmission 220 °F warning and 240 °F critical, coolant 225 and 235 °F, voltage below 12.5 V or above 15.0 V while running",
   "The Ctrl+Alt+K hotkey wired into polled sessions",
 ]
-commands = ["lasto identify", "lasto snapshot", "lasto view", "lasto drive --profile"]
+extra_commands = ["lasto drive --profile"]
 live_test = "Parked first, then a drive with the grades profile."
 open = [
   "Before the first polled test at the truck: wire in the Ctrl+Alt+K hotkey, handle a kill listener that raises (L2), close two audit log gaps from the Phase 2 review (L6 and L7), and add the 17 IDs the truck broadcasts to the gate's list of IDs it never sends on.",
@@ -133,7 +132,6 @@ delivers = [
   "A DBC file for the GX470",
   "Re-decoding old sessions with newer definitions",
 ]
-commands = ["lasto decode"]
 live_test = ""
 open = []
 
@@ -149,7 +147,6 @@ delivers = [
   "Identifier sweeps of approved modules, never airbag or immobilizer modules",
   "Results that get reviewed before any new module address is approved",
 ]
-commands = ["lasto discover"]
 live_test = ""
 open = ["How many 'not supported' answers discovery tolerates before it stops."]
 
@@ -165,7 +162,6 @@ delivers = [
   "An STN transport for K-line modules, if approved",
   "A crank profile for battery voltage during engine start",
 ]
-commands = []
 live_test = ""
 open = ["Starting a K-line session needs StartCommunication (0x81), which isn't on the allowlist. Whether to allow it gets decided here, as its own safety core change."]
 
@@ -181,7 +177,6 @@ delivers = [
   "Session reports with charts",
   "Export packs: CSV, Parquet, and a summary JSON",
 ]
-commands = ["lasto report", "lasto export"]
 live_test = ""
 open = []
 
@@ -199,7 +194,6 @@ delivers = [
   "9c: the definitions library, a read-only live monitor, and settings",
   "Start and stop for a passive capture, the only thing it does with hardware",
 ]
-commands = ["lasto gui"]
 live_test = ""
 open = []
 

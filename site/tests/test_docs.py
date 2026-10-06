@@ -7,6 +7,7 @@ import json
 import re
 
 import pytest
+import source_edit as se
 
 from sitegen import appfacts, data, figures, paths, safety
 from sitegen.data import BuildError, Phase, Roadmap
@@ -23,7 +24,7 @@ def _roadmap(*done: int, waiting: tuple[int, ...] = (), tested: tuple[int, ...] 
     phases = []
     for n in range(10):
         fields = dict(number=n, slug=f"p{n}", name=f"Phase {n}", status="planned", public=False, transmits="No",
-                      summary="s", delivers=(), commands=(), live_test="", open=())
+                      summary="s", delivers=(), extra_commands=(), live_test="", open=())
         if n in done:
             fields.update(status="done", built=D, approved=D, public=True)
         elif n in waiting:
@@ -42,13 +43,6 @@ def _copy_app(tmp_path):
     return tmp_path
 
 
-def _edit(root, rel, old, new):
-    p = root / "src" / "lasto" / rel
-    text = p.read_text(encoding="utf-8")
-    assert old in text, f"test setup: {old!r} not in {rel}"
-    p.write_text(text.replace(old, new), encoding="utf-8")
-
-
 def test_capture_facts_come_from_source():
     f = appfacts.load_capture_facts()
     assert f.silence == 60.0 and f.poll == 0.01 and f.tick == 1.0 and f.progress == 10.0
@@ -60,24 +54,25 @@ def test_capture_facts_come_from_source():
 
 def test_capture_facts_follow_a_change_in_the_source(tmp_path):
     root = _copy_app(tmp_path)
-    _edit(root, "storage/retention.py", "BUDGET_BYTES = 20 * GIB", "BUDGET_BYTES = 25 * GIB")
-    assert appfacts.load_capture_facts(root).budget_gb == 25
+    budget = appfacts.load_capture_facts(root).budget_gb
+    se.rebind(root, "storage/retention.py", "BUDGET_BYTES", lambda v: f"({v}) + 5 * GIB")
+    assert appfacts.load_capture_facts(root).budget_gb == budget + 5
 
 
-@pytest.mark.parametrize("rel, old, new, name", [
-    ("operations/drive.py", "POLL = 0.01", "POLL = 0.0025", "POLL"),
-    ("capture/recorder.py", "SEGMENT_SECONDS = 3600", "SEGMENT_SECONDS = 90", "SEGMENT_SECONDS"),
+@pytest.mark.parametrize("rel, name, nudge", [
+    ("operations/drive.py", "POLL", " + 0.0005"),  # half a millisecond
+    ("capture/recorder.py", "SEGMENT_SECONDS", " + 30"),  # half a minute
 ])
-def test_capture_figures_the_docs_round_must_be_whole(tmp_path, rel, old, new, name):
+def test_capture_figures_the_docs_round_must_be_whole(tmp_path, rel, name, nudge):
     root = _copy_app(tmp_path)
-    _edit(root, rel, old, new)
+    se.rebind(root, rel, name, lambda v: f"({v}){nudge}")
     with pytest.raises(BuildError, match=name):
         appfacts.load_capture_facts(root)
 
 
 def test_the_budget_must_be_in_gib(tmp_path):
     root = _copy_app(tmp_path)
-    _edit(root, "storage/retention.py", "GIB = 2**30", "GIB = 10**9")
+    se.rebind(root, "storage/retention.py", "GIB", lambda v: "10**9")
     with pytest.raises(BuildError, match="GIB"):
         appfacts.load_capture_facts(root)
 
@@ -205,6 +200,8 @@ def test_page_dates_follow_only_the_data_a_page_uses():
     assert paths.DATA / "roadmap.toml" in page_dependencies({"body": "{% for p in roadmap.phases %}{% endfor %}"})
     docs = set(paths.CONTENT.glob("docs/*.md"))
     assert docs and docs <= set(page_dependencies({"body": "{% for d in docs %}{% endfor %}"}))
+    # The roadmap's command lists come from cli.py.
+    assert paths.CLI in page_dependencies({"body": "{% set commands = phase_commands[p.number] %}"})
     # A Preliminary stamp's truck sentence and an app page's JSON-LD summary both come from the roadmap.
     assert paths.DATA / "roadmap.toml" in page_dependencies({"body": "Prose.", "stamp": "preliminary", "phase": 2})
     assert paths.DATA / "roadmap.toml" in page_dependencies({"body": "Prose.", "about_app": True})
@@ -245,6 +242,17 @@ def test_404_lists_only_docs_still_to_come(built):
     for r in b.roadmap.reserved:
         waiting = r.phase is not None and not b.roadmap.phase(r.phase).done  # a doc with no phase never waits
         assert (f"<code>{r.path}</code>" in page) == waiting, r.path
+
+
+def test_the_roadmap_shows_each_phase_s_commands_from_cli_py(built):
+    out, b, _ = built
+    page = (out / "roadmap" / "index.html").read_text(encoding="utf-8")
+    by_phase = safety.phase_commands(b.facts, b.roadmap)
+    for p in b.roadmap.phases:
+        section = re.search(rf'id="{p.anchor}".*?(?=<h2|\Z)', page, re.S).group(0)
+        shown = re.search(r"<th[^>]*>Commands</th>\s*<td>(.*?)</td>", section, re.S).group(1)
+        assert re.findall(r"<code>([^<]*)</code>", shown) == list(by_phase[p.number]), p.number
+        assert by_phase[p.number] or shown.strip() == "None"
 
 
 def test_roadmap_links_the_docs_a_done_phase_added(built):
