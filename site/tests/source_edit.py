@@ -15,6 +15,27 @@ from pathlib import Path
 
 Find = Callable[[ast.Module], ast.AST]
 
+# A frozen copy of what the site reads from the app (fixtures/README.md). Tests read and edit this,
+# never the live app, so their expected values don't move when the app does.
+FIXTURE = Path(__file__).parent / "fixtures" / "app"
+
+# Each phase's commands on the roadmap, from the fixture's cli.py and the real roadmap.toml (whose one
+# extra is Phase 4's): the phase's own in cli.py's order, then the extras.
+FIXTURE_COMMANDS_BY_PHASE = {
+    0: (), 1: (), 2: ("lasto drive", "lasto log"), 3: ("lasto map", "lasto verify"),
+    4: ("lasto snapshot", "lasto identify", "lasto view", "lasto drive --profile"),
+    5: ("lasto decode",), 6: ("lasto discover",), 7: (), 8: ("lasto report", "lasto export"), 9: ("lasto gui",),
+}
+
+
+def copy_fixture(root: Path, rels: Iterable[str]) -> Path:
+    """Copy these files of the frozen fixture to root/src/lasto, for a test to edit."""
+    for rel in rels:
+        dst = _file(root, rel)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(_file(FIXTURE, rel).read_bytes())
+    return root
+
 
 def _file(root: Path, rel: str) -> Path:
     return root / "src" / "lasto" / rel
