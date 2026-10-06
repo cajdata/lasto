@@ -27,17 +27,20 @@ def test_site_files_exist(built):
 
 
 def test_service_map_is_generated_from_source(built):
-    out, b, _ = built
-    f = safety.load_facts()
-    fig = figures.service_map({"facts": f, "services": b.services, "roadmap": b.roadmap}, 1)
+    # Drawn from the frozen fixture (tests/fixtures/README.md): 14 allowed services and 22 never.
+    import source_edit as se
+
+    _, b, _ = built
+    f = safety.load_facts(se.FIXTURE)
+    services = {"allowed": {s: "a service" for s in f.allowed_services}, "never": {s: "a service" for s in f.never_services}}
+    fig = figures.service_map({"facts": f, "services": services, "roadmap": b.roadmap}, 1)
     allow = re.search(r'<path class="allow" d="([^"]+)"', fig.html).group(1)
     never = re.search(r'<path class="never" d="([^"]+)"', fig.html).group(1)
-    assert allow.count("z") == len(f.allowed_services)
-    assert never.count("z") == len(f.never_services)
-    # 0x22 is row 2, column 2: x = 28 + 2 + 18*2, y = 18 + 2 + 18*2
-    assert "M66 56h14v14h-14z" in allow
-    home = (out / "index.html").read_text(encoding="utf-8")
-    assert f"<span>{len(f.allowed_services)} of 256</span>" in home
+    assert allow.count("z") == 14 and never.count("z") == 22
+    # A square sits at its service's row (high nibble) and column (low nibble):
+    # x = 28 + 2 + 18*column, y = 18 + 2 + 18*row. 0x22 is row 2, column 2, and 0x01 row 0, column 1.
+    assert "M66 56h14v14h-14z" in allow and "M48 20h14v14h-14z" in allow
+    assert "M102.5 20.5h13v13h-13z" in never  # 0x04, drawn as an outline on the half pixel
 
 
 def test_sitemap_and_404(built):

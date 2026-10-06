@@ -650,27 +650,39 @@ def load_facts(root: Path | None = None) -> SafetyFacts:
 
 
 def check_services(facts: SafetyFacts, services: dict[str, dict[int, str]]) -> None:
-    """services.toml must describe exactly the services the source lists."""
+    """services.toml must describe every service the source lists, in the right group.
+
+    A spare description is fine: the pages show only the services the source lists, so when the
+    allowlist is trimmed (Phase 3 trims it to what the Creader shows), the site follows with no edit.
+    """
     for group, actual in (("allowed", facts.allowed_services), ("never", facts.never_services)):
-        described = set(services[group])
-        missing = sorted(actual - described)
-        extra = sorted(described - actual)
+        missing = sorted(actual - set(services[group]))
         if missing:
             raise BuildError(f"services.toml [{group}] has no description for {', '.join(f'0x{s:02X}' for s in missing)}")
-        if extra:
-            raise BuildError(f"services.toml [{group}] describes {', '.join(f'0x{s:02X}' for s in extra)}, which the source doesn't list")
 
 
-def check_commands(facts: SafetyFacts, roadmap: Roadmap) -> None:
-    """Roadmap commands must exist in cli.py, and every CLI command must appear under its phase."""
-    listed: dict[str, set[int]] = {}
-    for phase in roadmap.phases:
-        for command in phase.commands:
-            words = command.split()
-            if len(words) < 2 or words[0] != "lasto" or words[1] not in facts.commands:
-                raise BuildError(f"roadmap phase {phase.number} lists {command!r}, which cli.py doesn't have")
-            if len(words) == 2:
-                listed.setdefault(words[1], set()).add(phase.number)
+def phase_commands(facts: SafetyFacts, roadmap: Roadmap) -> dict[int, tuple[str, ...]]:
+    """Each phase's commands for the roadmap: its own, read from cli.py's COMMANDS in that order, then
+    roadmap.toml's extra_commands for the phase (longer command lines, like `lasto drive --profile`).
+
+    The roadmap follows cli.py, so a command reaches it the moment cli.py has it, with no edit to
+    roadmap.toml and no window where the two disagree. An extra must name a real command; the page's
+    CLI check then holds its options to that command's own.
+    """
+    numbers = {p.number for p in roadmap.phases}
+    own: dict[int, list[str]] = {}
     for name, (_help, phase) in facts.commands.items():
-        if phase not in listed.get(name, set()):
-            raise BuildError(f"cli.py says 'lasto {name}' arrives in Phase {phase}, but roadmap.toml doesn't list it there")
+        if phase not in numbers:
+            raise BuildError(f"cli.py says 'lasto {name}' arrives in Phase {phase}, which roadmap.toml doesn't have")
+        own.setdefault(phase, []).append(f"lasto {name}")
+    for p in roadmap.phases:
+        for line in p.extra_commands:
+            words = line.split()
+            if not words or words[0] != "lasto":
+                raise BuildError(f"roadmap phase {p.number} lists {line!r}, which isn't a lasto command line")
+            if len(words) < 2 or words[1] not in facts.commands:
+                raise BuildError(f"roadmap phase {p.number} lists {line!r}, which names no command in cli.py")
+            if len(words) == 2:
+                raise BuildError(f"roadmap phase {p.number} lists {line!r}, which comes from cli.py's COMMANDS; "
+                                 "extra_commands holds only longer command lines")
+    return {p.number: (*own.get(p.number, ()), *p.extra_commands) for p in roadmap.phases}

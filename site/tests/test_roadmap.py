@@ -16,7 +16,7 @@ D = dt.date(2026, 9, 26)
 def phase(n: int, status: str = "planned", **kw) -> Phase:
     fields = dict(
         number=n, slug=f"p{n}", name=f"Phase {n} name", status=status, public=False, transmits="No",
-        summary="s", delivers=(), commands=(), live_test="", open=(),
+        summary="s", delivers=(), extra_commands=(), live_test="", open=(),
     )
     if status == "done":
         # Phases 2 and 4 are the ones tested at the truck.
@@ -46,6 +46,31 @@ def test_phase_1_is_approved_and_public_and_the_gui_is_planned():
     assert one.done and one.public and one.approved == dt.date(2026, 9, 28)
     assert gui.slug == "gui" and gui.status == "planned" and not gui.public
     assert gui.transmits == "No"
+
+
+def _one_phase_roadmap(tmp_path, extra: str):
+    p = tmp_path / "roadmap.toml"
+    p.write_text('project_status = "pre-alpha"\n\n[[phase]]\nnumber = 0\nslug = "plan"\nname = "Plan"\nstatus = "planned"\n'
+                 f'public = false\ntransmits = "No"\nsummary = "s"\ndelivers = []\n{extra}\nlive_test = ""\nopen = []\n',
+                 encoding="utf-8")
+    return p
+
+
+def test_commands_come_from_cli_py_not_roadmap_toml(tmp_path):
+    # A phase's own commands are read from cli.py's COMMANDS; roadmap.toml lists only longer command lines.
+    with pytest.raises(BuildError, match="extra_commands"):
+        data.load_roadmap(_one_phase_roadmap(tmp_path, 'commands = ["lasto drive"]'))
+
+
+def test_a_misspelled_phase_key_is_refused(tmp_path):
+    # Optional keys would otherwise drop out of the site without a word.
+    with pytest.raises(BuildError, match="extra_command"):
+        data.load_roadmap(_one_phase_roadmap(tmp_path, 'extra_command = ["lasto drive --profile"]'))
+    data.load_roadmap(_one_phase_roadmap(tmp_path, 'extra_commands = ["lasto drive --profile"]'))
+
+
+def test_phase_4_shows_polled_logging_on_drive():
+    assert data.load_roadmap().phase(4).extra_commands == ("lasto drive --profile",)
 
 
 def test_phase_2_is_approved_and_public():

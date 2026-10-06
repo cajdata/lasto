@@ -14,7 +14,7 @@ import yaml
 from markupsafe import Markup
 
 from sitegen import appfacts, fonts, gitinfo, markdown, og, paths, safety, seo
-from sitegen.data import BuildError, Roadmap, load_hardware, load_roadmap, load_services, load_site
+from sitegen.data import BuildError, Roadmap, load_hardware, load_roadmap, load_services, load_site, load_toml
 
 FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
 
@@ -211,6 +211,17 @@ def smart(text: str) -> str:
 PERMALINK_SHA = 12
 
 
+def _strings(value: object) -> list[str]:
+    """Every string in a parsed TOML document."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return []
+
+
 def page_dependencies(meta: dict) -> list[Path]:
     """The data and source files a page's content is built from, found by what the page uses.
 
@@ -219,6 +230,10 @@ def page_dependencies(meta: dict) -> list[Path]:
     content a reader sees can change. Template and CSS changes don't count.
     """
     body = meta["body"]
+    if "render_text(" in body:
+        # The page renders roadmap.toml's text, so it also depends on whatever that text quotes:
+        # its strings only, never its comments, which may show a placeholder as an example.
+        body += "\n".join(_strings(load_toml(paths.DATA / "roadmap.toml")))
     deps: set[Path] = set()
 
     def uses(name: str) -> bool:
@@ -241,6 +256,9 @@ def page_dependencies(meta: dict) -> list[Path]:
         deps.add(paths.DATA / "site.toml")
     if "python_req" in body:
         deps.add(paths.ROOT / "pyproject.toml")
+    if "phase_commands" in body:
+        deps.add(paths.CLI)  # the commands come from its COMMANDS
+        deps.add(paths.DATA / "roadmap.toml")  # and the extras from here
     if uses("capture"):
         deps.update(paths.APP / rel for rel in appfacts.FILES)  # cli.py among them
     if re.search(r"\{%[^%]*\bin\s+docs\b", body):
@@ -278,7 +296,7 @@ class Builder:
         self.facts = safety.load_facts()
         self.capture = appfacts.load_capture_facts()
         safety.check_services(self.facts, self.services)
-        safety.check_commands(self.facts, self.roadmap)
+        self.phase_commands = safety.phase_commands(self.facts, self.roadmap)
         self.html_env = jinja2.Environment(
             loader=jinja2.FileSystemLoader(paths.TEMPLATES),
             autoescape=jinja2.select_autoescape(enabled_extensions=("html", "j2")),
@@ -311,18 +329,25 @@ class Builder:
             "services": self.services,
             "hardware": self.hardware,
             "capture": self.capture,
+            "phase_commands": self.phase_commands,  # each phase's commands: cli.py's own, then roadmap.toml's extras
             "status_sentence": self.roadmap.status_sentence(),
             "roadmap_summary": app_summary(self.roadmap),
             "llms_intro": llms_intro(self.roadmap),
             "docs": [],  # the published docs pages, filled in by load()
             "python_req": python_requirement(),
             "render_partial": lambda name, **kw: self.html_env.get_template(name).render(**self.ctx, **kw),
+            "render_text": self.render_text,
             "code_link": self.code_link,
             "code_file": self.code_file,
         }
         self.pages: list[Page] = []
 
     # -- helpers used by content --------------------------------------------------------
+
+    def render_text(self, text: str) -> str:
+        """A data string (roadmap.toml's, say) rendered like content, so it can quote the app's numbers:
+        "{{ capture.silence|num }} seconds" follows drive.py instead of going stale."""
+        return self.content_env.from_string(text).render(**self.ctx)
 
     def code_link(self, name: str, label: str | None = None) -> str:
         """Markdown for a safety core constant: a permalink once Phase 1 is public, plain text before."""

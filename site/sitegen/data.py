@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import tomllib
 from dataclasses import dataclass, field
@@ -37,7 +38,9 @@ class Phase:
     transmits: str
     summary: str
     delivers: tuple[str, ...]
-    commands: tuple[str, ...]
+    # Command lines beyond the phase's own commands, like "lasto drive --profile". Its own come from
+    # cli.py's COMMANDS (safety.phase_commands), so a new command reaches the roadmap with no edit here.
+    extra_commands: tuple[str, ...]
     live_test: str
     open: tuple[str, ...]
     built: dt.date | None = None
@@ -110,7 +113,14 @@ class Roadmap:
 def load_roadmap(path: Path | None = None) -> Roadmap:
     raw = load_toml(path or paths.DATA / "roadmap.toml")
     phases: list[Phase] = []
+    known = {f.name for f in dataclasses.fields(Phase)}
     for p in raw.get("phase", []):
+        if "commands" in p:
+            raise BuildError(f"roadmap.toml phase {p.get('number')}: a phase's commands come from cli.py's COMMANDS now; "
+                             "list only longer command lines, like `lasto drive --profile`, in extra_commands")
+        unknown = sorted(set(p) - known)
+        if unknown:  # a misspelled optional key would otherwise drop out of the site without a word
+            raise BuildError(f"roadmap.toml phase {p.get('number')} has keys the build doesn't know: {', '.join(unknown)}")
         try:
             phase = Phase(
                 number=p["number"],
@@ -121,7 +131,7 @@ def load_roadmap(path: Path | None = None) -> Roadmap:
                 transmits=p["transmits"],
                 summary=p["summary"],
                 delivers=tuple(p["delivers"]),
-                commands=tuple(p["commands"]),
+                extra_commands=tuple(p.get("extra_commands", [])),
                 live_test=p["live_test"],
                 open=tuple(p["open"]),
                 built=p.get("built"),
